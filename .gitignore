@@ -1,0 +1,17 @@
+.jolt/
+.jolt-control/
+runtime/
+coverage.out
+/jolt-node
+/jolt-control
+/bin/
+node_modules/
+dist/
+.DS_Store
+node/testdata/node*/data/*
+!node/testdata/node*/data/.gitkeep
+node/testdata/node*/keys/*
+!node/testdata/node*/keys/.gitkeep
+node/testdata/node*/files/*
+!node/testdata/node*/files/.gitkeep
+

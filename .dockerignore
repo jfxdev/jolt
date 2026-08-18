@@ -1,0 +1,8 @@
+.git
+.jolt
+.jolt-control
+runtime
+coverage.out
+node_modules
+dist
+**/*_test.go

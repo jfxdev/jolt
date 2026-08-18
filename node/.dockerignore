@@ -1,0 +1,4 @@
+.git
+.jolt
+coverage.out
+**/*_test.go

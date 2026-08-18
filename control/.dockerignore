@@ -1,0 +1,6 @@
+.git
+.jolt-control
+frontend/node_modules
+frontend/dist
+coverage.out
+**/*_test.go

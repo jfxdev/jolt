@@ -1,0 +1,75 @@
+services:
+  jolt-node:
+    build:
+      context: ./node
+    restart: unless-stopped
+    environment:
+      NODE_NAME: nas-home
+      API_ADDRESS: :8080
+      MTLS_ADDRESS: :8443
+      MTLS_PUBLIC_ENDPOINT: https://jolt-node:8443
+      CONTROL_TOWER_TOKEN: ${CONTROL_TOWER_TOKEN:?define CONTROL_TOWER_TOKEN}
+      JOLT_DATA_DIR: /var/lib/jolt
+      JOLT_KEYS_DIR: /var/lib/jolt-keys
+      MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-2}
+      JOB_MAX_ATTEMPTS: ${JOB_MAX_ATTEMPTS:-3}
+      COPY_CHUNK_SIZE_BYTES: ${COPY_CHUNK_SIZE_BYTES:-16777216}
+      NODE_BANDWIDTH_LIMIT_BYTES_PER_SECOND: ${NODE_BANDWIDTH_LIMIT_BYTES_PER_SECOND:-0}
+      MAX_PARALLEL_FILES_PER_JOB: ${MAX_PARALLEL_FILES_PER_JOB:-2}
+      MAX_PARALLEL_CHUNKS_PER_FILE: ${MAX_PARALLEL_CHUNKS_PER_FILE:-1}
+      TRANSFER_CONNECT_TIMEOUT: ${TRANSFER_CONNECT_TIMEOUT:-10s}
+      TRANSFER_IDLE_READ_TIMEOUT: ${TRANSFER_IDLE_READ_TIMEOUT:-60s}
+      TRANSFER_CHUNK_TIMEOUT: ${TRANSFER_CHUNK_TIMEOUT:-5m}
+      JOB_VALIDATION_TIMEOUT: ${JOB_VALIDATION_TIMEOUT:-2m}
+      JOB_NO_PROGRESS_TIMEOUT: ${JOB_NO_PROGRESS_TIMEOUT:-10m}
+      PEER_HEARTBEAT_INTERVAL: ${PEER_HEARTBEAT_INTERVAL:-15s}
+      PEER_HEARTBEAT_TIMEOUT: ${PEER_HEARTBEAT_TIMEOUT:-5s}
+      PEER_FAILURE_THRESHOLD: ${PEER_FAILURE_THRESHOLD:-3}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      UMASK: ${UMASK:-002}
+      # Paths in this list are reconciled to PUID:PGID before the node starts.
+      # Add every host bind mount that will be registered as a Jolt mount.
+      JOLT_OWNED_PATHS: ${JOLT_OWNED_PATHS:-/mnt/files}
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+    volumes:
+      - ./runtime/node/data:/var/lib/jolt
+      - ./runtime/node/keys:/var/lib/jolt-keys
+      - ${JOLT_MOUNT_PATH:-./runtime/files}:/mnt/files:rw
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  jolt-control:
+    build:
+      context: ./control
+    restart: unless-stopped
+    depends_on:
+      jolt-node:
+        condition: service_healthy
+    environment:
+      CONTROL_TOWER_ADDRESS: :8090
+      CONTROL_TOWER_DATA_DIR: /var/lib/jolt-control
+      CONTROL_TOWER_STATIC_DIR: /opt/jolt-control/frontend
+      CONTROL_TOWER_ADMIN_USERNAME: ${CONTROL_TOWER_ADMIN_USERNAME:-admin}
+      CONTROL_TOWER_ADMIN_PASSWORD: ${CONTROL_TOWER_ADMIN_PASSWORD:?define CONTROL_TOWER_ADMIN_PASSWORD}
+      CONTROL_TOWER_DB_ENCRYPTION_KEY: ${CONTROL_TOWER_DB_ENCRYPTION_KEY:?define CONTROL_TOWER_DB_ENCRYPTION_KEY}
+      CONTROL_TOWER_SECURE_COOKIES: ${CONTROL_TOWER_SECURE_COOKIES:-false}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      UMASK: ${UMASK:-077}
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./runtime/control/data:/var/lib/jolt-control
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
