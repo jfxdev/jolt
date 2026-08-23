@@ -20,6 +20,7 @@ import (
 
 	"github.com/jfxdev/jolt/backend/internal/infra/config"
 	joltcrypto "github.com/jfxdev/jolt/backend/internal/infra/crypto"
+	"github.com/jfxdev/jolt/backend/internal/infra/database"
 	"github.com/jfxdev/jolt/backend/internal/infra/db"
 	"github.com/jfxdev/jolt/backend/internal/infra/httpapi"
 	"github.com/jfxdev/jolt/backend/internal/infra/mtlsapi"
@@ -54,6 +55,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "encrypt-database" {
+		if err := runEncryptDatabase(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "database encryption failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg, err := config.Load()
 	if err != nil {
@@ -75,7 +83,7 @@ func main() {
 		logger.Error("load node identity", "error", err)
 		os.Exit(1)
 	}
-	store, err := db.Open(filepath.Join(cfg.DataDir, "jolt.db"))
+	store, err := db.Open(filepath.Join(cfg.DataDir, "jolt.db"), cfg.EncryptionKey)
 	if err != nil {
 		logger.Error("open database", "error", err)
 		os.Exit(1)
@@ -187,7 +195,11 @@ func runSnapshot(arguments []string) error {
 	if err != nil {
 		return err
 	}
-	manifest, err := recovery.CreateSnapshot(context.Background(), absoluteData, absoluteKeys, absoluteOutput)
+	encryptionKey, err := config.ParseEncryptionKey(os.Getenv("JOLT_DB_ENCRYPTION_KEY"))
+	if err != nil {
+		return err
+	}
+	manifest, err := recovery.CreateSnapshot(context.Background(), absoluteData, absoluteKeys, absoluteOutput, encryptionKey)
 	if err != nil {
 		return err
 	}
@@ -213,8 +225,12 @@ func runRestoreDiagnostics(arguments []string) error {
 	if err != nil {
 		return err
 	}
+	encryptionKey, err := config.ParseEncryptionKey(os.Getenv("JOLT_DB_ENCRYPTION_KEY"))
+	if err != nil {
+		return err
+	}
 	report, err := recovery.DiagnoseRestore(context.Background(), absoluteData, absoluteKeys,
-		strings.TrimSpace(*expectedNodeID), strings.TrimSpace(*expectedFingerprint))
+		strings.TrimSpace(*expectedNodeID), strings.TrimSpace(*expectedFingerprint), encryptionKey)
 	if err != nil {
 		return err
 	}
@@ -243,6 +259,10 @@ func runRecoverOperationalToken(arguments []string) error {
 	if len(token) < 32 {
 		return errors.New("JOLT_RECOVERY_OPERATIONAL_TOKEN must contain at least 32 characters")
 	}
+	encryptionKey, err := config.ParseEncryptionKey(os.Getenv("JOLT_DB_ENCRYPTION_KEY"))
+	if err != nil {
+		return err
+	}
 	absoluteData, err := filepath.Abs(*dataDir)
 	if err != nil {
 		return err
@@ -258,7 +278,7 @@ func runRecoverOperationalToken(arguments []string) error {
 		return err
 	}
 	defer instanceLock.Close()
-	storage, err := db.Open(databasePath)
+	storage, err := db.Open(databasePath, encryptionKey)
 	if err != nil {
 		return err
 	}
@@ -275,6 +295,35 @@ func runRecoverOperationalToken(arguments []string) error {
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{
 		"status": "recovered", "credential": "operational_token",
 		"environment_token_disabled": true, "correlation_id": correlationID,
+	})
+}
+
+func runEncryptDatabase(arguments []string) error {
+	flags := flag.NewFlagSet("encrypt-database", flag.ContinueOnError)
+	dataDir := flags.String("data-dir", environmentOrDefault("JOLT_DATA_DIR", "./.jolt/data"),
+		"offline node data directory containing a plaintext jolt.db")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	encryptionKey, err := config.ParseEncryptionKey(os.Getenv("JOLT_DB_ENCRYPTION_KEY"))
+	if err != nil {
+		return err
+	}
+	absoluteData, err := filepath.Abs(*dataDir)
+	if err != nil {
+		return err
+	}
+	instanceLock, err := recovery.AcquireLock(absoluteData)
+	if err != nil {
+		return err
+	}
+	defer instanceLock.Close()
+	databasePath := filepath.Join(absoluteData, "jolt.db")
+	if err := database.MigratePlaintext(context.Background(), databasePath, encryptionKey); err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(map[string]any{
+		"status": "encrypted", "database": databasePath,
 	})
 }
 

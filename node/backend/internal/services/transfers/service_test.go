@@ -83,7 +83,7 @@ func newTransferTestNode(t *testing.T, name string) *testNode {
 			t.Fatal(err)
 		}
 	}
-	store, err := db.Open(filepath.Join(dataDir, "jolt.db"))
+	store, err := db.Open(filepath.Join(dataDir, "jolt.db"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}

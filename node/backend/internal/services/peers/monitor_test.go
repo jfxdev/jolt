@@ -17,7 +17,7 @@ import (
 
 func TestHeartbeatRequiresConsecutiveFailuresBeforeOffline(t *testing.T) {
 	root := t.TempDir()
-	store, err := db.Open(filepath.Join(root, "jolt.db"))
+	store, err := db.Open(filepath.Join(root, "jolt.db"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}

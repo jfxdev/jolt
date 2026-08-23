@@ -231,12 +231,27 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &request) {
 		return
 	}
+	now := time.Now().UTC()
+	key := strings.ToLower(strings.TrimSpace(request.Username)) + "|" + clientIP(r)
+
+	if until, err := s.store.LoginLockedUntil(r.Context(), key, now); err != nil {
+		s.fail(w, r, err)
+		return
+	} else if !until.IsZero() {
+		w.Header().Set("Retry-After", strconv.Itoa(int(time.Until(until).Seconds())+1))
+		s.store.Audit(r.Context(), "", "login", "control-tower", "locked", r.Header.Get("X-Correlation-ID"))
+		writeError(w, r, http.StatusTooManyRequests, "too_many_attempts", "Muitas tentativas. Tente novamente mais tarde.")
+		return
+	}
+
 	user, err := s.store.UserByUsername(r.Context(), strings.TrimSpace(request.Username))
 	if err != nil || !user.Enabled || !security.VerifyPassword(user.PasswordHash, request.Password) {
+		_ = s.store.RegisterLoginFailure(r.Context(), key, now)
 		s.store.Audit(r.Context(), "", "login", "control-tower", "denied", r.Header.Get("X-Correlation-ID"))
 		writeError(w, r, http.StatusUnauthorized, "invalid_credentials", "Usuário ou senha inválidos.")
 		return
 	}
+	_ = s.store.ClearLoginFailures(r.Context(), key)
 	token, digest, err := security.RandomToken()
 	if err != nil {
 		s.fail(w, r, err)
@@ -253,6 +268,18 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	})
 	s.store.Audit(r.Context(), user.ID, "login", "control-tower", "allowed", r.Header.Get("X-Correlation-ID"))
 	writeJSON(w, http.StatusOK, map[string]any{"user": publicUser(user)})
+}
+
+// clientIP returns the direct TCP peer address. It deliberately ignores
+// X-Forwarded-For: without a trusted reverse proxy in front of the Control
+// Tower, that header is client-controlled and would let an attacker spoof
+// their way around the login lockout. See docs/REVERSE_PROXY.md.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {

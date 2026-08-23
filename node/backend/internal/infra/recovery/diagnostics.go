@@ -13,6 +13,7 @@ import (
 	"time"
 
 	joltcrypto "github.com/jfxdev/jolt/backend/internal/infra/crypto"
+	sqlcipherdb "github.com/jfxdev/jolt/backend/internal/infra/database"
 	"golang.org/x/sys/unix"
 )
 
@@ -80,7 +81,7 @@ type expectedPartial struct {
 }
 
 func DiagnoseRestore(ctx context.Context, dataDir, keysDir, expectedNodeID,
-	expectedFingerprint string) (RestoreDiagnosticReport, error) {
+	expectedFingerprint string, encryptionKey []byte) (RestoreDiagnosticReport, error) {
 	report := RestoreDiagnosticReport{
 		Version: 1, Kind: "jolt_node_restore", CheckedAt: time.Now().UTC(),
 		Status: "ok", Mounts: []MountDiagnostic{}, Partials: []PartialDiagnostic{},
@@ -108,7 +109,7 @@ func DiagnoseRestore(ctx context.Context, dataDir, keysDir, expectedNodeID,
 		}
 	}
 
-	database, err := openDiagnosticDatabase(filepath.Join(dataDir, "jolt.db"))
+	database, err := openDiagnosticDatabase(filepath.Join(dataDir, "jolt.db"), encryptionKey)
 	if err != nil {
 		report.add("error", "database_unavailable", "database", "jolt.db", err.Error())
 		report.finalize()
@@ -245,7 +246,7 @@ func DiagnoseRestore(ctx context.Context, dataDir, keysDir, expectedNodeID,
 	return report, nil
 }
 
-func openDiagnosticDatabase(path string) (*sql.DB, error) {
+func openDiagnosticDatabase(path string, encryptionKey []byte) (*sql.DB, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
@@ -253,11 +254,10 @@ func openDiagnosticDatabase(path string) (*sql.DB, error) {
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("database is not a regular file")
 	}
-	database, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	database, err := sqlcipherdb.Open(path, encryptionKey, true)
 	if err != nil {
 		return nil, err
 	}
-	database.SetMaxOpenConns(1)
 	if err := database.Ping(); err != nil {
 		database.Close()
 		return nil, err

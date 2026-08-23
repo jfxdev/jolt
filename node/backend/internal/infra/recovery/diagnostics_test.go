@@ -27,7 +27,7 @@ func TestNodeRestoreDiagnosticsValidateIdentityMountGrantJobAndPartial(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	storage, err := db.Open(filepath.Join(dataDir, "jolt.db"))
+	storage, err := db.Open(filepath.Join(dataDir, "jolt.db"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestNodeRestoreDiagnosticsValidateIdentityMountGrantJobAndPartial(t *testin
 	}
 
 	report, err := recovery.DiagnoseRestore(context.Background(), dataDir, keysDir,
-		identity.NodeID, identity.Fingerprint)
+		identity.NodeID, identity.Fingerprint, make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestNodeRestoreDiagnosticsReportBlockingDivergence(t *testing.T) {
 	if _, err := joltcrypto.LoadOrCreate(keysDir); err != nil {
 		t.Fatal(err)
 	}
-	storage, err := db.Open(filepath.Join(dataDir, "jolt.db"))
+	storage, err := db.Open(filepath.Join(dataDir, "jolt.db"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestNodeRestoreDiagnosticsReportBlockingDivergence(t *testing.T) {
 		t.Fatal(err)
 	}
 	report, err := recovery.DiagnoseRestore(context.Background(), dataDir, keysDir,
-		"wrong-node-id", "WRONG:FINGERPRINT")
+		"wrong-node-id", "WRONG:FINGERPRINT", make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}

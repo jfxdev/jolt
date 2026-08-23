@@ -78,14 +78,21 @@ Two products, one boundary:
 
 ## Start both services
 
-Create a `.env` file or export three secrets:
+Create a `.env` file or export four secrets:
 
 ```sh
 export CONTROL_TOWER_TOKEN='replace-with-a-long-random-node-token'
 export CONTROL_TOWER_ADMIN_PASSWORD='replace-with-a-long-admin-password'
 export CONTROL_TOWER_DB_ENCRYPTION_KEY='replace-with-at-least-32-random-characters'
+export JOLT_DB_ENCRYPTION_KEY='replace-with-at-least-32-random-characters'
 docker compose up --build
 ```
+
+`JOLT_DB_ENCRYPTION_KEY` encrypts the node's own SQLite database at rest
+(SQLCipher) and is required — the node refuses to start without it. Accepts
+either a base64-encoded 32-byte key or a passphrase of at least 32
+characters. For an existing plaintext `jolt.db`, migrate it offline first
+with `jolt-node encrypt-database --data-dir <dir>` (instance must be stopped).
 
 Open `http://localhost:8090`, sign in as `admin`, and connect the example node:
 
@@ -205,8 +212,14 @@ Run it without Docker:
 
 ```sh
 cd node
-CONTROL_TOWER_TOKEN=development-token go run ./backend/cmd/jolt-node
+CGO_ENABLED=1 \
+CONTROL_TOWER_TOKEN=development-token \
+JOLT_DB_ENCRYPTION_KEY=development-node-encryption-key-32char \
+go run ./backend/cmd/jolt-node
 ```
+
+Legacy plaintext node databases must be migrated offline before boot with
+`jolt-node encrypt-database --data-dir <dir>` (instance must be stopped).
 
 Run the opt-in load and fault-injection acceptance profile:
 

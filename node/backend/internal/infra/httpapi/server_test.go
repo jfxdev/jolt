@@ -35,7 +35,7 @@ func testHandler(t *testing.T) http.Handler {
 
 func testComponents(t *testing.T) (http.Handler, *jobs.Service) {
 	t.Helper()
-	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestTextEditorContentIsLimitedTo512KB(t *testing.T) {
 }
 
 func TestRevokePeerAPIBlocksTrust(t *testing.T) {
-	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestRevokePeerAPIBlocksTrust(t *testing.T) {
 }
 
 func TestOperationalTokenRotationHasSafeTwoPhaseCutover(t *testing.T) {
-	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestOperationalTokenRotationHasSafeTwoPhaseCutover(t *testing.T) {
 
 func TestMTLSCertificateLifecycleAPI(t *testing.T) {
 	dataDir, keysDir := t.TempDir(), t.TempDir()
-	store, err := db.Open(filepath.Join(dataDir, "test.db"))
+	store, err := db.Open(filepath.Join(dataDir, "test.db"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}

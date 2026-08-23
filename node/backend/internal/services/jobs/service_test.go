@@ -36,7 +36,7 @@ func (stalledRemoteExecutor) CleanupDirectoryPull(context.Context, entities.Job)
 func testService(t *testing.T) (*Service, *filesystem.Service, string) {
 	t.Helper()
 	root := t.TempDir()
-	store, err := db.Open(filepath.Join(root, "jolt.db"))
+	store, err := db.Open(filepath.Join(root, "jolt.db"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}

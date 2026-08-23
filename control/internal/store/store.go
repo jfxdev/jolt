@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"time"
 
@@ -242,6 +243,10 @@ CREATE TABLE IF NOT EXISTS audit_events (
 );
 CREATE TABLE IF NOT EXISTS metadata (
  key TEXT PRIMARY KEY, value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS login_attempts (
+ key TEXT PRIMARY KEY, failures INTEGER NOT NULL DEFAULT 0,
+ locked_until TEXT, updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS connections (
  request_id TEXT PRIMARY KEY, invite_id TEXT NOT NULL UNIQUE,
@@ -1627,6 +1632,75 @@ func (s *Store) DeleteNode(ctx context.Context, id string) error {
 		return ErrNotFound
 	}
 	return tx.Commit()
+}
+
+// LoginLockedUntil returns the instant a login key is locked until, or the
+// zero time if the key is not currently locked.
+func (s *Store) LoginLockedUntil(ctx context.Context, key string, now time.Time) (time.Time, error) {
+	var lockedUntil sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT locked_until FROM login_attempts WHERE key=?`, key).Scan(&lockedUntil)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, nil
+	}
+	if err != nil || !lockedUntil.Valid {
+		return time.Time{}, err
+	}
+	t, err := time.Parse(time.RFC3339Nano, lockedUntil.String)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if t.After(now) {
+		return t, nil
+	}
+	return time.Time{}, nil
+}
+
+// RegisterLoginFailure increments the failure counter for key and applies an
+// exponential lockout once the failure count reaches the threshold.
+func (s *Store) RegisterLoginFailure(ctx context.Context, key string, now time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var failures int
+	_ = tx.QueryRowContext(ctx, `SELECT failures FROM login_attempts WHERE key=?`, key).Scan(&failures)
+	failures++
+	var lockedUntil sql.NullString
+	if failures >= 5 {
+		shifted := 30 << uint(failures-5)
+		backoff := time.Duration(math.Min(float64(shifted), 900)) * time.Second
+		lockedUntil = sql.NullString{String: now.Add(backoff).Format(time.RFC3339Nano), Valid: true}
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO login_attempts(key,failures,locked_until,updated_at) VALUES(?,?,?,?)
+ON CONFLICT(key) DO UPDATE SET failures=excluded.failures,
+	locked_until=excluded.locked_until, updated_at=excluded.updated_at`,
+		key, failures, lockedUntil, now.Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ClearLoginFailures resets the failure counter and lockout for key.
+func (s *Store) ClearLoginFailures(ctx context.Context, key string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM login_attempts WHERE key=?`, key)
+	return err
+}
+
+// PurgeStaleLoginAttempts deletes login_attempts rows that have not been
+// touched since before the given cutoff, so the table does not grow
+// unbounded. Safe to call with any cutoff: the exponential backoff in
+// RegisterLoginFailure caps well under an hour, so any reasonable retention
+// window outlives an active lockout.
+func (s *Store) PurgeStaleLoginAttempts(ctx context.Context, before time.Time) (int64, error) {
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM login_attempts WHERE updated_at < ?`, before.Format(time.RFC3339Nano))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 func (s *Store) Audit(ctx context.Context, actorID, action, resource, result, correlationID string) {

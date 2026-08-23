@@ -674,3 +674,35 @@ WHERE actor_type='recovery' AND action='recover_node_token' AND correlation_id='
 		t.Fatalf("missing node recovery error=%v, want ErrNotFound", err)
 	}
 }
+
+func TestPurgeStaleLoginAttemptsKeepsRecentRows(t *testing.T) {
+	storage, err := Open(filepath.Join(t.TempDir(), "control.db"), testDatabaseKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if err := storage.RegisterLoginFailure(ctx, "stale-user|127.0.0.1", now.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.RegisterLoginFailure(ctx, "fresh-user|127.0.0.1", now); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := storage.PurgeStaleLoginAttempts(ctx, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted=%d, want 1", deleted)
+	}
+	var remaining int
+	if err := storage.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM login_attempts`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 1 {
+		t.Fatalf("remaining rows=%d, want 1", remaining)
+	}
+}
