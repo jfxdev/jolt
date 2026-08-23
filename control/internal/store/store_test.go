@@ -680,7 +680,11 @@ func TestPurgeStaleLoginAttemptsKeepsRecentRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer storage.Close()
+	defer func() {
+		if err := storage.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 	ctx := context.Background()
 	now := time.Now().UTC()
 
@@ -704,5 +708,36 @@ func TestPurgeStaleLoginAttemptsKeepsRecentRows(t *testing.T) {
 	}
 	if remaining != 1 {
 		t.Fatalf("remaining rows=%d, want 1", remaining)
+	}
+}
+
+func TestRegisterLoginFailureStaysThrottledAtHighFailureCounts(t *testing.T) {
+	storage, err := Open(filepath.Join(t.TempDir(), "control.db"), testDatabaseKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := storage.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	key := "attacker|127.0.0.1"
+
+	for i := 0; i < 64; i++ {
+		if err := storage.RegisterLoginFailure(ctx, key, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	until, err := storage.LoginLockedUntil(ctx, key, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !until.After(now) {
+		t.Fatalf("expected lockout to remain active at 64 failures, got locked_until=%v", until)
+	}
+	if remaining := until.Sub(now); remaining > 900*time.Second {
+		t.Fatalf("lockout duration=%v exceeds 900s cap", remaining)
 	}
 }

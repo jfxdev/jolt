@@ -1669,7 +1669,12 @@ func (s *Store) RegisterLoginFailure(ctx context.Context, key string, now time.T
 	failures++
 	var lockedUntil sql.NullString
 	if failures >= 5 {
-		shifted := 30 << uint(failures-5)
+		const maxShiftExponent = 5 // 30<<5 = 960s already exceeds the 900s cap.
+		exponent := failures - 5
+		if exponent > maxShiftExponent {
+			exponent = maxShiftExponent
+		}
+		shifted := 30 << uint(exponent)
 		backoff := time.Duration(math.Min(float64(shifted), 900)) * time.Second
 		lockedUntil = sql.NullString{String: now.Add(backoff).Format(time.RFC3339Nano), Valid: true}
 	}

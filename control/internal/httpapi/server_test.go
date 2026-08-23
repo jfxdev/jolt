@@ -1086,6 +1086,17 @@ func TestLoginLocksOutAfterRepeatedFailuresAndClearsOnSuccess(t *testing.T) {
 			t.Fatalf("attempt %d status=%d body=%s", i, response.Code, response.Body.String())
 		}
 	}
+
+	success := attempt("correct-horse-battery-staple")
+	if success.Code != http.StatusOK {
+		t.Fatalf("authenticated attempt before lockout status=%d body=%s", success.Code, success.Body.String())
+	}
+
+	for i := 0; i < 4; i++ {
+		if response := attempt("wrong-password"); response.Code != http.StatusUnauthorized {
+			t.Fatalf("post-success attempt %d status=%d body=%s", i, response.Code, response.Body.String())
+		}
+	}
 	locked := attempt("wrong-password")
 	if locked.Code != http.StatusUnauthorized {
 		t.Fatalf("5th failure status=%d body=%s", locked.Code, locked.Body.String())

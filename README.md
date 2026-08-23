@@ -91,8 +91,12 @@ docker compose up --build
 `JOLT_DB_ENCRYPTION_KEY` encrypts the node's own SQLite database at rest
 (SQLCipher) and is required — the node refuses to start without it. Accepts
 either a base64-encoded 32-byte key or a passphrase of at least 32
-characters. For an existing plaintext `jolt.db`, migrate it offline first
-with `jolt-node encrypt-database --data-dir <dir>` (instance must be stopped).
+characters. For an existing plaintext `jolt.db`, stop the stack (`docker
+compose stop jolt-node`) and migrate it offline first with:
+
+```sh
+docker compose run --rm jolt-node encrypt-database --data-dir /var/lib/jolt
+```
 
 Open `http://localhost:8090`, sign in as `admin`, and connect the example node:
 
@@ -218,8 +222,13 @@ JOLT_DB_ENCRYPTION_KEY=development-node-encryption-key-32char \
 go run ./backend/cmd/jolt-node
 ```
 
-Legacy plaintext node databases must be migrated offline before boot with
-`jolt-node encrypt-database --data-dir <dir>` (instance must be stopped).
+Legacy plaintext node databases must be migrated offline before boot
+(instance must be stopped) with:
+
+```sh
+JOLT_DB_ENCRYPTION_KEY=development-node-encryption-key-32char \
+jolt-node encrypt-database --data-dir <dir>
+```
 
 Run the opt-in load and fault-injection acceptance profile:
 

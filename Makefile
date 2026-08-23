@@ -36,7 +36,7 @@ acceptance-full:
 	cd node && CGO_ENABLED=1 JOLT_ACCEPTANCE_PROFILE=full go test -tags=acceptance -run '^TestAcceptance' -timeout 4h ./backend/internal/services/jobs
 
 node:
-	cd node && CGO_ENABLED=1 CONTROL_TOWER_TOKEN=development-token JOLT_DB_ENCRYPTION_KEY="$(NODE_DEV_ENCRYPTION_KEY)" go run ./backend/cmd/jolt-node
+	@cd node && CGO_ENABLED=1 CONTROL_TOWER_TOKEN=development-token JOLT_DB_ENCRYPTION_KEY="$(NODE_DEV_ENCRYPTION_KEY)" go run ./backend/cmd/jolt-node
 
 nodes:
 	@echo "Starting nodeA on http://127.0.0.1:$(NODE_A_API_PORT)"

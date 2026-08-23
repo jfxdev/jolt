@@ -246,12 +246,21 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 
 	user, err := s.store.UserByUsername(r.Context(), strings.TrimSpace(request.Username))
 	if err != nil || !user.Enabled || !security.VerifyPassword(user.PasswordHash, request.Password) {
-		_ = s.store.RegisterLoginFailure(r.Context(), key, now)
+		registerCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		registerErr := s.store.RegisterLoginFailure(registerCtx, key, now)
+		cancel()
+		if registerErr != nil {
+			s.fail(w, r, registerErr)
+			return
+		}
 		s.store.Audit(r.Context(), "", "login", "control-tower", "denied", r.Header.Get("X-Correlation-ID"))
 		writeError(w, r, http.StatusUnauthorized, "invalid_credentials", "Usuário ou senha inválidos.")
 		return
 	}
-	_ = s.store.ClearLoginFailures(r.Context(), key)
+	if err := s.store.ClearLoginFailures(r.Context(), key); err != nil {
+		s.fail(w, r, err)
+		return
+	}
 	token, digest, err := security.RandomToken()
 	if err != nil {
 		s.fail(w, r, err)
