@@ -226,8 +226,9 @@ Legacy plaintext node databases must be migrated offline before boot
 (instance must be stopped) with:
 
 ```sh
+cd node
 JOLT_DB_ENCRYPTION_KEY=development-node-encryption-key-32char \
-jolt-node encrypt-database --data-dir <dir>
+go run ./backend/cmd/jolt-node encrypt-database --data-dir <dir>
 ```
 
 Run the opt-in load and fault-injection acceptance profile:
