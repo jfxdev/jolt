@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"net/url"
 	"os"
@@ -18,6 +20,7 @@ type Config struct {
 	DataDir                  string
 	KeysDir                  string
 	ControlTowerToken        string
+	EncryptionKey            []byte
 	PublicHealth             bool
 	ShutdownTimeout          time.Duration
 	MaxConcurrentJobs        int
@@ -65,7 +68,11 @@ func Load() (Config, error) {
 	if c.ControlTowerToken == "" {
 		return Config{}, errors.New("CONTROL_TOWER_TOKEN is required")
 	}
-	var err error
+	encryptionKey, err := ParseEncryptionKey(os.Getenv("JOLT_DB_ENCRYPTION_KEY"))
+	if err != nil {
+		return Config{}, err
+	}
+	c.EncryptionKey = encryptionKey
 	if c.DataDir, err = filepath.Abs(c.DataDir); err != nil {
 		return Config{}, err
 	}
@@ -82,6 +89,21 @@ func Load() (Config, error) {
 		}
 	}
 	return c, nil
+}
+
+func ParseEncryptionKey(rawKey string) ([]byte, error) {
+	rawKey = strings.TrimSpace(rawKey)
+	if rawKey == "" {
+		return nil, errors.New("JOLT_DB_ENCRYPTION_KEY is required")
+	}
+	if decoded, err := base64.StdEncoding.DecodeString(rawKey); err == nil && len(decoded) == 32 {
+		return decoded, nil
+	}
+	if len(rawKey) < 32 {
+		return nil, errors.New("JOLT_DB_ENCRYPTION_KEY must be a base64 32-byte key or at least 32 characters")
+	}
+	sum := sha256.Sum256([]byte(rawKey))
+	return sum[:], nil
 }
 
 func nonNegativeInt64Value(key string, fallback, maximum int64) int64 {

@@ -26,7 +26,7 @@ func TestNodeSnapshotContainsConsistentDatabaseKeysAndManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	storage, err := db.Open(filepath.Join(dataDir, "jolt.db"))
+	storage, err := db.Open(filepath.Join(dataDir, "jolt.db"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestNodeSnapshotContainsConsistentDatabaseKeysAndManifest(t *testing.T) {
 	}
 
 	output := filepath.Join(root, "backups", "node.tar.gz")
-	manifest, err := recovery.CreateSnapshot(context.Background(), dataDir, keysDir, output)
+	manifest, err := recovery.CreateSnapshot(context.Background(), dataDir, keysDir, output, make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestNodeSnapshotRefusesActiveInstanceAndExistingOutput(t *testing.T) {
 	if _, err := joltcrypto.LoadOrCreate(keysDir); err != nil {
 		t.Fatal(err)
 	}
-	storage, err := db.Open(filepath.Join(dataDir, "jolt.db"))
+	storage, err := db.Open(filepath.Join(dataDir, "jolt.db"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestNodeSnapshotRefusesActiveInstanceAndExistingOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := filepath.Join(root, "node.tar.gz")
-	if _, err := recovery.CreateSnapshot(context.Background(), dataDir, keysDir, output); !errors.Is(err, recovery.ErrInstanceActive) {
+	if _, err := recovery.CreateSnapshot(context.Background(), dataDir, keysDir, output, make([]byte, 32)); !errors.Is(err, recovery.ErrInstanceActive) {
 		t.Fatalf("active instance error=%v", err)
 	}
 	if err := lock.Close(); err != nil {
@@ -101,7 +101,7 @@ func TestNodeSnapshotRefusesActiveInstanceAndExistingOutput(t *testing.T) {
 	if err := os.WriteFile(output, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := recovery.CreateSnapshot(context.Background(), dataDir, keysDir, output); err == nil {
+	if _, err := recovery.CreateSnapshot(context.Background(), dataDir, keysDir, output, make([]byte, 32)); err == nil {
 		t.Fatal("existing output was overwritten")
 	}
 }

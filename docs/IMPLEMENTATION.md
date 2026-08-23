@@ -107,7 +107,7 @@ Status legend:
 ### Repository and deployment boundaries
 
 - `node/` builds an API-only node image.
-- `control/` builds the separate Control Tower Go backend and Vue 3 frontend.
+- `control/` builds the separate Control Tower Go backend and React 19 frontend.
 - The root Compose file connects both products without merging persistence.
 - Nodes remain the source of truth for identity, mounts, peers, grants, files,
   jobs, job items, checkpoints, and transfer history.
@@ -134,7 +134,8 @@ Status legend:
 
 ### Control Tower operational slice
 
-- Separate Go service and mobile-first Vue 3 interface.
+- Separate Go service and mobile-first React 19 (Radix/shadcn, Tailwind,
+  react-router 7) interface.
 - First-boot admin creation with Argon2id password hashing.
 - Persistent, revocable, HTTP-only, SameSite browser sessions.
 - Admin-only user creation, editing, enable/disable, password reset, and deletion.

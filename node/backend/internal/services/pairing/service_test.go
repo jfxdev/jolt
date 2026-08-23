@@ -13,7 +13,7 @@ import (
 
 func testService(t *testing.T, nodeID string) *Service {
 	t.Helper()
-	storage, err := db.Open(filepath.Join(t.TempDir(), "pairing.db"))
+	storage, err := db.Open(filepath.Join(t.TempDir(), "pairing.db"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}

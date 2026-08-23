@@ -674,3 +674,70 @@ WHERE actor_type='recovery' AND action='recover_node_token' AND correlation_id='
 		t.Fatalf("missing node recovery error=%v, want ErrNotFound", err)
 	}
 }
+
+func TestPurgeStaleLoginAttemptsKeepsRecentRows(t *testing.T) {
+	storage, err := Open(filepath.Join(t.TempDir(), "control.db"), testDatabaseKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := storage.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if err := storage.RegisterLoginFailure(ctx, "stale-user|127.0.0.1", now.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.RegisterLoginFailure(ctx, "fresh-user|127.0.0.1", now); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := storage.PurgeStaleLoginAttempts(ctx, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted=%d, want 1", deleted)
+	}
+	var remaining int
+	if err := storage.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM login_attempts`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 1 {
+		t.Fatalf("remaining rows=%d, want 1", remaining)
+	}
+}
+
+func TestRegisterLoginFailureStaysThrottledAtHighFailureCounts(t *testing.T) {
+	storage, err := Open(filepath.Join(t.TempDir(), "control.db"), testDatabaseKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := storage.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	key := "attacker|127.0.0.1"
+
+	for i := 0; i < 64; i++ {
+		if err := storage.RegisterLoginFailure(ctx, key, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	until, err := storage.LoginLockedUntil(ctx, key, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !until.After(now) {
+		t.Fatalf("expected lockout to remain active at 64 failures, got locked_until=%v", until)
+	}
+	if remaining := until.Sub(now); remaining > 900*time.Second {
+		t.Fatalf("lockout duration=%v exceeds 900s cap", remaining)
+	}
+}

@@ -2,17 +2,18 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
+	"github.com/jfxdev/jolt/backend/internal/infra/database"
 )
 
 func TestMigrationUpgradesLegacyJobsAndAddsEvents(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
-	legacy, err := sql.Open("sqlite", path)
+	key := make([]byte, 32)
+	legacy, err := database.Open(path, key, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +38,7 @@ CREATE TABLE job_events (
 		t.Fatal(err)
 	}
 
-	store, err := Open(path)
+	store, err := Open(path, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +78,7 @@ CREATE TABLE job_events (
 }
 
 func TestRecoverOperationalTokenReplacesStagedAndEnvironmentCredentials(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "jolt.db"))
+	store, err := Open(filepath.Join(t.TempDir(), "jolt.db"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}

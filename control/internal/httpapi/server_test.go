@@ -1063,3 +1063,49 @@ func TestAdminRoleAPIAndUserAssignment(t *testing.T) {
 		t.Fatalf("role assignment survived deletion: ids=%v err=%v", roleIDs, err)
 	}
 }
+
+func TestLoginLocksOutAfterRepeatedFailuresAndClearsOnSuccess(t *testing.T) {
+	hash, err := security.HashPassword("correct-horse-battery-staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, _, _ := testUserHandler(t, store.User{
+		ID: "admin-1", Username: "admin", Role: "admin", Enabled: true, PasswordHash: hash,
+	})
+	attempt := func(password string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]string{"username": "admin", "password": password})
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/control-tower/auth/login", bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+
+	for i := 0; i < 4; i++ {
+		if response := attempt("wrong-password"); response.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d status=%d body=%s", i, response.Code, response.Body.String())
+		}
+	}
+
+	success := attempt("correct-horse-battery-staple")
+	if success.Code != http.StatusOK {
+		t.Fatalf("authenticated attempt before lockout status=%d body=%s", success.Code, success.Body.String())
+	}
+
+	for i := 0; i < 4; i++ {
+		if response := attempt("wrong-password"); response.Code != http.StatusUnauthorized {
+			t.Fatalf("post-success attempt %d status=%d body=%s", i, response.Code, response.Body.String())
+		}
+	}
+	locked := attempt("wrong-password")
+	if locked.Code != http.StatusUnauthorized {
+		t.Fatalf("5th failure status=%d body=%s", locked.Code, locked.Body.String())
+	}
+	blocked := attempt("correct-horse-battery-staple")
+	if blocked.Code != http.StatusTooManyRequests {
+		t.Fatalf("locked-out attempt with correct password status=%d body=%s", blocked.Code, blocked.Body.String())
+	}
+	if blocked.Header().Get("Retry-After") == "" {
+		t.Fatal("expected Retry-After header on lockout response")
+	}
+}

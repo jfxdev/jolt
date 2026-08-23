@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
-	_ "modernc.org/sqlite"
+	"github.com/jfxdev/jolt/backend/internal/infra/database"
 )
 
 var (
@@ -19,19 +19,19 @@ var (
 
 type Store struct{ db *sql.DB }
 
-func Open(path string) (*Store, error) {
-	database, err := sql.Open("sqlite", path)
+func Open(path string, key []byte) (*Store, error) {
+	conn, err := database.Open(path, key, false)
 	if err != nil {
 		return nil, err
 	}
-	database.SetMaxOpenConns(1)
-	if _, err := database.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;`); err != nil {
-		database.Close()
+	conn.SetMaxOpenConns(1)
+	if _, err := conn.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;`); err != nil {
+		conn.Close()
 		return nil, err
 	}
-	s := &Store{db: database}
+	s := &Store{db: conn}
 	if err := s.migrate(); err != nil {
-		database.Close()
+		conn.Close()
 		return nil, err
 	}
 	return s, nil

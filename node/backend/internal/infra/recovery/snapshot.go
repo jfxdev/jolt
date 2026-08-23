@@ -5,7 +5,6 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,8 +18,8 @@ import (
 	"time"
 
 	joltcrypto "github.com/jfxdev/jolt/backend/internal/infra/crypto"
+	"github.com/jfxdev/jolt/backend/internal/infra/database"
 	"golang.org/x/sys/unix"
-	_ "modernc.org/sqlite"
 )
 
 var ErrInstanceActive = errors.New("jolt node is running")
@@ -78,7 +77,7 @@ func (l *Lock) Close() error {
 	return closeErr
 }
 
-func CreateSnapshot(ctx context.Context, dataDir, keysDir, output string) (Manifest, error) {
+func CreateSnapshot(ctx context.Context, dataDir, keysDir, output string, key []byte) (Manifest, error) {
 	dataDir, keysDir, output = filepath.Clean(dataDir), filepath.Clean(keysDir), filepath.Clean(output)
 	if dataDir == keysDir || inside(dataDir, keysDir) || inside(keysDir, dataDir) {
 		return Manifest{}, errors.New("data and keys directories must not overlap")
@@ -112,7 +111,7 @@ func CreateSnapshot(ctx context.Context, dataDir, keysDir, output string) (Manif
 	if err := os.MkdirAll(stageData, 0o700); err != nil {
 		return Manifest{}, err
 	}
-	integrity, err := snapshotSQLite(ctx, filepath.Join(dataDir, "jolt.db"), filepath.Join(stageData, "jolt.db"))
+	integrity, err := snapshotSQLite(ctx, filepath.Join(dataDir, "jolt.db"), filepath.Join(stageData, "jolt.db"), key)
 	if err != nil {
 		return Manifest{}, err
 	}
@@ -143,7 +142,11 @@ func CreateSnapshot(ctx context.Context, dataDir, keysDir, output string) (Manif
 	return manifest, nil
 }
 
-func snapshotSQLite(ctx context.Context, source, destination string) (string, error) {
+// snapshotSQLite copies the encrypted node database into an independently
+// encrypted snapshot file. It uses sqlcipher_export rather than VACUUM INTO
+// so the copy stays cipher-protected instead of leaking a plaintext database
+// inside the snapshot archive.
+func snapshotSQLite(ctx context.Context, source, destination string, key []byte) (string, error) {
 	info, err := os.Lstat(source)
 	if err != nil {
 		return "", fmt.Errorf("open database: %w", err)
@@ -151,20 +154,19 @@ func snapshotSQLite(ctx context.Context, source, destination string) (string, er
 	if !info.Mode().IsRegular() {
 		return "", errors.New("database is not a regular file")
 	}
-	database, err := sql.Open("sqlite", "file:"+source+"?mode=ro")
+	sourceDB, err := database.Open(source, key, true)
 	if err != nil {
 		return "", err
 	}
-	defer database.Close()
+	defer sourceDB.Close()
 	var integrity string
-	if err := database.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&integrity); err != nil {
+	if err := sourceDB.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&integrity); err != nil {
 		return "", fmt.Errorf("check database integrity: %w", err)
 	}
 	if integrity != "ok" {
 		return "", fmt.Errorf("database integrity check failed: %s", integrity)
 	}
-	escaped := strings.ReplaceAll(destination, "'", "''")
-	if _, err := database.ExecContext(ctx, "VACUUM INTO '"+escaped+"'"); err != nil {
+	if err := database.ExportEncryptedCopy(ctx, sourceDB, destination, key); err != nil {
 		return "", fmt.Errorf("create consistent database copy: %w", err)
 	}
 	if err := os.Chmod(destination, 0o600); err != nil {

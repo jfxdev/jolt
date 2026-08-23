@@ -20,7 +20,7 @@ func grantTestService(t *testing.T, mountMode string) (*Service, *filesystem.Ser
 
 func grantTestServiceWithRoles(t *testing.T, mountMode, transferMode, issuerRole, inviteeRole string) (*Service, *filesystem.Service, string) {
 	t.Helper()
-	storage, err := db.Open(filepath.Join(t.TempDir(), "grants.db"))
+	storage, err := db.Open(filepath.Join(t.TempDir(), "grants.db"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,6 +7,7 @@ import (
 
 func TestCopyChunkSizeConfiguration(t *testing.T) {
 	t.Setenv("CONTROL_TOWER_TOKEN", "test-token")
+	t.Setenv("JOLT_DB_ENCRYPTION_KEY", "test-encryption-key-at-least-32-chars")
 	t.Setenv("JOLT_DATA_DIR", t.TempDir())
 	t.Setenv("JOLT_KEYS_DIR", t.TempDir())
 	t.Setenv("COPY_CHUNK_SIZE_BYTES", "65536")
@@ -21,6 +22,7 @@ func TestCopyChunkSizeConfiguration(t *testing.T) {
 
 func TestInvalidCopyChunkSizeUsesDefault(t *testing.T) {
 	t.Setenv("CONTROL_TOWER_TOKEN", "test-token")
+	t.Setenv("JOLT_DB_ENCRYPTION_KEY", "test-encryption-key-at-least-32-chars")
 	t.Setenv("JOLT_DATA_DIR", t.TempDir())
 	t.Setenv("JOLT_KEYS_DIR", t.TempDir())
 	t.Setenv("COPY_CHUNK_SIZE_BYTES", "1024")
@@ -35,6 +37,7 @@ func TestInvalidCopyChunkSizeUsesDefault(t *testing.T) {
 
 func TestPeerHeartbeatConfiguration(t *testing.T) {
 	t.Setenv("CONTROL_TOWER_TOKEN", "test-token")
+	t.Setenv("JOLT_DB_ENCRYPTION_KEY", "test-encryption-key-at-least-32-chars")
 	t.Setenv("JOLT_DATA_DIR", t.TempDir())
 	t.Setenv("JOLT_KEYS_DIR", t.TempDir())
 	t.Setenv("MTLS_PUBLIC_ENDPOINT", "https://node.example.test:8443/")
@@ -54,6 +57,7 @@ func TestPeerHeartbeatConfiguration(t *testing.T) {
 
 func TestTransferTimeoutConfiguration(t *testing.T) {
 	t.Setenv("CONTROL_TOWER_TOKEN", "test-token")
+	t.Setenv("JOLT_DB_ENCRYPTION_KEY", "test-encryption-key-at-least-32-chars")
 	t.Setenv("JOLT_DATA_DIR", t.TempDir())
 	t.Setenv("JOLT_KEYS_DIR", t.TempDir())
 	t.Setenv("TRANSFER_CONNECT_TIMEOUT", "3s")
@@ -76,6 +80,7 @@ func TestTransferTimeoutConfiguration(t *testing.T) {
 
 func TestNodeBandwidthConfiguration(t *testing.T) {
 	t.Setenv("CONTROL_TOWER_TOKEN", "test-token")
+	t.Setenv("JOLT_DB_ENCRYPTION_KEY", "test-encryption-key-at-least-32-chars")
 	t.Setenv("JOLT_DATA_DIR", t.TempDir())
 	t.Setenv("JOLT_KEYS_DIR", t.TempDir())
 	t.Setenv("NODE_BANDWIDTH_LIMIT_BYTES_PER_SECOND", "1048576")

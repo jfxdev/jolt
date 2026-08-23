@@ -45,7 +45,7 @@ func (l *parallelProbeLimiter) Wait(ctx context.Context, _ int64) error {
 func newTestService(t *testing.T, mode string) (*Service, string, string) {
 	t.Helper()
 	root := t.TempDir()
-	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +410,7 @@ func TestProtectedInternalDirectoryCannotBecomeMount(t *testing.T) {
 	if err := os.Mkdir(keys, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -23,7 +23,16 @@ import (
 	"github.com/jfxdev/jolt/control/internal/recovery"
 	"github.com/jfxdev/jolt/control/internal/security"
 	"github.com/jfxdev/jolt/control/internal/store"
+	"github.com/jfxdev/jolt/control/internal/sweep"
 )
+
+// loginAttemptRetention is how long a stale (untouched) login_attempts row
+// survives before the sweeper purges it. It comfortably outlives the
+// exponential lockout backoff in Store.RegisterLoginFailure, which caps at
+// 15 minutes, so purging never interrupts an active lockout.
+const loginAttemptRetention = time.Hour
+
+const sweepInterval = 30 * time.Minute
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "snapshot" {
@@ -109,6 +118,16 @@ func main() {
 		logger.Error("bootstrap admin", "error", err)
 		os.Exit(1)
 	}
+	sweepCtx, cancelSweep := context.WithCancel(context.Background())
+	defer cancelSweep()
+	sweepRunner := sweep.New(sweepInterval, logger, sweep.Task{
+		Name: "login_attempts",
+		Run: func(ctx context.Context, now time.Time) (int64, error) {
+			return storage.PurgeStaleLoginAttempts(ctx, now.Add(-loginAttemptRetention))
+		},
+	})
+	go sweepRunner.Start(sweepCtx)
+
 	server := &http.Server{
 		Addr:              cfg.Address,
 		Handler:           httpapi.New(cfg, storage, logger),
@@ -125,6 +144,7 @@ func main() {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	<-signals
+	cancelSweep()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
