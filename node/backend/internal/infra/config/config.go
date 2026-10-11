@@ -15,11 +15,15 @@ import (
 type Config struct {
 	NodeName                 string
 	APIAddress               string
+	APITLSCertFile           string
+	APITLSKeyFile            string
+	APITLSClientCAFile       string
 	MTLSAddress              string
 	MTLSPublicEndpoint       string
 	DataDir                  string
 	KeysDir                  string
 	ControlTowerToken        string
+	MetricsToken             string
 	EncryptionKey            []byte
 	PublicHealth             bool
 	ShutdownTimeout          time.Duration
@@ -37,12 +41,28 @@ type Config struct {
 	PeerHeartbeatInterval    time.Duration
 	PeerHeartbeatTimeout     time.Duration
 	PeerFailureThreshold     int
+	SearchMaxResults         int
+	SearchMaxEntries         int
+	SearchTimeout            time.Duration
+	ArchiveMaxEntries        int
+	ArchiveMaxBytes          int64
+	UploadSessionTTL         time.Duration
+}
+
+// APITLSEnabled reports whether the control API listener must serve TLS. Both
+// the certificate and the key are required: a half-configured pair is a
+// deployment mistake that Load rejects instead of silently serving plaintext.
+func (c Config) APITLSEnabled() bool {
+	return c.APITLSCertFile != "" && c.APITLSKeyFile != ""
 }
 
 func Load() (Config, error) {
 	c := Config{
 		NodeName:                 value("NODE_NAME", "jolt-node"),
 		APIAddress:               value("API_ADDRESS", ":8080"),
+		APITLSCertFile:           value("API_TLS_CERT_FILE", ""),
+		APITLSKeyFile:            value("API_TLS_KEY_FILE", ""),
+		APITLSClientCAFile:       value("API_TLS_CLIENT_CA_FILE", ""),
 		MTLSAddress:              value("MTLS_ADDRESS", ":8443"),
 		MTLSPublicEndpoint:       strings.TrimRight(value("MTLS_PUBLIC_ENDPOINT", ""), "/"),
 		DataDir:                  value("JOLT_DATA_DIR", "./.jolt/data"),
@@ -63,6 +83,16 @@ func Load() (Config, error) {
 		PeerHeartbeatInterval:    durationValue("PEER_HEARTBEAT_INTERVAL", 15*time.Second, time.Second, 10*time.Minute),
 		PeerHeartbeatTimeout:     durationValue("PEER_HEARTBEAT_TIMEOUT", 5*time.Second, time.Second, time.Minute),
 		PeerFailureThreshold:     intValue("PEER_FAILURE_THRESHOLD", 3, 1, 20),
+		SearchMaxResults:         intValue("SEARCH_MAX_RESULTS", 500, 1, 10_000),
+		SearchMaxEntries:         intValue("SEARCH_MAX_ENTRIES", 200_000, 1_000, 5_000_000),
+		SearchTimeout:            durationValue("SEARCH_TIMEOUT", 15*time.Second, time.Second, 5*time.Minute),
+		ArchiveMaxEntries:        intValue("ARCHIVE_MAX_ENTRIES", 50_000, 1, 1_000_000),
+		ArchiveMaxBytes:          int64Value("ARCHIVE_MAX_BYTES", 100<<30, 1<<20, 1<<50),
+		UploadSessionTTL:         durationValue("UPLOAD_SESSION_TTL", 24*time.Hour, time.Minute, 30*24*time.Hour),
+	}
+	c.MetricsToken = strings.TrimSpace(os.Getenv("METRICS_TOKEN"))
+	if c.MetricsToken != "" && len(c.MetricsToken) < 16 {
+		return Config{}, errors.New("METRICS_TOKEN must contain at least 16 characters")
 	}
 	c.ControlTowerToken = strings.TrimSpace(os.Getenv("CONTROL_TOWER_TOKEN"))
 	if c.ControlTowerToken == "" {
@@ -86,6 +116,24 @@ func Load() (Config, error) {
 		endpoint, err := url.Parse(c.MTLSPublicEndpoint)
 		if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" {
 			return Config{}, errors.New("MTLS_PUBLIC_ENDPOINT must be an absolute https URL")
+		}
+	}
+	if (c.APITLSCertFile == "") != (c.APITLSKeyFile == "") {
+		return Config{}, errors.New("API_TLS_CERT_FILE and API_TLS_KEY_FILE must be set together")
+	}
+	if c.APITLSClientCAFile != "" && !c.APITLSEnabled() {
+		return Config{}, errors.New("API_TLS_CLIENT_CA_FILE requires API_TLS_CERT_FILE and API_TLS_KEY_FILE")
+	}
+	for name, path := range map[string]string{
+		"API_TLS_CERT_FILE":      c.APITLSCertFile,
+		"API_TLS_KEY_FILE":       c.APITLSKeyFile,
+		"API_TLS_CLIENT_CA_FILE": c.APITLSClientCAFile,
+	} {
+		if path == "" {
+			continue
+		}
+		if _, err := os.Stat(path); err != nil {
+			return Config{}, errors.New(name + " is unreadable: " + err.Error())
 		}
 	}
 	return c, nil

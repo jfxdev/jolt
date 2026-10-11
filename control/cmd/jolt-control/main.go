@@ -32,6 +32,10 @@ import (
 // 15 minutes, so purging never interrupts an active lockout.
 const loginAttemptRetention = time.Hour
 
+// expiredShareRetention keeps an expired link's row after it stops working, so
+// the audit trail still explains what the link was and who created it.
+const expiredShareRetention = 30 * 24 * time.Hour
+
 const sweepInterval = 30 * time.Minute
 
 func main() {
@@ -125,17 +129,33 @@ func main() {
 		Run: func(ctx context.Context, now time.Time) (int64, error) {
 			return storage.PurgeStaleLoginAttempts(ctx, now.Add(-loginAttemptRetention))
 		},
+	}, sweep.Task{
+		Name: "expired_shares",
+		// Expired links stop serving immediately; this only reclaims the rows,
+		// kept for a grace period so the audit trail outlives the link.
+		Run: func(ctx context.Context, now time.Time) (int64, error) {
+			return storage.PurgeExpiredShares(ctx, now.Add(-expiredShareRetention))
+		},
 	})
 	go sweepRunner.Start(sweepCtx)
 
+	handler, err := httpapi.New(cfg, storage, logger)
+	if err != nil {
+		logger.Error("build control tower handler", "error", err)
+		os.Exit(1)
+	}
 	server := &http.Server{
 		Addr:              cfg.Address,
-		Handler:           httpapi.New(cfg, storage, logger),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 	go func() {
-		logger.Info("jolt control tower started", "address", cfg.Address)
+		logger.Info("jolt control tower started", "address", cfg.Address, "secure_cookies", cfg.SecureCookies)
+		if !cfg.SecureCookies {
+			logger.Warn("CONTROL_TOWER_SECURE_COOKIES is disabled; the session cookie will travel " +
+				"over plaintext HTTP. Enable it once the Control Tower is served over HTTPS")
+		}
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server stopped", "error", err)
 			os.Exit(1)

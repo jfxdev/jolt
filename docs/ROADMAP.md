@@ -1,7 +1,46 @@
 # Roadmap
 
-Última atualização: 2026-08-17. Inclui achados de análise profunda de código
-(seção "Achados de análise profunda").
+Última atualização: 2026-10-11.
+
+## Resolvido em 2026-10-11
+
+Esta rodada fechou os seguintes itens. Detalhes de uso em
+[`docs/SHARING_AND_BROWSING.md`](SHARING_AND_BROWSING.md).
+
+| Item | O que mudou |
+| --- | --- |
+| P1.1 (parcial) | Métricas Prometheus em `/metrics` nos dois serviços, com token dedicado. Tracing segue pendente. |
+| P2.1 | Upload retomável por sessão: `Content-Range`, offset durável por chunk, publicação atômica e varredura de sessões expiradas. |
+| C10 | `CONTROL_TOWER_SECURE_COOKIES` passa a `true` por padrão, com aviso no boot quando desligado. |
+| C9 | Compose com `no-new-privileges`, `cap_drop: ALL`, limite de memória e API do node publicada em loopback por padrão. |
+| F5 | `Content-Disposition` com RFC 5987, preservando nomes acentuados no download. |
+| G3 | Manifesto/cópia e o novo ZIP ignoram symlink com contagem, em vez de falhar o lote inteiro. |
+| H1 | Go 1.26 nas imagens e nos módulos; `x/crypto` 0.58 e `x/sys` 0.49. |
+| E1 / F6 | RBAC por subpath com wildcard recursivo `**`, preservando policies antigas por expansão de compatibilidade. |
+| — | Download de pasta/seleção como ZIP com plano de tamanho prévio. |
+| — | Busca limitada por subárvore (resultados, itens varridos e tempo). |
+| — | Links públicos somente leitura, com senha, expiração, cota e revogação. |
+| — | TLS opcional no listener de API do node, com recarga de certificado e mTLS de cliente opcional. |
+| — | CI no GitHub Actions: build, vet, testes com `-race`, testes do frontend, aceitação rápida, `govulncheck` e build das imagens. |
+
+Pendências conhecidas desta rodada: tracing distribuído (P1.1), limite de
+tamanho de upload e checagem de espaço livre (F2), e `SetMaxOpenConns(1)` no
+SQLite (C5).
+
+---
+
+## Como ler o restante deste documento
+
+> **Atenção.** Tudo a partir daqui é o **registro histórico** da análise de
+> 2026-08-17, preservado com a redação original para que as decisões continuem
+> rastreáveis. As descrições de "problema" e "evidência" descrevem o código
+> **daquela data**, não o atual. Onde a tabela acima marca um item como
+> resolvido, ela prevalece sobre o texto histórico — por exemplo, as seções que
+> afirmam não haver métricas, upload retomável, RBAC recursivo ou cookies
+> seguros por padrão já não refletem o código.
+>
+> Itens ainda abertos estão listados em "Pendências conhecidas" acima e na
+> priorização consolidada ao final.
 
 Este documento consolida os achados de uma análise da plataforma (node +
 Control Tower). Cada item descreve o **problema**, a **evidência** no código e a

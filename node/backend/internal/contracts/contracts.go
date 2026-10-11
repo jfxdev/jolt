@@ -55,4 +55,10 @@ type Store interface {
 	ListTransferGrants(context.Context) ([]entities.TransferPathGrant, error)
 	GetTransferGrant(context.Context, string) (entities.TransferPathGrant, error)
 	DeleteTransferGrant(context.Context, string, string, time.Time) error
+	CreateUploadSession(context.Context, entities.UploadSession) error
+	GetUploadSession(context.Context, string) (entities.UploadSession, error)
+	ListUploadSessions(context.Context, string) ([]entities.UploadSession, error)
+	TouchUploadSession(context.Context, string, time.Time, time.Time) error
+	DeleteUploadSession(context.Context, string) error
+	ExpiredUploadSessions(context.Context, time.Time) ([]entities.UploadSession, error)
 }

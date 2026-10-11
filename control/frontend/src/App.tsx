@@ -13,6 +13,7 @@ import NodeWorkspacePage from "@/pages/NodeWorkspacePage";
 import FileBrowserPage from "@/pages/FileBrowserPage";
 import AccessPage from "@/pages/AccessPage";
 import IdentityPage from "@/pages/IdentityPage";
+import PublicSharePage from "@/pages/PublicSharePage";
 
 function Splash() {
   return (
@@ -35,6 +36,9 @@ function Gate() {
   return (
     <Routes>
       <Route path="/login" element={<LoginRoute />} />
+      {/* Share links are public: they must render without a session and must
+          not be caught by the authenticated gate below. */}
+      <Route path="/s/:token" element={<PublicSharePage />} />
       <Route element={<ProtectedRoute />}>
         <Route element={<AppShell />}>
           <Route index element={<NetworkOverviewPage />} />

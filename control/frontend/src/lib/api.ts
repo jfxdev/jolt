@@ -33,6 +33,18 @@ import type {
 
 interface RequestOptions extends RequestInit {}
 
+/** mountFilesPath builds the proxied base path for one mount's file API. */
+function mountFilesPath(nodeId: string, mountId: string) {
+  return `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/files`;
+}
+
+/** archiveQuery encodes the base path plus each explicitly selected name. */
+function archiveQuery(path: string, names: string[]) {
+  const params = new URLSearchParams({ path });
+  for (const name of names) params.append("name", name);
+  return params.toString();
+}
+
 function withSearch(path: string, query = "") {
   const value = query.trim();
   return value ? `${path}?q=${encodeURIComponent(value)}` : path;
@@ -65,6 +77,18 @@ async function request<T = unknown>(
     ) as ApiError;
     error.code = payload?.error?.code;
     error.status = response.status;
+    error.details = payload?.error?.details;
+    // A resumable upload answers a 409 with the offset it actually holds; the
+    // header is the fallback when the body could not be parsed as JSON.
+    if (error.details?.offset === undefined) {
+      const headerOffset = response.headers.get("X-Jolt-Upload-Offset");
+      if (headerOffset !== null && headerOffset !== "") {
+        const parsed = Number(headerOffset);
+        if (Number.isFinite(parsed)) {
+          error.details = { ...error.details, offset: parsed };
+        }
+      }
+    }
     throw error;
   }
   return payload as T;
@@ -644,6 +668,125 @@ export const api = {
         body: JSON.stringify({}),
       },
     ),
+  search: (
+    nodeId: string,
+    mountId: string,
+    path: string,
+    options: {
+      query?: string;
+      type?: "file" | "directory";
+      extensions?: string;
+      minSize?: number;
+      maxSize?: number;
+      modifiedAfter?: string;
+      modifiedBefore?: string;
+      limit?: number;
+    },
+  ) => {
+    const params = new URLSearchParams({ path });
+    if (options.query) params.set("query", options.query);
+    if (options.type) params.set("type", options.type);
+    if (options.extensions) params.set("extensions", options.extensions);
+    if (options.minSize) params.set("min_size", String(options.minSize));
+    if (options.maxSize) params.set("max_size", String(options.maxSize));
+    if (options.modifiedAfter) params.set("modified_after", options.modifiedAfter);
+    if (options.modifiedBefore) params.set("modified_before", options.modifiedBefore);
+    if (options.limit) params.set("limit", String(options.limit));
+    return request<import("./types").SearchResponse>(
+      `${mountFilesPath(nodeId, mountId)}/search?${params}`,
+    );
+  },
+  archivePlan: (nodeId: string, mountId: string, path: string, names: string[] = []) =>
+    request<import("./types").ArchivePlan>(
+      `${mountFilesPath(nodeId, mountId)}/archive/plan?${archiveQuery(path, names)}`,
+    ),
+  archiveUrl: (nodeId: string, mountId: string, path: string, names: string[] = []) =>
+    `${mountFilesPath(nodeId, mountId)}/archive?${archiveQuery(path, names)}`,
+
+  // --- resumable uploads ---
+  createUpload: (
+    nodeId: string,
+    mountId: string,
+    input: { path: string; size: number; overwrite: boolean; checksum?: string },
+  ) =>
+    request<import("./types").UploadSession>(
+      `${mountFilesPath(nodeId, mountId)}/uploads`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  uploadSessions: (nodeId: string, mountId: string) =>
+    request<{ sessions: import("./types").UploadSession[] }>(
+      `${mountFilesPath(nodeId, mountId)}/uploads`,
+    ),
+  uploadSession: (nodeId: string, mountId: string, uploadId: string) =>
+    request<import("./types").UploadSession>(
+      `${mountFilesPath(nodeId, mountId)}/uploads/${encodeURIComponent(uploadId)}`,
+    ),
+  appendUploadChunk: (
+    nodeId: string,
+    mountId: string,
+    uploadId: string,
+    chunk: Blob,
+    offset: number,
+    total: number,
+  ) =>
+    request<import("./types").UploadSession>(
+      `${mountFilesPath(nodeId, mountId)}/uploads/${encodeURIComponent(uploadId)}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          // The node writes at this offset and refuses anything else, so a
+          // retried chunk can never create a hole.
+          "Content-Range": `bytes ${offset}-${offset + chunk.size - 1}/${total}`,
+        },
+        body: chunk,
+      },
+    ),
+  completeUpload: (nodeId: string, mountId: string, uploadId: string) =>
+    request<{ upload_id: string; destination_path: string; size: number; checksum: string }>(
+      `${mountFilesPath(nodeId, mountId)}/uploads/${encodeURIComponent(uploadId)}/complete`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+  abortUpload: (nodeId: string, mountId: string, uploadId: string) =>
+    request<unknown>(
+      `${mountFilesPath(nodeId, mountId)}/uploads/${encodeURIComponent(uploadId)}`,
+      { method: "DELETE" },
+    ),
+
+  // --- public share links ---
+  shares: () =>
+    request<{ shares: import("./types").Share[] }>("/api/v1/control-tower/shares"),
+  createShare: (input: import("./types").CreateShareInput) =>
+    request<import("./types").CreatedShare>("/api/v1/control-tower/shares", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  revokeShare: (shareId: string) =>
+    request<unknown>(
+      `/api/v1/control-tower/shares/${encodeURIComponent(shareId)}/revoke`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+  deleteShare: (shareId: string) =>
+    request<unknown>(`/api/v1/control-tower/shares/${encodeURIComponent(shareId)}`, {
+      method: "DELETE",
+    }),
+  publicShare: (token: string) =>
+    request<{ share: import("./types").PublicShare }>(
+      `/api/v1/public/shares/${encodeURIComponent(token)}`,
+    ),
+  unlockPublicShare: (token: string, password: string) =>
+    request<{ unlocked: boolean }>(
+      `/api/v1/public/shares/${encodeURIComponent(token)}/unlock`,
+      { method: "POST", body: JSON.stringify({ password }) },
+    ),
+  publicShareList: (token: string, path: string) =>
+    request<ListResponse<import("./types").FileEntry>>(
+      `/api/v1/public/shares/${encodeURIComponent(token)}/list?path=${encodeURIComponent(path)}`,
+    ),
+  publicShareContentUrl: (token: string, path: string) =>
+    `/api/v1/public/shares/${encodeURIComponent(token)}/content?path=${encodeURIComponent(path)}`,
+  publicShareArchiveUrl: (token: string, path: string) =>
+    `/api/v1/public/shares/${encodeURIComponent(token)}/archive?path=${encodeURIComponent(path)}`,
   downloadUrl: (nodeId: string, mountId: string, path: string) =>
     `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/files/content?path=${encodeURIComponent(path)}`,
   previewUrl: (nodeId: string, mountId: string, path: string) =>

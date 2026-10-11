@@ -20,6 +20,11 @@ type Config struct {
 	EncryptionKey          []byte
 	SecureCookies          bool
 	TransferMaxSourcePaths int
+	NodeCAFile             string
+	NodeClientCertFile     string
+	NodeClientKeyFile      string
+	PublicBaseURL          string
+	MetricsToken           string
 }
 
 func Load() (Config, error) {
@@ -29,8 +34,37 @@ func Load() (Config, error) {
 		StaticDir:              value("CONTROL_TOWER_STATIC_DIR", "./frontend/dist"),
 		AdminUsername:          value("CONTROL_TOWER_ADMIN_USERNAME", "admin"),
 		AdminPassword:          os.Getenv("CONTROL_TOWER_ADMIN_PASSWORD"),
-		SecureCookies:          boolValue("CONTROL_TOWER_SECURE_COOKIES", false),
+		SecureCookies:          boolValue("CONTROL_TOWER_SECURE_COOKIES", true),
 		TransferMaxSourcePaths: intValue("TRANSFER_MAX_SOURCE_PATHS", 1000),
+		NodeCAFile:             value("CONTROL_TOWER_NODE_CA_FILE", ""),
+		NodeClientCertFile:     value("CONTROL_TOWER_NODE_CLIENT_CERT_FILE", ""),
+		NodeClientKeyFile:      value("CONTROL_TOWER_NODE_CLIENT_KEY_FILE", ""),
+		PublicBaseURL:          strings.TrimRight(value("CONTROL_TOWER_PUBLIC_BASE_URL", ""), "/"),
+		MetricsToken:           strings.TrimSpace(os.Getenv("CONTROL_TOWER_METRICS_TOKEN")),
+	}
+	if cfg.MetricsToken != "" && len(cfg.MetricsToken) < 16 {
+		return Config{}, errors.New("CONTROL_TOWER_METRICS_TOKEN must contain at least 16 characters")
+	}
+	if (cfg.NodeClientCertFile == "") != (cfg.NodeClientKeyFile == "") {
+		return Config{}, errors.New("CONTROL_TOWER_NODE_CLIENT_CERT_FILE and CONTROL_TOWER_NODE_CLIENT_KEY_FILE must be set together")
+	}
+	for name, path := range map[string]string{
+		"CONTROL_TOWER_NODE_CA_FILE":          cfg.NodeCAFile,
+		"CONTROL_TOWER_NODE_CLIENT_CERT_FILE": cfg.NodeClientCertFile,
+		"CONTROL_TOWER_NODE_CLIENT_KEY_FILE":  cfg.NodeClientKeyFile,
+	} {
+		if path == "" {
+			continue
+		}
+		if _, err := os.Stat(path); err != nil {
+			return Config{}, errors.New(name + " is unreadable: " + err.Error())
+		}
+	}
+	if cfg.PublicBaseURL != "" {
+		parsed, err := url.Parse(cfg.PublicBaseURL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return Config{}, errors.New("CONTROL_TOWER_PUBLIC_BASE_URL must be an absolute http or https URL")
+		}
 	}
 	if len(cfg.AdminPassword) < 12 {
 		return Config{}, errors.New("CONTROL_TOWER_ADMIN_PASSWORD must contain at least 12 characters")

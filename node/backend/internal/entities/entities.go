@@ -231,3 +231,22 @@ type TransferPathGrant struct {
 	CreatedAt        time.Time        `json:"created_at"`
 	UpdatedAt        time.Time        `json:"updated_at"`
 }
+
+// UploadSession tracks a client-driven resumable upload. The partial file on
+// disk is the source of truth for how many bytes arrived; this row records
+// what the upload is for so it survives a node restart and can be resumed or
+// swept.
+type UploadSession struct {
+	ID            string    `json:"upload_id"`
+	MountID       string    `json:"mount_id"`
+	Destination   string    `json:"destination_path"`
+	Size          int64     `json:"size"`
+	Offset        int64     `json:"offset"`
+	Overwrite     bool      `json:"overwrite"`
+	Checksum      string    `json:"checksum,omitempty"`
+	ChunkSize     int64     `json:"chunk_size"`
+	CorrelationID string    `json:"correlation_id,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	ExpiresAt     time.Time `json:"expires_at"`
+}

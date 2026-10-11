@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,6 +25,7 @@ import (
 	"time"
 
 	"github.com/jfxdev/jolt/control/internal/config"
+	"github.com/jfxdev/jolt/control/internal/metrics"
 	"github.com/jfxdev/jolt/control/internal/rbac"
 	"github.com/jfxdev/jolt/control/internal/security"
 	"github.com/jfxdev/jolt/control/internal/store"
@@ -39,14 +42,64 @@ const (
 )
 
 type Server struct {
-	config config.Config
-	store  *store.Store
-	client *http.Client
-	log    *slog.Logger
+	config   config.Config
+	store    *store.Store
+	client   *http.Client
+	registry *metrics.Registry
+	log      *slog.Logger
 }
 
-func New(cfg config.Config, storage *store.Store, logger *slog.Logger) http.Handler {
-	return newHandler(cfg, storage, logger, nil)
+// New builds the Control Tower handler. It fails when the configured node TLS
+// material cannot be loaded: a node registered as https:// would otherwise
+// fail every call with an opaque handshake error.
+func New(cfg config.Config, storage *store.Store, logger *slog.Logger) (http.Handler, error) {
+	transport := &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}
+	tlsConfig, err := nodeTLSConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	transport.TLSClientConfig = tlsConfig
+	return newHandler(cfg, storage, logger, &http.Client{Transport: transport}), nil
+}
+
+// nodeTLSConfig trusts an extra CA bundle for node endpoints, so a homelab or
+// internal CA works without disabling verification, and presents a client
+// certificate when the node requires mutual TLS. With neither configured the
+// system trust store applies unchanged.
+func nodeTLSConfig(cfg config.Config) (*tls.Config, error) {
+	if cfg.NodeCAFile == "" && cfg.NodeClientCertFile == "" {
+		return nil, nil
+	}
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+	if cfg.NodeCAFile != "" {
+		pem, err := os.ReadFile(cfg.NodeCAFile)
+		if err != nil {
+			return nil, err
+		}
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, errors.New("CONTROL_TOWER_NODE_CA_FILE contains no usable certificate")
+		}
+		tlsConfig.RootCAs = pool
+	}
+	if cfg.NodeClientCertFile != "" {
+		pair, err := tls.LoadX509KeyPair(cfg.NodeClientCertFile, cfg.NodeClientKeyFile)
+		if err != nil {
+			return nil, err
+		}
+		tlsConfig.Certificates = []tls.Certificate{pair}
+	}
+	return tlsConfig, nil
 }
 
 func newHandler(cfg config.Config, storage *store.Store, logger *slog.Logger, client *http.Client) http.Handler {
@@ -60,14 +113,20 @@ func newHandler(cfg config.Config, storage *store.Store, logger *slog.Logger, cl
 			ExpectContinueTimeout: time.Second,
 		}}
 	}
+	registry := metrics.NewRegistry()
+	registerControlMetrics(registry)
 	s := &Server{
-		config: cfg,
-		store:  storage,
-		client: client,
-		log:    logger,
+		config:   cfg,
+		store:    storage,
+		client:   client,
+		registry: registry,
+		log:      logger,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
+	if cfg.MetricsToken != "" {
+		mux.HandleFunc("GET /metrics", s.metricsHandler)
+	}
 	mux.HandleFunc("POST /api/v1/control-tower/auth/login", s.login)
 	mux.Handle("POST /api/v1/control-tower/auth/logout", s.auth(http.HandlerFunc(s.logout)))
 	mux.Handle("GET /api/v1/control-tower/auth/me", s.auth(http.HandlerFunc(s.me)))
@@ -125,9 +184,20 @@ func newHandler(cfg config.Config, storage *store.Store, logger *slog.Logger, cl
 	mux.Handle("POST /api/v1/nodes/{nodeID}/transfers/targets", s.auth(http.HandlerFunc(s.transferTargets)))
 	mux.Handle("POST /api/v1/nodes/{nodeID}/transfers/plan", s.auth(http.HandlerFunc(s.planLogicalTransfer)))
 	mux.Handle("POST /api/v1/nodes/{nodeID}/transfers", s.auth(http.HandlerFunc(s.createLogicalTransfer)))
+	mux.Handle("GET /api/v1/control-tower/shares", s.auth(http.HandlerFunc(s.listShares)))
+	mux.Handle("POST /api/v1/control-tower/shares", s.auth(http.HandlerFunc(s.createShare)))
+	mux.Handle("POST /api/v1/control-tower/shares/{shareID}/revoke", s.auth(http.HandlerFunc(s.revokeShare)))
+	mux.Handle("DELETE /api/v1/control-tower/shares/{shareID}", s.auth(http.HandlerFunc(s.deleteShare)))
+	// Public share endpoints are deliberately outside s.auth: they carry no
+	// session and are read-only.
+	mux.HandleFunc("GET /api/v1/public/shares/{token}", s.publicShareMetadata)
+	mux.HandleFunc("POST /api/v1/public/shares/{token}/unlock", s.publicShareUnlock)
+	mux.HandleFunc("GET /api/v1/public/shares/{token}/list", s.publicShareList)
+	mux.HandleFunc("GET /api/v1/public/shares/{token}/content", s.publicShareContent)
+	mux.HandleFunc("GET /api/v1/public/shares/{token}/archive", s.publicShareArchive)
 	mux.Handle("/api/v1/nodes/{nodeID}/{resource...}", s.auth(http.HandlerFunc(s.proxyNode)))
 	mux.HandleFunc("/", s.static)
-	return s.recover(s.correlation(s.securityHeaders(s.csrf(mux))))
+	return s.recover(s.correlation(s.securityHeaders(s.instrument(s.csrf(mux)))))
 }
 
 func (s *Server) auth(next http.Handler) http.Handler {
@@ -256,6 +326,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	user, err := s.store.UserByUsername(r.Context(), strings.TrimSpace(request.Username))
 	if err != nil || !user.Enabled || !security.VerifyPassword(user.PasswordHash, request.Password) {
 		registerCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		s.registry.Inc("jolt_control_login_failures_total")
 		registerErr := s.store.RegisterLoginFailure(registerCtx, key, now)
 		cancel()
 		if registerErr != nil {
@@ -284,8 +355,44 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		Name: sessionCookie, Value: token, Path: "/", Expires: expires,
 		HttpOnly: true, Secure: s.config.SecureCookies, SameSite: http.SameSiteStrictMode,
 	})
+	// A Secure cookie is dropped by the browser over plain HTTP unless the
+	// origin is a secure context such as localhost. Silently issuing one makes
+	// login appear to succeed and then fail, so the misconfiguration is
+	// reported instead of guessed at.
+	if s.config.SecureCookies && !requestIsSecureContext(r) {
+		s.log.Error("refusing to issue a Secure session cookie over plaintext HTTP",
+			"host", r.Host,
+			"hint", "serve the Control Tower over HTTPS, or set CONTROL_TOWER_SECURE_COOKIES=false on a trusted network")
+		writeError(w, r, http.StatusMisdirectedRequest, "insecure_transport",
+			"A Control Tower exige HTTPS para manter a sessão. Acesse por HTTPS ou "+
+				"defina CONTROL_TOWER_SECURE_COOKIES=false em uma rede confiável.")
+		return
+	}
+	s.registry.Inc("jolt_control_logins_total")
 	s.store.Audit(r.Context(), user.ID, "login", "control-tower", "allowed", r.Header.Get("X-Correlation-ID"))
 	writeJSON(w, http.StatusOK, map[string]any{"user": publicUser(user)})
+}
+
+// requestIsSecureContext reports whether the browser will accept a Secure
+// cookie for this request. TLS terminated upstream is reported through
+// X-Forwarded-Proto, which is trusted only for this decision: a client that
+// spoofs it merely re-enables a cookie its own browser would then refuse to
+// send, which harms nobody else. Loopback origins are secure contexts by
+// specification, so a local `docker compose up` keeps working over HTTP.
+func requestIsSecureContext(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
+		return true
+	}
+	host := r.Host
+	if parsed, _, err := net.SplitHostPort(r.Host); err == nil {
+		host = parsed
+	}
+	host = strings.ToLower(strings.Trim(host, "[]"))
+	return host == "localhost" || host == "127.0.0.1" || host == "::1" ||
+		strings.HasSuffix(host, ".localhost")
 }
 
 // clientIP returns the direct TCP peer address. It deliberately ignores
@@ -337,7 +444,10 @@ func (s *Server) permissions(w http.ResponseWriter, r *http.Request) {
 	capabilities := []string{"read", "list", "create", "update", "delete", "write", "execute", "sudo"}
 	for _, inputPath := range input.Paths {
 		path := rbac.NormalizePath(inputPath)
-		if !rbac.ValidPath(path) {
+		// A concrete path may legitimately contain characters a policy rule may
+		// not, such as "%" or "&" in a folder name, so the permissive check
+		// applies here.
+		if !rbac.ValidResourcePath(path) {
 			writeError(w, r, http.StatusBadRequest, "invalid_path", "Um dos Node Paths é inválido.")
 			return
 		}
@@ -553,6 +663,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, path, capabil
 	if decision.Allowed {
 		return true
 	}
+	s.registry.Inc("jolt_control_authorization_denied_total", capability)
 	writeError(w, r, http.StatusForbidden, code, message)
 	return false
 }
@@ -642,7 +753,7 @@ func (s *Server) evaluateAuthorization(r *http.Request, path, capability string)
 	if err != nil {
 		return rbac.Decision{}, err
 	}
-	return rbac.Evaluate(policies, path, capability), nil
+	return rbac.Evaluate(rbac.ExpandCompatibilityRules(policies), path, capability), nil
 }
 
 func currentAccessGroupIDs(r *http.Request) []string {
@@ -2509,9 +2620,118 @@ func (s *Server) rejectConnection(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// fileTargetsFromRequest collects the mount-relative paths a file request acts
+// on. Copy and move carry them in the JSON body, which is buffered and
+// restored so the proxy can still forward it; everything else uses ?path=.
+func fileTargetsFromRequest(r *http.Request) (fileTargets, error) {
+	targets := fileTargets{}
+	base := strings.TrimSpace(r.URL.Query().Get("path"))
+	if base != "" {
+		targets.Paths = append(targets.Paths, base)
+	}
+	// Each archive selection is a separate path being read, so each one is
+	// authorized on its own instead of riding on the base path's decision.
+	for _, name := range r.URL.Query()["name"] {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			targets.Paths = append(targets.Paths, path.Join(base, trimmed))
+		}
+	}
+	if r.Method != http.MethodPost || r.Body == nil {
+		return targets, nil
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, (1<<20)+1))
+	if err != nil || len(body) > 1<<20 {
+		return targets, errors.New("invalid file operation body")
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if len(bytes.TrimSpace(body)) == 0 {
+		return targets, nil
+	}
+	var payload struct {
+		Path            string `json:"path"`
+		SourcePath      string `json:"source_path"`
+		DestinationPath string `json:"destination_path"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return targets, errors.New("invalid file operation body")
+	}
+	if strings.TrimSpace(payload.Path) != "" {
+		targets.Paths = append(targets.Paths, payload.Path)
+	}
+	targets.Source = payload.SourcePath
+	targets.Destination = payload.DestinationPath
+	return targets, nil
+}
+
+// subtreeReadResource reports whether a resource reads a whole subtree from a
+// single named root, rather than one explicitly named path.
+func subtreeReadResource(resource string) bool {
+	segments := strings.Split(strings.Trim(resource, "/"), "/")
+	if len(segments) < 4 || segments[0] != "mounts" || segments[2] != "files" {
+		return false
+	}
+	return segments[3] == "archive" || segments[3] == "search"
+}
+
+func mountIDFromResource(resource string) string {
+	segments := strings.Split(strings.Trim(resource, "/"), "/")
+	if len(segments) < 2 {
+		return ""
+	}
+	return segments[1]
+}
+
+// deniesWithinScope loads the subject's policies and asks whether any deny rule
+// applies at or below scope. A service account outside the node's access group
+// is already refused by the ordinary capability check.
+func (s *Server) deniesWithinScope(r *http.Request, scope string) (bool, error) {
+	policies, err := s.store.RBACPoliciesForSubject(r.Context(), currentActorType(r), currentUser(r).ID)
+	if err != nil {
+		return false, err
+	}
+	return rbac.DeniesWithin(rbac.ExpandCompatibilityRules(policies), scope), nil
+}
+
+// isMountFileResource reports whether resource addresses files inside a mount,
+// which is the only family whose authorization is subpath-scoped.
+func isMountFileResource(resource string) bool {
+	segments := strings.Split(strings.Trim(resource, "/"), "/")
+	return len(segments) >= 3 && segments[0] == "mounts" && segments[2] == "files"
+}
+
 func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 	resource := strings.TrimPrefix(r.PathValue("resource"), "/")
-	requirements := nodeAuthorizationRequirements(r.PathValue("nodeID"), resource, r.Method)
+	targets := fileTargets{}
+	if isMountFileResource(resource) {
+		parsed, err := fileTargetsFromRequest(r)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_file_request",
+				"Não foi possível determinar os caminhos desta operação de arquivo.")
+			return
+		}
+		targets = parsed
+	}
+	// Archive and search read an entire subtree from one named root, so
+	// authorizing the root alone would let them reach descendants the subject
+	// is denied. Refuse while any deny rule applies inside the requested
+	// subtree; a narrower request on an allowed subfolder still works.
+	if subtreeReadResource(resource) && r.Method == http.MethodGet {
+		mountBase := "nodes/" + r.PathValue("nodeID") + "/files/mounts/" + mountIDFromResource(resource)
+		for _, scope := range fileScopes(mountBase, targets.all()) {
+			denied, err := s.deniesWithinScope(r, scope)
+			if err != nil {
+				s.fail(w, r, err)
+				return
+			}
+			if denied {
+				s.audit(r, "read", scope, "denied")
+				writeError(w, r, http.StatusForbidden, "deny_rule_within_scope",
+					"Há regras de negação dentro desta pasta. Baixe ou pesquise em uma subpasta permitida.")
+				return
+			}
+		}
+	}
+	requirements := nodeAuthorizationRequirements(r.PathValue("nodeID"), resource, r.Method, targets)
 	if len(requirements) == 0 {
 		writeError(w, r, http.StatusNotFound, "resource_not_found", "Recurso do node não permitido.")
 		return
@@ -2569,10 +2789,17 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("X-Correlation-ID", r.Header.Get("X-Correlation-ID"))
 	request.Header.Set("Content-Type", r.Header.Get("Content-Type"))
-	for _, header := range []string{"Range", "If-Range", "If-Modified-Since", "If-None-Match"} {
+	for _, header := range []string{"Range", "If-Range", "If-Modified-Since", "If-None-Match",
+		// Content-Range carries the offset of a resumable upload chunk.
+		"Content-Range"} {
 		if value := r.Header.Get(header); value != "" {
 			request.Header.Set(header, value)
 		}
+	}
+	// A chunk body has a known length; forwarding it avoids chunked encoding
+	// for every upload segment.
+	if r.ContentLength > 0 {
+		request.ContentLength = r.ContentLength
 	}
 	if value := r.Header.Get("Idempotency-Key"); value != "" {
 		request.Header.Set("Idempotency-Key", value)
@@ -2584,7 +2811,11 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer response.Body.Close()
-	for _, header := range []string{"Content-Type", "Content-Length", "Content-Disposition", "Accept-Ranges", "Content-Range", "Cache-Control", "X-Accel-Buffering"} {
+	for _, header := range []string{"Content-Type", "Content-Length", "Content-Disposition",
+		"Accept-Ranges", "Content-Range", "Cache-Control", "X-Accel-Buffering",
+		// Resumable uploads and archives report their state in these headers.
+		"X-Jolt-Upload-Offset", "X-Jolt-Archive-Files", "X-Jolt-Archive-Bytes",
+		"X-Jolt-Archive-Skipped-Symlinks"} {
 		if value := response.Header.Get(header); value != "" {
 			w.Header().Set(header, value)
 		}
@@ -2600,7 +2831,9 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(w, response.Body)
 	}
 	action := strings.ToLower(r.Method)
-	s.audit(r, action, "nodes/"+node.ID+"/"+resource, resultForStatus(response.StatusCode))
+	result := resultForStatus(response.StatusCode)
+	s.registry.Inc("jolt_control_node_proxy_total", node.ID, result)
+	s.audit(r, action, "nodes/"+node.ID+"/"+resource, result)
 }
 
 func isInlineMediaType(contentType string) bool {
@@ -3265,7 +3498,81 @@ type authorizationRequirement struct {
 	Capability string
 }
 
-func nodeAuthorizationRequirements(nodeID, resource, method string) []authorizationRequirement {
+// fileScopes turns the mount-relative paths a request touches into RBAC paths.
+// With no path it falls back to the mount itself, which is what a listing of
+// the mount root or a mount-wide operation authorizes against.
+func fileScopes(base string, relatives []string) []string {
+	scopes := make([]string, 0, len(relatives))
+	for _, relative := range relatives {
+		if scope := fileScope(base, relative); scope != "" {
+			scopes = append(scopes, scope)
+		}
+	}
+	if len(scopes) == 0 {
+		return []string{base}
+	}
+	return scopes
+}
+
+// fileScope appends a mount-relative path to the mount's RBAC path so policies
+// can target a subtree. A path that escapes the mount yields an empty scope,
+// which callers turn into a denial rather than silently widening to the mount.
+func fileScope(base, relative string) string {
+	relative = strings.Trim(strings.ReplaceAll(strings.TrimSpace(relative), "\\", "/"), "/")
+	if relative == "" || relative == "." {
+		return base
+	}
+	segments := make([]string, 0, 8)
+	for _, segment := range strings.Split(relative, "/") {
+		switch segment {
+		case "", ".":
+			continue
+		case "..":
+			// The node rejects traversal too, but an RBAC path must never be
+			// built from a path that walks upward: it would authorize the wrong
+			// subtree.
+			return ""
+		default:
+			segments = append(segments, segment)
+		}
+	}
+	if len(segments) == 0 {
+		return base
+	}
+	return base + "/" + strings.Join(segments, "/")
+}
+
+func requirementsFor(paths []string, capability string) []authorizationRequirement {
+	requirements := make([]authorizationRequirement, 0, len(paths))
+	for _, path := range paths {
+		requirements = append(requirements, authorizationRequirement{Path: path, Capability: capability})
+	}
+	return requirements
+}
+
+// fileTargets carries the mount-relative paths a file request acts on, so
+// authorization can be evaluated against the exact subtree instead of the
+// whole mount. Source and Destination are set for copy and move, where the two
+// sides need different capabilities.
+type fileTargets struct {
+	Paths       []string
+	Source      string
+	Destination string
+}
+
+func (t fileTargets) all() []string {
+	all := make([]string, 0, len(t.Paths)+2)
+	all = append(all, t.Paths...)
+	if t.Source != "" {
+		all = append(all, t.Source)
+	}
+	if t.Destination != "" {
+		all = append(all, t.Destination)
+	}
+	return all
+}
+
+func nodeAuthorizationRequirements(nodeID, resource, method string, targets fileTargets) []authorizationRequirement {
 	segments := strings.Split(strings.Trim(resource, "/"), "/")
 	if len(segments) == 0 || segments[0] == "" {
 		return nil
@@ -3288,38 +3595,54 @@ func nodeAuthorizationRequirements(nodeID, resource, method string) []authorizat
 		if len(segments) < 3 || segments[2] != "files" {
 			return []authorizationRequirement{{Path: prefix + "/mounts/" + mountID, Capability: capabilityForMethod(method, false)}}
 		}
-		filePath := prefix + "/files/mounts/" + mountID
+		mountBase := prefix + "/files/mounts/" + mountID
+		// A path that escaped the mount produces no scope, which must deny
+		// instead of falling back to the mount-wide scope.
+		for _, relative := range targets.all() {
+			if fileScope(mountBase, relative) == "" {
+				return nil
+			}
+		}
+		scopes := fileScopes(mountBase, targets.Paths)
+		source := fileScope(mountBase, targets.Source)
+		destination := fileScope(mountBase, targets.Destination)
 		switch method {
 		case http.MethodGet:
-			if len(segments) >= 4 && (segments[3] == "content" || segments[3] == "metadata") {
-				return []authorizationRequirement{{Path: filePath, Capability: "read"}}
+			if len(segments) >= 4 && (segments[3] == "content" || segments[3] == "metadata" ||
+				segments[3] == "archive") {
+				return requirementsFor(scopes, "read")
 			}
-			return []authorizationRequirement{{Path: filePath, Capability: "list"}}
+			return requirementsFor(scopes, "list")
 		case http.MethodPut:
-			return []authorizationRequirement{{Path: filePath, Capability: "create"}}
+			return requirementsFor(scopes, "create")
 		case http.MethodDelete:
-			return []authorizationRequirement{{Path: filePath, Capability: "delete"}}
+			return requirementsFor(scopes, "delete")
 		case http.MethodPost:
+			// Copy and move keep their historical capabilities, now evaluated
+			// on each side's own subtree: reading the source and writing the
+			// destination are separate grants once policies can name subpaths.
 			if len(segments) >= 5 && segments[3] == "copy" && segments[4] == "plan" {
-				return []authorizationRequirement{{Path: filePath, Capability: "read"}, {Path: filePath, Capability: "create"}}
+				return []authorizationRequirement{
+					{Path: source, Capability: "read"},
+					{Path: destination, Capability: "create"},
+				}
 			}
 			if len(segments) >= 4 && segments[3] == "copy" {
 				return []authorizationRequirement{
-					{Path: filePath, Capability: "read"},
-					{Path: filePath, Capability: "create"},
+					{Path: source, Capability: "read"},
+					{Path: destination, Capability: "create"},
 					{Path: prefix + "/jobs", Capability: "create"},
 				}
 			}
 			if len(segments) >= 4 && segments[3] == "move" {
 				return []authorizationRequirement{
-					{Path: filePath, Capability: "update"},
+					{Path: source, Capability: "update"},
+					{Path: destination, Capability: "update"},
 					{Path: prefix + "/jobs", Capability: "create"},
 				}
 			}
-			return []authorizationRequirement{
-				{Path: filePath, Capability: "create"},
-				{Path: prefix + "/jobs", Capability: "create"},
-			}
+			return append(requirementsFor(scopes, "create"),
+				authorizationRequirement{Path: prefix + "/jobs", Capability: "create"})
 		}
 	case "jobs":
 		if method == http.MethodGet {

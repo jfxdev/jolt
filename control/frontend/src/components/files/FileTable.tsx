@@ -3,7 +3,9 @@ import {
   Download,
   Eye,
   FilePenLine,
+  FolderArchive,
   FolderOpen,
+  Link2,
   MoveRight,
   Trash2,
 } from "lucide-react";
@@ -42,6 +44,10 @@ interface Props {
   onDownload: (entry: FileEntry) => void;
   onPreview: (entry: FileEntry) => void;
   onEdit: (entry: FileEntry) => void;
+  /** onShare and onArchive are omitted when the caller cannot read the path,
+   * so the actions never render as enabled-but-forbidden. */
+  onShare?: (entry: FileEntry) => void;
+  onArchive?: (entry: FileEntry) => void;
   onTransferCopy: (entries: FileEntry[]) => void;
   onTransferMove: (entries: FileEntry[]) => void;
   onRemove: (entry: FileEntry) => void;
@@ -58,6 +64,8 @@ export function FileTable({
   filePolicyPath,
   onDownload,
   onPreview,
+  onShare,
+  onArchive,
   onEdit,
   onTransferCopy,
   onTransferMove,
@@ -186,6 +194,18 @@ export function FileTable({
                   >
                     <FilePenLine />
                     Editar
+                  </ContextMenuItem>
+                )}
+                {onArchive && entry.type === "directory" && (
+                  <ContextMenuItem onClick={() => onArchive(entry)}>
+                    <FolderArchive />
+                    Baixar como .zip
+                  </ContextMenuItem>
+                )}
+                {onShare && entry.type !== "symlink" && (
+                  <ContextMenuItem onClick={() => onShare(entry)}>
+                    <Link2 />
+                    Criar link público…
                   </ContextMenuItem>
                 )}
                 {(canTransferCopy || canTransferMove || canRemove) && <ContextMenuSeparator />}

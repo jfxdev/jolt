@@ -244,6 +244,16 @@ CREATE TABLE IF NOT EXISTS audit_events (
 CREATE TABLE IF NOT EXISTS metadata (
  key TEXT PRIMARY KEY, value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS shares (
+ id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, node_id TEXT NOT NULL,
+ mount_id TEXT NOT NULL, path TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL,
+ password_hash TEXT NOT NULL DEFAULT '', allow_archive INTEGER NOT NULL DEFAULT 1,
+ max_downloads INTEGER NOT NULL DEFAULT 0, download_count INTEGER NOT NULL DEFAULT 0,
+ created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+ expires_at TEXT, revoked_at TEXT, last_access_at TEXT
+);
+CREATE INDEX IF NOT EXISTS shares_created_by ON shares(created_by);
+CREATE INDEX IF NOT EXISTS shares_expires_at ON shares(expires_at);
 CREATE TABLE IF NOT EXISTS login_attempts (
  key TEXT PRIMARY KEY, failures INTEGER NOT NULL DEFAULT 0,
  locked_until TEXT, updated_at TEXT NOT NULL

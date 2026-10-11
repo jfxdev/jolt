@@ -6,6 +6,11 @@ services:
     environment:
       NODE_NAME: nas-home
       API_ADDRESS: :8080
+      API_TLS_CERT_FILE: ${API_TLS_CERT_FILE:-}
+      API_TLS_KEY_FILE: ${API_TLS_KEY_FILE:-}
+      API_TLS_CLIENT_CA_FILE: ${API_TLS_CLIENT_CA_FILE:-}
+      # Set to https://127.0.0.1:8080/health when API_TLS_* is configured.
+      NODE_HEALTHCHECK_URL: ${NODE_HEALTHCHECK_URL:-http://127.0.0.1:8080/health}
       MTLS_ADDRESS: :8443
       MTLS_PUBLIC_ENDPOINT: https://jolt-node:8443
       CONTROL_TOWER_TOKEN: ${CONTROL_TOWER_TOKEN:?define CONTROL_TOWER_TOKEN}
@@ -33,14 +38,35 @@ services:
       # Add every host bind mount that will be registered as a Jolt mount.
       JOLT_OWNED_PATHS: ${JOLT_OWNED_PATHS:-/mnt/files}
     ports:
-      - "8080:8080"
-      - "8443:8443"
+      # The Control Tower reaches the node over the compose network, so the
+      # control API stays on loopback unless NODE_API_BIND is widened. The
+      # peer listener is mTLS and must be reachable by other hosts.
+      - "${NODE_API_BIND:-127.0.0.1}:8080:8080"
+      - "${NODE_PEER_BIND:-0.0.0.0}:8443:8443"
     volumes:
       - ./runtime/node/data:/var/lib/jolt
       - ./runtime/node/keys:/var/lib/jolt-keys
       - ${JOLT_MOUNT_PATH:-./runtime/files}:/mnt/files:rw
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # su-exec drops to PUID:PGID, and the entrypoint reconciles ownership
+      # of the data, keys and mount paths before the process starts.
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+    deploy:
+      resources:
+        limits:
+          memory: ${JOLT_MEMORY_LIMIT:-1g}
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      # --no-check-certificate keeps the probe working when API_TLS_* is set
+      # with a private CA: this probe only checks liveness over loopback.
+      test: ["CMD-SHELL", "wget --no-check-certificate -qO- \"$${NODE_HEALTHCHECK_URL:-http://127.0.0.1:8080/health}\" >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -60,7 +86,11 @@ services:
       CONTROL_TOWER_ADMIN_USERNAME: ${CONTROL_TOWER_ADMIN_USERNAME:-admin}
       CONTROL_TOWER_ADMIN_PASSWORD: ${CONTROL_TOWER_ADMIN_PASSWORD:?define CONTROL_TOWER_ADMIN_PASSWORD}
       CONTROL_TOWER_DB_ENCRYPTION_KEY: ${CONTROL_TOWER_DB_ENCRYPTION_KEY:?define CONTROL_TOWER_DB_ENCRYPTION_KEY}
-      CONTROL_TOWER_SECURE_COOKIES: ${CONTROL_TOWER_SECURE_COOKIES:-false}
+      # Secure by default. Set to false only to reach the UI over plain HTTP
+      # on a trusted LAN; the session cookie is then sent unencrypted.
+      CONTROL_TOWER_SECURE_COOKIES: ${CONTROL_TOWER_SECURE_COOKIES:-true}
+      CONTROL_TOWER_PUBLIC_BASE_URL: ${CONTROL_TOWER_PUBLIC_BASE_URL:-}
+      CONTROL_TOWER_NODE_CA_FILE: ${CONTROL_TOWER_NODE_CA_FILE:-}
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
       UMASK: ${UMASK:-077}
@@ -68,8 +98,24 @@ services:
       - "8090:8090"
     volumes:
       - ./runtime/control/data:/var/lib/jolt-control
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # su-exec drops to PUID:PGID, and the entrypoint reconciles ownership
+      # of the data, keys and mount paths before the process starts.
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+    deploy:
+      resources:
+        limits:
+          memory: ${JOLT_MEMORY_LIMIT:-1g}
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/health"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8090/health >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 3

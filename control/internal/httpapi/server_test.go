@@ -1199,16 +1199,16 @@ func TestLogicalTransferSelectionLimitIsStructured(t *testing.T) {
 }
 
 func TestPeerRevocationRequiresDeleteCapability(t *testing.T) {
-	requirements := nodeAuthorizationRequirements("node-1", "peers/peer-2", http.MethodDelete)
+	requirements := nodeAuthorizationRequirements("node-1", "peers/peer-2", http.MethodDelete, fileTargets{})
 	if len(requirements) != 1 || requirements[0].Path != "nodes/node-1/peers" ||
 		requirements[0].Capability != "delete" {
 		t.Fatalf("requirements=%+v", requirements)
 	}
-	update := nodeAuthorizationRequirements("node-1", "peers/peer-2", http.MethodPatch)
+	update := nodeAuthorizationRequirements("node-1", "peers/peer-2", http.MethodPatch, fileTargets{})
 	if len(update) != 1 || update[0].Path != "nodes/node-1/peers" || update[0].Capability != "update" {
 		t.Fatalf("update requirements=%+v", update)
 	}
-	identity := nodeAuthorizationRequirements("node-1", "crypto/identity/rotate", http.MethodPost)
+	identity := nodeAuthorizationRequirements("node-1", "crypto/identity/rotate", http.MethodPost, fileTargets{})
 	if len(identity) != 1 || identity[0].Path != "nodes/node-1/keys/identity" ||
 		identity[0].Capability != "sudo" {
 		t.Fatalf("identity requirements=%+v", identity)
@@ -1512,5 +1512,171 @@ func TestBrowserConnectionRequestStaysPendingWithoutTargetAdminAccess(t *testing
 	connection, err := storage.GetConnection(ctx, "request-1")
 	if err != nil || connection.Status != "pending_review" {
 		t.Fatalf("connection=%+v err=%v", connection, err)
+	}
+}
+
+func TestFileScopeRejectsTraversalAndNormalizes(t *testing.T) {
+	base := "nodes/node-a/files/mounts/media"
+	cases := map[string]string{
+		"":                       base,
+		".":                      base,
+		"/":                      base,
+		"photos":                 base + "/photos",
+		"/photos/2024/":          base + "/photos/2024",
+		"photos//2024":           base + "/photos/2024",
+		"./photos":               base + "/photos",
+		"Fotos de Família/a.jpg": base + "/Fotos de Família/a.jpg",
+		"..":                     "",
+		"photos/../../etc":       "",
+		"photos/..":              "",
+	}
+	for relative, expected := range cases {
+		if got := fileScope(base, relative); got != expected {
+			t.Fatalf("fileScope(%q) = %q, want %q", relative, got, expected)
+		}
+	}
+}
+
+func TestMountFileRequirementsAreSubpathScoped(t *testing.T) {
+	requirements := nodeAuthorizationRequirements("node-1", "mounts/m1/files", http.MethodGet,
+		fileTargets{Paths: []string{"photos/2024"}})
+	if len(requirements) != 1 ||
+		requirements[0].Path != "nodes/node-1/files/mounts/m1/photos/2024" ||
+		requirements[0].Capability != "list" {
+		t.Fatalf("unexpected listing requirements: %+v", requirements)
+	}
+
+	// Copy authorizes reading the source subtree and writing the destination
+	// subtree separately.
+	copyRequirements := nodeAuthorizationRequirements("node-1", "mounts/m1/files/copy", http.MethodPost,
+		fileTargets{Source: "photos/a.jpg", Destination: "backup/a.jpg"})
+	expected := map[string]string{
+		"nodes/node-1/files/mounts/m1/photos/a.jpg": "read",
+		"nodes/node-1/files/mounts/m1/backup/a.jpg": "create",
+		"nodes/node-1/jobs":                         "create",
+	}
+	if len(copyRequirements) != len(expected) {
+		t.Fatalf("unexpected copy requirements: %+v", copyRequirements)
+	}
+	for _, requirement := range copyRequirements {
+		if expected[requirement.Path] != requirement.Capability {
+			t.Fatalf("unexpected copy requirement %+v", requirement)
+		}
+	}
+
+	// A traversing path must deny rather than widen to the whole mount.
+	if got := nodeAuthorizationRequirements("node-1", "mounts/m1/files", http.MethodDelete,
+		fileTargets{Paths: []string{"../../etc"}}); got != nil {
+		t.Fatalf("traversal produced requirements: %+v", got)
+	}
+
+	// With no path at all the mount itself remains the scope.
+	mountWide := nodeAuthorizationRequirements("node-1", "mounts/m1/files", http.MethodGet, fileTargets{})
+	if len(mountWide) != 1 || mountWide[0].Path != "nodes/node-1/files/mounts/m1" {
+		t.Fatalf("unexpected mount-wide requirements: %+v", mountWide)
+	}
+}
+
+func TestArchiveAndSearchRefuseWhenADenyRuleSitsInsideTheScope(t *testing.T) {
+	// These two read a whole subtree from one named root, so authorizing only
+	// that root would let the node stream or list denied descendants.
+	calls := 0
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("{}")),
+		}, nil
+	})}
+	actor := store.User{ID: "usr_op", Username: "op", Role: "operator", Enabled: true}
+	handler, storage, session := testUserHandlerWithClient(t, actor, client)
+	now := time.Now().UTC()
+	encrypted, err := security.Encrypt(make([]byte, 32), "node-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.SaveNode(context.Background(), store.Node{
+		ID: "nod_a", Name: "nas", Endpoint: "http://node.test", TokenEncrypted: encrypted,
+		State: "online", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.CreatePolicy(context.Background(), store.Policy{
+		ID: "pol", Name: "pol", CreatedAt: now, UpdatedAt: now,
+		Rules: []rbac.Rule{
+			{Path: "nodes/nod_a/files/mounts/media/**", Capabilities: []string{"read", "list"}},
+			{Path: "nodes/nod_a/files/mounts/media/privado/**", Capabilities: []string{"deny"}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.SetSubjectPolicies(context.Background(), "user", actor.ID,
+		[]string{"pol"}); err != nil {
+		t.Fatal(err)
+	}
+
+	get := func(target string) int {
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		request.AddCookie(&http.Cookie{Name: sessionCookie, Value: session})
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder.Code
+	}
+	base := "/api/v1/nodes/nod_a/mounts/media/files"
+
+	// The mount root contains the denied folder, so a whole-tree read of it is
+	// refused rather than silently including the denied subtree.
+	refused := map[string]int{
+		base + "/archive?path=":               http.StatusForbidden,
+		base + "/archive?path=&name=privado":  http.StatusForbidden,
+		base + "/archive?path=privado":        http.StatusForbidden,
+		base + "/search?path=&query=x":        http.StatusForbidden,
+		base + "/search?path=privado&query=x": http.StatusForbidden,
+	}
+	for target, expected := range refused {
+		if code := get(target); code != expected {
+			t.Errorf("%s returned %d, want %d", target, code, expected)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("a refused subtree read still reached the node %d times", calls)
+	}
+
+	// A sibling subtree holds no deny rule and stays fully readable.
+	allowed := []string{
+		base + "/archive?path=publico",
+		base + "/archive?path=publico&name=fotos",
+		base + "/search?path=publico&query=x",
+	}
+	for _, target := range allowed {
+		if code := get(target); code != http.StatusOK {
+			t.Errorf("%s returned %d, want 200", target, code)
+		}
+	}
+	if calls != len(allowed) {
+		t.Fatalf("node received %d calls, want %d", calls, len(allowed))
+	}
+}
+
+func TestArchiveSelectionsAreAuthorizedIndividually(t *testing.T) {
+	// A name= selection is a separate path being read, so it cannot ride on the
+	// base path's decision.
+	requirements := nodeAuthorizationRequirements("node-1", "mounts/m1/files/archive",
+		http.MethodGet, fileTargets{Paths: []string{"publico", "publico/fotos"}})
+	paths := map[string]bool{}
+	for _, requirement := range requirements {
+		if requirement.Capability != "read" {
+			t.Fatalf("unexpected capability %+v", requirement)
+		}
+		paths[requirement.Path] = true
+	}
+	for _, expected := range []string{
+		"nodes/node-1/files/mounts/m1/publico",
+		"nodes/node-1/files/mounts/m1/publico/fotos",
+	} {
+		if !paths[expected] {
+			t.Fatalf("selection %q was not authorized; got %+v", expected, requirements)
+		}
 	}
 }

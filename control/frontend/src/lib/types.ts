@@ -389,4 +389,83 @@ export interface PermissionsResponse {
 export interface ApiError extends Error {
   code?: string;
   status?: number;
+  /** details carries structured data the server attached to the error, such as
+   * the authoritative offset of a resumable upload. */
+  details?: Record<string, unknown> & { offset?: number };
+}
+
+export interface SearchResponse {
+	entries: FileEntry[];
+	scanned: number;
+	truncated: boolean;
+	truncated_reason?: "results" | "entries" | "timeout";
+}
+
+export interface ArchivePlan {
+	files: number;
+	bytes: number;
+	skipped_symlinks: number;
+	max_files: number;
+	max_bytes: number;
+}
+
+export interface UploadSession {
+	upload_id: string;
+	mount_id: string;
+	destination_path: string;
+	size: number;
+	offset: number;
+	overwrite: boolean;
+	checksum?: string;
+	chunk_size: number;
+	created_at: string;
+	updated_at: string;
+	expires_at: string;
+}
+
+export interface Share {
+	share_id: string;
+	node_id: string;
+	mount_id: string;
+	path: string;
+	kind: "file" | "directory";
+	name: string;
+	has_password: boolean;
+	allow_archive: boolean;
+	max_downloads: number;
+	download_count: number;
+	created_by: string;
+	created_at: string;
+	expires_at?: string;
+	revoked_at?: string;
+	last_access_at?: string;
+}
+
+export interface CreatedShare {
+	share: Share;
+	token: string;
+	url: string;
+}
+
+export interface CreateShareInput {
+	node_id: string;
+	mount_id: string;
+	path: string;
+	kind: "file" | "directory";
+	password?: string;
+	allow_archive?: boolean;
+	max_downloads?: number;
+	expires_in_seconds?: number;
+}
+
+/** PublicShare is what an anonymous visitor may learn about a link: never its
+ * node, mount or path. */
+export interface PublicShare {
+	name: string;
+	kind: "file" | "directory";
+	has_password: boolean;
+	unlocked: boolean;
+	allow_archive: boolean;
+	expires_at?: string;
+	remaining_downloads?: number;
 }
