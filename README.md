@@ -58,8 +58,8 @@ Two products, one boundary:
 
 - **Backend:** Go 1.24 (node and Control Tower), SQLite (node), SQLCipher
   (Control Tower), Ed25519 identities, TLS 1.3 mTLS.
-- **Frontend:** React 19 + Vite, Radix UI / shadcn components, Tailwind CSS,
-  React Router.
+- **Frontend:** React 19 + Vite, componentes Base UI / shadcn (Vega), Tailwind
+  CSS 4 e React Router.
 - **Deployment:** Docker images with LinuxServer-style `PUID`/`PGID`/`UMASK`
   privilege drop; root Compose stack wiring both products.
 
@@ -72,6 +72,7 @@ Two products, one boundary:
 - [`docs/DISCOVERY.md`](docs/DISCOVERY.md) — analysis backlog for the next pass.
 - [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) — attack surface and unauthenticated threat analysis.
 - [`docs/ACCESS_CENTER.md`](docs/ACCESS_CENTER.md) — design for a dedicated authorization/access page.
+- [`docs/TRANSFERS_API.md`](docs/TRANSFERS_API.md) — public logical API for durable transfers between nodes.
 - [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md) — load and fault-injection profiles.
 - [`docs/DISASTER_RECOVERY.md`](docs/DISASTER_RECOVERY.md),
   [`docs/REVERSE_PROXY.md`](docs/REVERSE_PROXY.md) — operations.
@@ -85,6 +86,8 @@ export CONTROL_TOWER_TOKEN='replace-with-a-long-random-node-token'
 export CONTROL_TOWER_ADMIN_PASSWORD='replace-with-a-long-admin-password'
 export CONTROL_TOWER_DB_ENCRYPTION_KEY='replace-with-at-least-32-random-characters'
 export JOLT_DB_ENCRYPTION_KEY='replace-with-at-least-32-random-characters'
+# Optional: direct roots accepted in one cross-node transfer (default: 1000).
+export TRANSFER_MAX_SOURCE_PATHS=1000
 docker compose up --build
 ```
 

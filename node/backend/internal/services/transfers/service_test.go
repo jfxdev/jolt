@@ -613,6 +613,148 @@ func TestDirectoryPullPlansAndTransfersNestedItems(t *testing.T) {
 	t.Fatal("timed out waiting for remote directory transfer")
 }
 
+func TestBatchMoveCopiesAllRootsThenDeletesSourceWithDurableCheckpoints(t *testing.T) {
+	source, destination := newTransferTestNode(t, "source"), newTransferTestNode(t, "destination")
+	for name, contents := range map[string]string{
+		"one.txt":           "first root",
+		"folder/two.txt":    "nested root",
+		"folder/deep/x.txt": "deeply nested",
+	} {
+		fullPath := filepath.Join(source.root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fullPath, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	trustPeer(t, destination, source, "https://source.test")
+	trustPeer(t, source, destination, "https://destination.invalid:8443")
+	destination.transfers.ConfigureDialContext(pipeTLSDialer(
+		mtlsapi.New(source.identity, "source", source.transfers), source.certificates.TLSConfig(),
+	))
+	sourceGrant, err := source.grants.Create(context.Background(), grants.Input{
+		PeerNodeID: destination.identity.NodeID, MountID: source.mountID, Path: ".",
+		Direction: "send", Permissions: entities.GrantPermissions{Read: true, Delete: true}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destinationGrant, err := destination.grants.Create(context.Background(), grants.Input{
+		PeerNodeID: source.identity.NodeID, MountID: destination.mountID, Path: ".",
+		Direction: "receive", Permissions: entities.GrantPermissions{Write: true},
+		ConflictPolicies: []string{"fail"}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := transfers.BatchPullRequest{PullRequest: transfers.PullRequest{
+		PeerNodeID: source.identity.NodeID, SourceGrantID: sourceGrant.ID, DestinationGrantID: destinationGrant.ID,
+		DestinationPath: "", ConflictPolicy: "fail", CorrelationID: "cor-batch-move", MaxParallelFiles: 2,
+	}, SourcePaths: []string{"one.txt", "folder"}, Operation: "move"}
+	job, repeated, err := destination.transfers.CreateBatchPull(context.Background(), request, "batch-move-key", "batch-move-hash")
+	if err != nil || repeated || job.Type != "transfer_move_batch" || !job.VerifyChecksum {
+		t.Fatalf("create batch move: job=%+v repeated=%v err=%v", job, repeated, err)
+	}
+	if replay, repeated, replayErr := destination.transfers.CreateBatchPull(context.Background(), request, "batch-move-key", "batch-move-hash"); replayErr != nil || !repeated || replay.ID != job.ID {
+		t.Fatalf("idempotent replay: job=%+v repeated=%v err=%v", replay, repeated, replayErr)
+	}
+	if _, _, conflictErr := destination.transfers.CreateBatchPull(context.Background(), request, "batch-move-key", "changed-hash"); !errors.Is(conflictErr, db.ErrIdempotencyConflict) {
+		t.Fatalf("expected idempotency conflict, got %v", conflictErr)
+	}
+
+	workerContext, stop := context.WithCancel(context.Background())
+	defer stop()
+	if _, err := destination.jobs.Start(workerContext, 1); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		stop()
+		shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = destination.jobs.Shutdown(shutdownContext)
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		current, getErr := destination.jobs.Get(context.Background(), job.ID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if current.State == "completed" {
+			for path, expected := range map[string]string{
+				"one.txt": "first root", "folder/two.txt": "nested root", "folder/deep/x.txt": "deeply nested",
+			} {
+				contents, readErr := os.ReadFile(filepath.Join(destination.root, filepath.FromSlash(path)))
+				if readErr != nil || string(contents) != expected {
+					t.Fatalf("destination %s = %q, %v", path, contents, readErr)
+				}
+			}
+			if _, statErr := os.Stat(filepath.Join(source.root, "one.txt")); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("source file should have been removed: %v", statErr)
+			}
+			if _, statErr := os.Stat(filepath.Join(source.root, "folder")); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("source directory should have been removed: %v", statErr)
+			}
+			items, listErr := destination.jobs.ListItems(context.Background(), job.ID)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			for _, item := range items {
+				if item.SourceCleanupState != "completed" {
+					t.Fatalf("cleanup checkpoint not completed: %+v", item)
+				}
+			}
+			return
+		}
+		if current.State == "failed" {
+			t.Fatalf("batch move failed: %+v", current)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for batch move")
+}
+
+func TestBatchPlanPreservesNameForASelectedGrantRoot(t *testing.T) {
+	source, destination := newTransferTestNode(t, "source"), newTransferTestNode(t, "destination")
+	if err := os.MkdirAll(filepath.Join(source.root, "exports"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source.root, "exports", "release.txt"), []byte("release"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	trustPeer(t, destination, source, "https://source.test")
+	trustPeer(t, source, destination, "https://destination.invalid:8443")
+	destination.transfers.ConfigureDialContext(pipeTLSDialer(
+		mtlsapi.New(source.identity, "source", source.transfers), source.certificates.TLSConfig(),
+	))
+	sourceGrant, err := source.grants.Create(context.Background(), grants.Input{
+		PeerNodeID: destination.identity.NodeID, MountID: source.mountID, Path: "exports",
+		Direction: "send", Permissions: entities.GrantPermissions{Read: true}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destinationGrant, err := destination.grants.Create(context.Background(), grants.Input{
+		PeerNodeID: source.identity.NodeID, MountID: destination.mountID, Path: ".",
+		Direction: "receive", Permissions: entities.GrantPermissions{Write: true},
+		ConflictPolicies: []string{"fail"}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := destination.transfers.PlanBatchPull(context.Background(), transfers.BatchPullRequest{
+		PullRequest: transfers.PullRequest{PeerNodeID: source.identity.NodeID, SourceGrantID: sourceGrant.ID,
+			DestinationGrantID: destinationGrant.ID, ConflictPolicy: "fail"},
+		SourcePaths: []string{"."}, SourceNames: []string{"exports"}, Operation: "copy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Items) != 2 || plan.Items[0].DestinationPath != "exports" || plan.Items[1].DestinationPath != "exports/release.txt" {
+		t.Fatalf("grant-root plan did not preserve its mount-relative name: %+v", plan.Items)
+	}
+}
+
 func TestDirectoryPullAskConflictCanBeOverridden(t *testing.T) {
 	source, destination := newTransferTestNode(t, "source"), newTransferTestNode(t, "destination")
 	if err := os.MkdirAll(filepath.Join(source.root, "folder"), 0o700); err != nil {

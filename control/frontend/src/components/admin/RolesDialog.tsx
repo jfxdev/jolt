@@ -12,12 +12,24 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { AdminDialogProps } from "./types";
+import {
+  AdminEntityDialog,
+  EntityDialogFormLayout,
+} from "./AdminEntityDialog";
 
 interface RoleForm {
   name: string;
@@ -27,7 +39,11 @@ interface RoleForm {
 
 const EMPTY: RoleForm = { name: "", description: "", policy_ids: [] };
 
-export function RolesDialog({ open, onOpenChange }: AdminDialogProps) {
+export function RolesDialog({
+  open,
+  onOpenChange,
+  inline = false,
+}: AdminDialogProps) {
   const handleError = useApiError();
   const confirm = useConfirm();
   const [roles, setRoles] = useState<Role[]>([]);
@@ -35,14 +51,16 @@ export function RolesDialog({ open, onOpenChange }: AdminDialogProps) {
   const [editingId, setEditingId] = useState("");
   const [form, setForm] = useState<RoleForm>(EMPTY);
   const [busy, setBusy] = useState(false);
+  const [search, setSearch] = useState("");
+  const [formOpen, setFormOpen] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     reset();
+    setSearch("");
     (async () => {
       try {
-        const [r, p] = await Promise.all([api.roles(), api.policies()]);
-        setRoles(r.items || []);
+        const p = await api.policies();
         setPolicies(p.items || []);
       } catch (error) {
         handleError(error);
@@ -51,13 +69,42 @@ export function RolesDialog({ open, onOpenChange }: AdminDialogProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      void api
+        .roles(search)
+        .then((result) => {
+          if (!cancelled) setRoles(result.items || []);
+        })
+        .catch((error) => {
+          if (!cancelled) handleError(error);
+        });
+    }, search ? 250 : 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [handleError, open, search]);
+
   function reset() {
     setEditingId("");
     setForm(EMPTY);
   }
 
-  async function reloadRoles() {
-    const result = await api.roles();
+  function openCreateForm() {
+    reset();
+    setFormOpen(true);
+  }
+
+  function closeForm(open: boolean) {
+    setFormOpen(open);
+    if (!open) reset();
+  }
+
+  async function reloadRoles(query = search) {
+    const result = await api.roles(query);
     setRoles(result.items || []);
   }
 
@@ -68,6 +115,7 @@ export function RolesDialog({ open, onOpenChange }: AdminDialogProps) {
       description: role.description,
       policy_ids: [...(role.policy_ids || [])],
     });
+    setFormOpen(true);
   }
 
   async function save(event: React.FormEvent) {
@@ -82,6 +130,7 @@ export function RolesDialog({ open, onOpenChange }: AdminDialogProps) {
         toast.success("Role criada.");
       }
       reset();
+      setFormOpen(false);
       await reloadRoles();
     } catch (error) {
       handleError(error);
@@ -104,6 +153,7 @@ export function RolesDialog({ open, onOpenChange }: AdminDialogProps) {
     try {
       await api.deleteRole(role.role_id);
       reset();
+      setFormOpen(false);
       await reloadRoles();
       toast.success("Role removida.");
     } catch (error) {
@@ -113,9 +163,30 @@ export function RolesDialog({ open, onOpenChange }: AdminDialogProps) {
     }
   }
 
+  if (inline && !open) return null;
+
+  const searchInput = (
+    <div className="grid gap-2">
+      <Label htmlFor="roles-search">Buscar roles</Label>
+      <Input
+        id="roles-search"
+        type="search"
+        value={search}
+        placeholder="Nome ou descrição"
+        onChange={(event) => setSearch(event.target.value)}
+      />
+    </div>
+  );
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent
+        inline={inline}
+        showCloseButton={!inline}
+        className={
+          inline ? "w-full max-w-none" : "sm:w-[calc(100vw-4rem)] sm:max-w-5xl"
+        }
+      >
         <DialogHeader>
           <div className="flex items-center justify-between">
             <div>
@@ -124,40 +195,114 @@ export function RolesDialog({ open, onOpenChange }: AdminDialogProps) {
               </p>
               <DialogTitle>Roles</DialogTitle>
             </div>
-            <Button variant="secondary" size="sm" onClick={reset}>
+            <Button variant="secondary" size="sm" onClick={openCreateForm}>
               Nova role
             </Button>
           </div>
         </DialogHeader>
 
-        <div className="grid gap-4 md:grid-cols-[220px_1fr]">
-          <div className="grid max-h-[60vh] gap-1 overflow-y-auto">
-            {roles.map((role) => (
-              <button
-                key={role.role_id}
-                className={cn(
-                  "rounded-md border p-2 text-left text-sm hover:bg-accent",
-                  editingId === role.role_id && "bg-accent",
-                )}
-                onClick={() => edit(role)}
-              >
-                <strong className="block">{role.name}</strong>
-                <small className="text-muted-foreground">
-                  {role.policy_ids?.length || 0} policy(s)
-                </small>
-              </button>
-            ))}
-            {!roles.length && (
-              <div className="p-2 text-xs text-muted-foreground">
-                Nenhuma role cadastrada.
+        <div
+          className={cn(
+            "grid gap-4",
+            inline ? "" : "md:grid-cols-[220px_1fr]",
+          )}
+        >
+          {inline ? (
+            <div className="order-2 grid gap-2">
+              {searchInput}
+              <div className="overflow-hidden rounded-md border">
+                <Table aria-label="Roles cadastradas">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Role</TableHead>
+                      <TableHead>Descrição</TableHead>
+                      <TableHead>Policies</TableHead>
+                      <TableHead className="text-right">Ação</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {roles.map((role) => (
+                      <TableRow
+                        key={role.role_id}
+                        data-state={
+                          editingId === role.role_id ? "selected" : undefined
+                        }
+                      >
+                        <TableCell className="font-medium">{role.name}</TableCell>
+                        <TableCell className="max-w-sm truncate text-muted-foreground">
+                          {role.description || "Sem descrição"}
+                        </TableCell>
+                        <TableCell>{role.policy_ids?.length || 0}</TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => edit(role)}
+                            >
+                              Editar
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="sm"
+                              onClick={() => void remove(role)}
+                            >
+                              Remover
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {!roles.length && (
+                      <TableRow>
+                        <TableCell colSpan={4} className="text-muted-foreground">
+                          {search
+                            ? "Nenhuma role encontrada."
+                            : "Nenhuma role cadastrada."}
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
               </div>
-            )}
-          </div>
+            </div>
+          ) : (
+            <div className="grid max-h-[60vh] gap-1 overflow-y-auto">
+              {searchInput}
+              {roles.map((role) => (
+                <button
+                  key={role.role_id}
+                  className={cn(
+                    "rounded-md border p-2 text-left text-sm hover:bg-accent",
+                    editingId === role.role_id && "bg-accent",
+                  )}
+                  onClick={() => edit(role)}
+                >
+                  <strong className="block">{role.name}</strong>
+                  <small className="text-muted-foreground">
+                    {role.policy_ids?.length || 0} policy(s)
+                  </small>
+                </button>
+              ))}
+              {!roles.length && (
+                <div className="p-2 text-xs text-muted-foreground">
+                  {search ? "Nenhuma role encontrada." : "Nenhuma role cadastrada."}
+                </div>
+              )}
+            </div>
+          )}
 
-          <form className="grid gap-3" onSubmit={save}>
-            <h3 className="font-semibold">
-              {editingId ? "Editar role" : "Criar role"}
-            </h3>
+          <AdminEntityDialog
+            open={formOpen}
+            onOpenChange={closeForm}
+            title={editingId ? "Editar role" : "Criar role"}
+          >
+              <form className="grid gap-3" onSubmit={save}>
+            <EntityDialogFormLayout
+              summary={
+                <>
             <div className="grid gap-2">
               <Label htmlFor="r-name">Nome</Label>
               <Input
@@ -165,7 +310,7 @@ export function RolesDialog({ open, onOpenChange }: AdminDialogProps) {
                 value={form.name}
                 minLength={3}
                 maxLength={64}
-                pattern="[A-Za-z0-9._-]+"
+                pattern="[A-Za-z0-9._\-]+"
                 required
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
               />
@@ -182,6 +327,9 @@ export function RolesDialog({ open, onOpenChange }: AdminDialogProps) {
                 }
               />
             </div>
+                </>
+              }
+            >
             <fieldset className="grid gap-2 rounded-md border p-3">
               <legend className="px-1 text-sm font-medium">
                 Policies da role
@@ -220,23 +368,13 @@ export function RolesDialog({ open, onOpenChange }: AdminDialogProps) {
               )}
             </fieldset>
             <div className="flex justify-end gap-2">
-              {editingId && (
-                <Button
-                  type="button"
-                  variant="destructive"
-                  onClick={() => {
-                    const role = roles.find((r) => r.role_id === editingId);
-                    if (role) remove(role);
-                  }}
-                >
-                  Remover role
-                </Button>
-              )}
               <Button type="submit" disabled={busy}>
                 Salvar role <ArrowRight />
               </Button>
             </div>
-          </form>
+            </EntityDialogFormLayout>
+              </form>
+          </AdminEntityDialog>
         </div>
       </DialogContent>
     </Dialog>

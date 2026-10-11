@@ -1,0 +1,205 @@
+openapi: 3.1.0
+info:
+  title: Jolt Control Tower transfers API
+  version: 1.0.0
+  description: Logical cross-node mount transfers. Grant IDs are never accepted or returned by this API.
+paths:
+  /api/v1/nodes/{sourceNodeID}/transfers/targets:
+    post:
+      summary: Discover compatible destinations for a source selection
+      parameters:
+        - $ref: '#/components/parameters/SourceNodeID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operation, source]
+              properties:
+                operation: {type: string, enum: [copy, move]}
+                source:
+                  $ref: '#/components/schemas/Source'
+      responses:
+        '200':
+          description: Authorized nodes and mounts, with unavailable entries marked disabled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [max_source_paths, targets]
+                properties:
+                  max_source_paths: {type: integer, minimum: 1}
+                  targets:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TargetNode'
+                  blocked_targets:
+                    type: array
+                    description: Nodes within the caller's transfer permissions that lack compatible file authorizations. No grant IDs are exposed.
+                    items:
+                      type: object
+                      required: [node_id, name, reasons]
+                      properties:
+                        node_id: {type: string}
+                        name: {type: string}
+                        reasons:
+                          type: array
+                          items: {type: string, enum: [source_grant_missing, destination_grant_missing]}
+        '400': {$ref: '#/components/responses/SelectionError'}
+        '403': {$ref: '#/components/responses/PermissionDenied'}
+  /api/v1/nodes/{destinationNodeID}/transfers/plan:
+    post:
+      summary: Preview a transfer without creating a job
+      parameters:
+        - $ref: '#/components/parameters/DestinationNodeID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LogicalTransfer'}
+      responses:
+        '200':
+          description: Totals are always complete; items can be visually truncated at 500
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  max_source_paths: {type: integer}
+                  plan: {$ref: '#/components/schemas/TransferPlan'}
+        '403': {$ref: '#/components/responses/PermissionDenied'}
+        '422': {$ref: '#/components/responses/TransferError'}
+  /api/v1/nodes/{destinationNodeID}/transfers:
+    post:
+      summary: Create an idempotent durable transfer job
+      parameters:
+        - $ref: '#/components/parameters/DestinationNodeID'
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 512}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LogicalTransfer'}
+      responses:
+        '202':
+          description: Job accepted. Location is the destination node job URL.
+          headers:
+            Location:
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Job'}
+        '400': {$ref: '#/components/responses/SelectionError'}
+        '403': {$ref: '#/components/responses/PermissionDenied'}
+        '409':
+          description: Same idempotency key with a different logical payload
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '422': {$ref: '#/components/responses/TransferError'}
+components:
+  parameters:
+    SourceNodeID:
+      in: path
+      name: sourceNodeID
+      required: true
+      schema: {type: string}
+    DestinationNodeID:
+      in: path
+      name: destinationNodeID
+      required: true
+      schema: {type: string}
+  schemas:
+    Source:
+      type: object
+      required: [node_id, mount_id, paths]
+      properties:
+        node_id: {type: string}
+        mount_id: {type: string}
+        paths:
+          type: array
+          minItems: 1
+          description: Mount-relative direct roots. Descendants do not count toward the limit.
+          items: {type: string}
+    Destination:
+      type: object
+      required: [mount_id, path]
+      properties:
+        mount_id: {type: string}
+        path: {type: string, description: Mount-relative directory under the authorized root}
+    LogicalTransfer:
+      type: object
+      required: [operation, source, destination]
+      properties:
+        operation: {type: string, enum: [copy, move]}
+        source: {$ref: '#/components/schemas/Source'}
+        destination: {$ref: '#/components/schemas/Destination'}
+        conflict_policy: {type: string, enum: [fail, skip, overwrite, rename, ask, checksum], default: fail}
+        verify_checksum: {type: boolean}
+        bandwidth_limit_bytes_per_second: {type: integer, format: int64, minimum: 0}
+        max_parallel_files: {type: integer, minimum: 1, maximum: 32}
+        max_parallel_chunks: {type: integer, minimum: 1, maximum: 16}
+    TargetNode:
+      type: object
+      properties:
+        node_id: {type: string}
+        name: {type: string}
+        state: {type: string}
+        available: {type: boolean}
+        mounts:
+          type: array
+          items:
+            type: object
+            properties:
+              mount_id: {type: string}
+              name: {type: string}
+              root_path: {type: string}
+              conflict_policies:
+                type: array
+                items: {type: string}
+              can_browse: {type: boolean}
+              available: {type: boolean}
+              state: {type: string}
+    TransferPlan:
+      type: object
+      properties:
+        files_total: {type: integer}
+        bytes_total: {type: integer, format: int64}
+        copy_count: {type: integer}
+        rename_count: {type: integer}
+        skip_count: {type: integer}
+        conflict_count: {type: integer}
+        truncated: {type: boolean}
+        items: {type: array, maxItems: 500, items: {type: object}}
+    Job:
+      type: object
+      properties:
+        job_id: {type: string}
+        type: {type: string, enum: [transfer_pull_batch, transfer_move_batch]}
+        state: {type: string}
+        phase: {type: string}
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [selection_limit_exceeded, permission_denied, no_compatible_grant, path_outside_grant, node_unavailable, mount_unavailable, invalid_selection, conflict, idempotency_conflict]
+            message: {type: string}
+            correlation_id: {type: string}
+  responses:
+    SelectionError:
+      description: Invalid, duplicate, overlapping, symbolic-link, oversized, or path-traversal selection
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    PermissionDenied:
+      description: RBAC or Access Group does not authorize both sides of the transfer
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    TransferError:
+      description: No compatible grant, unavailable mount/node, or conflict policy not allowed by the destination grant
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}

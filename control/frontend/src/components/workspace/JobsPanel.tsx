@@ -8,8 +8,15 @@ import { formatBytes, formatETA } from "@/lib/format";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { ConflictDecisionDialog } from "@/components/workspace/ConflictDecisionDialog";
 
 const CONTROL_LABELS: Record<string, string> = {
@@ -89,116 +96,139 @@ export function JobsPanel() {
         </Button>
       </div>
 
-      <div className="grid gap-2">
-        {jobs.slice(0, 8).map((job) => (
-          <Card
-            key={job.job_id}
-            className="flex flex-wrap items-center gap-4 p-4"
-          >
-            <span className="grid h-8 w-8 place-content-center rounded-md bg-muted">
-              {jobIcon(job.type)}
-            </span>
-            <div className="min-w-0 flex-1">
-              <strong className="block text-sm">
-                {job.type.replaceAll("_", " ")}
-              </strong>
-              <small className="block truncate text-muted-foreground">
-                {job.destination_path || job.source_path || job.mount_id}
-              </small>
-              {job.error ? (
-                <small className="block text-destructive">{job.error}</small>
-              ) : null}
-              {isRemoteTransfer(job) && (
-                <div className="mt-3 grid gap-1.5">
-                  <div className="flex justify-between gap-3 text-xs text-muted-foreground">
-                    <span>Progresso da transferência</span>
-                    <span>
-                      {progressPercent(job) == null
-                        ? "Preparando…"
-                        : `${Math.round(progressPercent(job)!)}%`}
+      <div className="rounded-lg border">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="min-w-72">Job</TableHead>
+              <TableHead className="min-w-48">Progresso</TableHead>
+              <TableHead className="min-w-44">Transferência</TableHead>
+              <TableHead>Estado</TableHead>
+              <TableHead className="min-w-44">Ações</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {jobs.slice(0, 8).map((job) => (
+              <TableRow key={job.job_id}>
+                <TableCell className="whitespace-normal">
+                  <div className="flex min-w-64 items-start gap-3">
+                    <span className="grid size-8 shrink-0 place-content-center rounded-md bg-muted">
+                      {jobIcon(job.type)}
                     </span>
+                    <div className="min-w-0">
+                      <strong className="block text-sm">
+                        {job.type.replaceAll("_", " ")}
+                      </strong>
+                      <small className="block truncate text-muted-foreground">
+                        {job.destination_path || job.source_path || job.mount_id}
+                      </small>
+                      {job.error ? (
+                        <small className="block text-destructive">{job.error}</small>
+                      ) : null}
+                    </div>
                   </div>
-                  <Progress value={progressPercent(job) ?? 0} />
-                </div>
-              )}
-            </div>
-            <span className="text-right text-xs text-muted-foreground">
-              {formatBytes(job.bytes_completed)}
-              {job.bytes_total ? ` / ${formatBytes(job.bytes_total)}` : ""}
-              {job.bytes_per_second ? (
-                <small className="block">
-                  {formatBytes(job.bytes_per_second)}/s
-                </small>
-              ) : null}
-              {job.eta_seconds != null ? (
-                <small className="block">
-                  ETA {formatETA(job.eta_seconds)} · {job.eta_confidence}
-                </small>
-              ) : null}
-              {job.files_total ? (
-                <small className="block">
-                  {job.files_completed}/{job.files_total} arquivos
-                  {job.files_failed ? ` · ${job.files_failed} falharam` : ""}
-                </small>
-              ) : null}
-            </span>
-            <Badge variant={stateVariant(job.state)}>{job.state}</Badge>
-            <div className="flex flex-wrap gap-1">
-              {canControl(job) &&
-                ["queued", "running"].includes(job.state) && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => control(job, "pause")}
-                  >
-                    Pausar
-                  </Button>
-                )}
-              {canControl(job) &&
-                ["paused", "interrupted", "waiting_validation"].includes(
-                  job.state,
-                ) && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => control(job, "resume")}
-                  >
-                    Validar e retomar
-                  </Button>
-                )}
-              {canControl(job) && ACTIVE_STATES.has(job.state) && (
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => control(job, "cancel")}
+                </TableCell>
+                <TableCell className="whitespace-normal">
+                  {progressPercent(job) == null ? (
+                    <span className="text-xs text-muted-foreground">—</span>
+                  ) : (
+                    <div className="grid min-w-40 gap-1.5 text-xs text-muted-foreground">
+                      <div className="flex justify-between gap-3">
+                        <span>{isRemoteTransfer(job) ? "Transferência" : "Operação"}</span>
+                        <span>{Math.round(progressPercent(job)!)}%</span>
+                      </div>
+                      <Progress value={progressPercent(job)} />
+                    </div>
+                  )}
+                </TableCell>
+                <TableCell className="whitespace-normal">
+                  <div className="grid min-w-36 gap-1 text-xs text-muted-foreground">
+                    <span>
+                      {formatBytes(job.bytes_completed)}
+                      {job.bytes_total ? ` / ${formatBytes(job.bytes_total)}` : ""}
+                    </span>
+                    {job.bytes_per_second ? (
+                      <span>{formatBytes(job.bytes_per_second)}/s</span>
+                    ) : null}
+                    {job.eta_seconds != null ? (
+                      <span>ETA {formatETA(job.eta_seconds)} · {job.eta_confidence}</span>
+                    ) : null}
+                    {job.files_total ? (
+                      <span>
+                        {job.files_completed}/{job.files_total} arquivos
+                        {job.files_failed ? ` · ${job.files_failed} falharam` : ""}
+                      </span>
+                    ) : null}
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <Badge variant={stateVariant(job.state)}>{job.state}</Badge>
+                </TableCell>
+                <TableCell className="whitespace-normal">
+                  <div className="flex flex-wrap gap-1">
+                    {canControl(job) &&
+                      ["queued", "running"].includes(job.state) && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => control(job, "pause")}
+                        >
+                          Pausar
+                        </Button>
+                      )}
+                    {canControl(job) &&
+                      ["paused", "interrupted", "waiting_validation"].includes(
+                        job.state,
+                      ) && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => control(job, "resume")}
+                        >
+                          Validar e retomar
+                        </Button>
+                      )}
+                    {canControl(job) && ACTIVE_STATES.has(job.state) && (
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => control(job, "cancel")}
+                      >
+                        Cancelar
+                      </Button>
+                    )}
+                    {canControl(job) &&
+                      ["failed", "completed_with_warnings"].includes(job.state) && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => control(job, "retry")}
+                        >
+                          Tentar novamente
+                        </Button>
+                      )}
+                    {hasPermission(nodePath(`jobs/${job.job_id}`), "update") &&
+                      job.state === "waiting_user_decision" && (
+                        <Button size="sm" onClick={() => setDecisionJob(job)}>
+                          Resolver conflito
+                        </Button>
+                      )}
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+            {!jobs.length && (
+              <TableRow>
+                <TableCell
+                  colSpan={5}
+                  className="py-8 text-center text-sm text-muted-foreground"
                 >
-                  Cancelar
-                </Button>
-              )}
-              {canControl(job) &&
-                ["failed", "completed_with_warnings"].includes(job.state) && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => control(job, "retry")}
-                  >
-                    Tentar novamente
-                  </Button>
-                )}
-              {hasPermission(nodePath(`jobs/${job.job_id}`), "update") &&
-                job.state === "waiting_user_decision" && (
-                  <Button size="sm" onClick={() => setDecisionJob(job)}>
-                    Resolver conflito
-                  </Button>
-                )}
-            </div>
-          </Card>
-        ))}
-        {!jobs.length && (
-          <p className="py-6 text-sm text-muted-foreground">
-            Nenhum job registrado.
-          </p>
-        )}
+                  Nenhum job registrado.
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
       </div>
 
       <ConflictDecisionDialog

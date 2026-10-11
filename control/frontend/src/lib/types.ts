@@ -157,6 +157,9 @@ export type PeerState =
   | "offline"
   | "degraded"
   | "identity_changed"
+  /** The peer's listener refused our certificate: it dropped us. */
+  | "revoked_by_peer"
+  | "untrusted"
   | "revoked"
   | string;
 
@@ -194,6 +197,13 @@ export interface Grant {
   enabled: boolean;
 }
 
+export type PairingInviteStatus =
+  | "pending"
+  | "consumed"
+  | "revoked"
+  | "expired"
+  | string;
+
 export interface PairingInvite {
   invite_id: string;
   target_node_id: string;
@@ -201,8 +211,15 @@ export interface PairingInvite {
   issuer_role: string;
   invitee_role: string;
   expires_at?: string;
-  status: string;
+  status: PairingInviteStatus;
 }
+
+export type PairingRequestStatus =
+  | "pending_review"
+  | "accepted"
+  | "rejected"
+  | "expired"
+  | string;
 
 export interface PairingRequest {
   request_id: string;
@@ -210,7 +227,69 @@ export interface PairingRequest {
   issuer_fingerprint: string;
   purpose?: string;
   transfer_mode: string;
-  status: string;
+  status: PairingRequestStatus;
+}
+
+export type ConnectionStatus =
+  | "pending_review"
+  | "connected"
+  /** One node trusts the other but the handshake never finished. */
+  | "partially_connected"
+  | "rejected"
+  | "revoked"
+  | string;
+
+export interface Connection {
+  request_id: string;
+  invite_id: string;
+  issuer_node_id: string;
+  target_node_id: string;
+  issuer_fingerprint: string;
+  status: ConnectionStatus;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Why the two sides of a pairing disagree, as resolved by the Control Tower.
+ * The browser cannot tell these apart from two peer listings, which is why the
+ * server classifies them.
+ */
+export type TrustStatus =
+  | "connected"
+  | "revoked_by_peer"
+  | "missing_on_peer"
+  | "identity_changed"
+  | "unreachable"
+  | "revoked"
+  | "not_registered"
+  | "remote_unreadable"
+  | string;
+
+export interface TrustPeer extends Peer {
+  previous_fingerprint?: string;
+  identity_epoch?: number;
+  last_seen_at?: string;
+  consecutive_failures?: number;
+  trusted_at?: string;
+  remote_state?: PeerState;
+  reciprocal: boolean;
+  trust_status: TrustStatus;
+  asymmetry_reason?: string;
+  registered: boolean;
+	registered_node_id?: string;
+  grants: Grant[];
+}
+
+export interface TrustView {
+  node_id: string;
+  peers: TrustPeer[];
+  invites: PairingInvite[];
+  requests: PairingRequest[];
+  connections: Connection[];
+  can_read_pairing: boolean;
+  can_list_grants: boolean;
 }
 
 export interface MTLSRolloutPeer {
@@ -238,11 +317,59 @@ export interface IdentityState {
 }
 
 export interface TransferPlan {
-  files_total: number;
-  bytes_total: number;
-  copy_count: number;
-  conflict_count: number;
-  remote_file?: boolean;
+	files_total: number;
+	bytes_total: number;
+	copy_count: number;
+	skip_count?: number;
+	rename_count?: number;
+	conflict_count: number;
+	truncated?: boolean;
+	items?: JobItem[];
+	remote_file?: boolean;
+}
+
+export interface LogicalTransferRequest {
+	operation: "copy" | "move";
+	source: { node_id: string; mount_id: string; paths: string[] };
+	destination: { mount_id: string; path: string };
+	conflict_policy?: string;
+	verify_checksum?: boolean;
+	bandwidth_limit_bytes_per_second?: number;
+	max_parallel_files?: number;
+	max_parallel_chunks?: number;
+}
+
+export interface TransferTargetMount {
+	mount_id: string;
+	name: string;
+	root_path: string;
+	conflict_policies: string[];
+	can_browse: boolean;
+	available: boolean;
+	state: string;
+}
+
+export interface TransferTargetNode {
+	node_id: string;
+	name: string;
+	state: NodeState;
+	available: boolean;
+	mounts: TransferTargetMount[];
+}
+
+export interface TransferTargetsResponse {
+	max_source_paths: number;
+	targets: TransferTargetNode[];
+	blocked_targets?: {
+		node_id: string;
+		name: string;
+		reasons: ("source_grant_missing" | "destination_grant_missing")[];
+	}[];
+}
+
+export interface LogicalTransferPlanResponse {
+	max_source_paths: number;
+	plan: TransferPlan;
 }
 
 export interface ListResponse<T> {

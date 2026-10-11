@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -113,9 +115,16 @@ func newHandler(cfg config.Config, storage *store.Store, logger *slog.Logger, cl
 	mux.Handle("POST /api/v1/control-tower/nodes/{nodeID}/distribute-identity-handovers", s.auth(http.HandlerFunc(s.distributeNodeIdentityHandovers)))
 	mux.Handle("POST /api/v1/control-tower/nodes/{nodeID}/distribute-mtls-rotation", s.auth(http.HandlerFunc(s.distributeNodeMTLSRotation)))
 	mux.Handle("DELETE /api/v1/control-tower/nodes/{nodeID}", s.auth(http.HandlerFunc(s.deleteNode)))
+	mux.Handle("GET /api/v1/control-tower/connections", s.auth(http.HandlerFunc(s.listConnections)))
 	mux.Handle("POST /api/v1/control-tower/connections", s.auth(http.HandlerFunc(s.createConnectionRequest)))
 	mux.Handle("POST /api/v1/control-tower/connections/{requestID}/approve", s.auth(http.HandlerFunc(s.approveConnection)))
+	mux.Handle("POST /api/v1/control-tower/connections/{requestID}/reconcile", s.auth(http.HandlerFunc(s.reconcileConnection)))
 	mux.Handle("POST /api/v1/control-tower/connections/{requestID}/reject", s.auth(http.HandlerFunc(s.rejectConnection)))
+	mux.Handle("POST /api/v1/control-tower/connections/{requestID}/revoke", s.auth(http.HandlerFunc(s.revokeConnection)))
+	mux.Handle("GET /api/v1/control-tower/nodes/{nodeID}/trust", s.auth(http.HandlerFunc(s.nodeTrust)))
+	mux.Handle("POST /api/v1/nodes/{nodeID}/transfers/targets", s.auth(http.HandlerFunc(s.transferTargets)))
+	mux.Handle("POST /api/v1/nodes/{nodeID}/transfers/plan", s.auth(http.HandlerFunc(s.planLogicalTransfer)))
+	mux.Handle("POST /api/v1/nodes/{nodeID}/transfers", s.auth(http.HandlerFunc(s.createLogicalTransfer)))
 	mux.Handle("/api/v1/nodes/{nodeID}/{resource...}", s.auth(http.HandlerFunc(s.proxyNode)))
 	mux.HandleFunc("/", s.static)
 	return s.recover(s.correlation(s.securityHeaders(s.csrf(mux))))
@@ -367,7 +376,7 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r, "list", "control-tower/users") {
 		return
 	}
-	users, err := s.store.ListUsers(r.Context())
+	users, err := s.store.SearchUsers(r.Context(), r.URL.Query().Get("q"))
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -684,7 +693,7 @@ func (s *Server) listServiceAccounts(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r, "list", "control-tower/service-accounts") {
 		return
 	}
-	accounts, err := s.store.ListServiceAccounts(r.Context())
+	accounts, err := s.store.SearchServiceAccounts(r.Context(), r.URL.Query().Get("q"))
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -971,7 +980,7 @@ func (s *Server) listAccessGroups(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r, "list", "control-tower/access-groups") {
 		return
 	}
-	groups, err := s.store.ListAccessGroups(r.Context())
+	groups, err := s.store.SearchAccessGroups(r.Context(), r.URL.Query().Get("q"))
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -1193,7 +1202,7 @@ func (s *Server) listPolicies(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r, "list", "control-tower/policies") {
 		return
 	}
-	policies, err := s.store.ListPolicies(r.Context())
+	policies, err := s.store.SearchPolicies(r.Context(), r.URL.Query().Get("q"))
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -1298,7 +1307,7 @@ func (s *Server) listRoles(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r, "list", "control-tower/roles") {
 		return
 	}
-	roles, err := s.store.ListRoles(r.Context())
+	roles, err := s.store.SearchRoles(r.Context(), r.URL.Query().Get("q"))
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -1814,10 +1823,21 @@ type identityHandover struct {
 }
 
 type nodePeer struct {
-	NodeID        string `json:"node_id"`
-	Fingerprint   string `json:"fingerprint"`
-	IdentityEpoch int    `json:"identity_epoch"`
-	State         string `json:"state"`
+	NodeID              string     `json:"node_id"`
+	Name                string     `json:"name"`
+	Fingerprint         string     `json:"fingerprint"`
+	PreviousFingerprint string     `json:"previous_fingerprint,omitempty"`
+	IdentityEpoch       int        `json:"identity_epoch"`
+	Endpoint            string     `json:"endpoint"`
+	MTLSEndpoint        string     `json:"mtls_endpoint"`
+	TransferMode        string     `json:"transfer_mode"`
+	LocalRole           string     `json:"local_role"`
+	RemoteRole          string     `json:"remote_role"`
+	ClusterID           string     `json:"cluster_id,omitempty"`
+	State               string     `json:"state"`
+	LastSeenAt          *time.Time `json:"last_seen_at,omitempty"`
+	ConsecutiveFailures int        `json:"consecutive_failures"`
+	TrustedAt           time.Time  `json:"trusted_at"`
 }
 
 type identityRotationResponse struct {
@@ -2175,27 +2195,228 @@ func (s *Server) createConnectionRequest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	now := time.Now().UTC()
-	if err := s.store.SaveConnection(r.Context(), store.Connection{
+	connection := store.Connection{
 		RequestID: pairingRequest.ID, InviteID: inviteResult.Invite.ID,
 		IssuerNodeID: issuer.ID, TargetNodeID: target.ID,
 		InviteTokenEncrypted: encryptedInviteToken, IssuerFingerprint: issuerMetadata.Fingerprint,
 		Status: "pending_review", ExpiresAt: pairingRequest.ExpiresAt, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
+	}
+	if err := s.store.SaveConnection(r.Context(), connection); err != nil {
 		_ = s.callNodeJSON(r.Context(), target, http.MethodPost, "/api/v1/pairing/requests/"+url.PathEscape(pairingRequest.ID)+"/reject", map[string]any{}, nil, r.Header.Get("X-Correlation-ID"))
 		_ = s.callNodeJSON(r.Context(), issuer, http.MethodDelete, "/api/v1/pairing/invites/"+url.PathEscape(inviteResult.Invite.ID), nil, nil, r.Header.Get("X-Correlation-ID"))
 		writeError(w, r, http.StatusInternalServerError, "connection_persistence_failed", "O pedido foi entregue, mas não pôde ser registrado pela Control Tower.")
 		return
 	}
+	autoApproved := false
+	connectionStatus := connection.Status
+	if s.canAutoApproveConnection(r, target.ID) {
+		var approvalErr *connectionApprovalError
+		connectionStatus, approvalErr = s.establishConnection(
+			r.Context(), connection, connection.IssuerFingerprint, r.Header.Get("X-Correlation-ID"),
+		)
+		if approvalErr == nil {
+			autoApproved = true
+			s.audit(r, "auto_approve", "connections/"+connection.RequestID, "allowed")
+		} else {
+			s.audit(r, "auto_approve", "connections/"+connection.RequestID, "denied")
+		}
+	}
 	resource := "nodes/" + issuer.ID + "/connections/" + target.ID
 	s.audit(r, "create", resource, "allowed")
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"request": pairingRequest, "issuer_node_id": issuer.ID, "target_node_id": target.ID,
-		"trust_established": false, "grants_created": false,
+		"status": connectionStatus, "trust_established": autoApproved,
+		"auto_approved": autoApproved, "grants_created": false,
 	})
 }
 
 type approveConnectionInput struct {
 	ConfirmedFingerprint string `json:"confirmed_fingerprint"`
+}
+
+type connectionApprovalError struct {
+	status  int
+	code    string
+	message string
+}
+
+// canAutoApproveConnection is deliberately limited to human sessions. A
+// service account can create a request through the API, but it must never
+// silently establish trust on a second node.
+func (s *Server) canAutoApproveConnection(r *http.Request, targetNodeID string) bool {
+	if currentActorType(r) != "user" {
+		return false
+	}
+	decision, err := s.evaluateAuthorization(
+		r, "nodes/"+targetNodeID+"/admin/pairing", "sudo",
+	)
+	if err != nil {
+		return false
+	}
+	s.auditAuthorizationDecision(r, decision)
+	return decision.Allowed
+}
+
+// peerTrusted reports whether node already holds a usable peer row for
+// peerNodeID. Each handshake step checks this first so establishConnection is
+// safe to re-run: that is what makes reconciliation possible.
+func (s *Server) peerTrusted(ctx context.Context, node store.Node,
+	peerNodeID, correlationID string,
+) (bool, error) {
+	peers, err := s.nodePeers(ctx, node, correlationID)
+	if err != nil {
+		return false, err
+	}
+	for _, peer := range peers {
+		if peer.NodeID == peerNodeID {
+			return trustedPeerState(peer.State), nil
+		}
+	}
+	return false, nil
+}
+
+// pairingStatus returns the status a node reports for one invite or request, or
+// "" when the row is gone.
+func (s *Server) pairingStatus(ctx context.Context, node store.Node,
+	resource, idField, id, correlationID string,
+) (string, error) {
+	var response struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := s.callNodeJSON(ctx, node, http.MethodGet, "/api/v1/pairing/"+resource, nil,
+		&response, correlationID); err != nil {
+		return "", err
+	}
+	for _, item := range response.Items {
+		if value, ok := item[idField].(string); ok && value == id {
+			status, _ := item["status"].(string)
+			return status, nil
+		}
+	}
+	return "", nil
+}
+
+// establishConnection drives the two-sided handshake to completion and is
+// idempotent: every step inspects the node's current state before acting, so a
+// retry after a partial failure finishes the missing half instead of replaying
+// a consumed invite.
+func (s *Server) establishConnection(ctx context.Context, connection store.Connection,
+	confirmedFingerprint, correlationID string,
+) (string, *connectionApprovalError) {
+	issuer, issuerErr := s.store.GetNode(ctx, connection.IssuerNodeID)
+	target, targetErr := s.store.GetNode(ctx, connection.TargetNodeID)
+	if issuerErr != nil || targetErr != nil {
+		return connection.Status, &connectionApprovalError{
+			status: http.StatusNotFound, code: "node_not_found",
+			message: "Um dos nodes do pedido não está mais cadastrado.",
+		}
+	}
+	targetMetadata, err := s.nodeMetadata(ctx, target)
+	if err != nil {
+		return connection.Status, &connectionApprovalError{
+			status: http.StatusBadGateway, code: "target_unavailable",
+			message: "O node alvo está indisponível.",
+		}
+	}
+	issuerDone, err := s.peerTrusted(ctx, issuer, targetMetadata.NodeID, correlationID)
+	if err != nil {
+		return connection.Status, &connectionApprovalError{
+			status: http.StatusBadGateway, code: "issuer_unavailable",
+			message: "O node emissor está indisponível.",
+		}
+	}
+	issuerMetadata, err := s.nodeMetadata(ctx, issuer)
+	if err != nil {
+		return connection.Status, &connectionApprovalError{
+			status: http.StatusBadGateway, code: "issuer_unavailable",
+			message: "O node emissor está indisponível.",
+		}
+	}
+	targetDone, err := s.peerTrusted(ctx, target, issuerMetadata.NodeID, correlationID)
+	if err != nil {
+		return connection.Status, &connectionApprovalError{
+			status: http.StatusBadGateway, code: "target_unavailable",
+			message: "O node alvo está indisponível.",
+		}
+	}
+	if !issuerDone {
+		status, statusErr := s.pairingStatus(ctx, issuer, "invites", "invite_id",
+			connection.InviteID, correlationID)
+		if statusErr != nil {
+			return connection.Status, &connectionApprovalError{
+				status: http.StatusBadGateway, code: "issuer_unavailable",
+				message: "O node emissor está indisponível.",
+			}
+		}
+		if status != "pending" {
+			return s.persistConnectionStatus(ctx, connection, "partially_connected"),
+				&connectionApprovalError{
+					status: http.StatusConflict, code: "reconcile_requires_new_invite",
+					message: "O convite já foi consumido ou expirou e o emissor não confia no alvo. " +
+						"Remova a confiança nos dois nodes e crie uma nova conexão.",
+				}
+		}
+		inviteToken, decryptErr := security.Decrypt(s.config.EncryptionKey, connection.InviteTokenEncrypted)
+		if decryptErr != nil {
+			return connection.Status, &connectionApprovalError{
+				status: http.StatusInternalServerError, code: "invite_unavailable",
+				message: "O segredo do convite não pôde ser recuperado.",
+			}
+		}
+		approvePayload := map[string]any{
+			"invite_token": inviteToken, "peer_node_id": targetMetadata.NodeID,
+			"peer_name": targetMetadata.Name, "peer_fingerprint": targetMetadata.Fingerprint,
+			"peer_identity_epoch": targetMetadata.IdentityEpoch,
+			"peer_endpoint":       target.Endpoint, "peer_mtls_endpoint": targetMetadata.MTLSEndpoint,
+		}
+		if approveErr := s.callNodeJSON(ctx, issuer, http.MethodPost,
+			"/api/v1/pairing/invites/"+url.PathEscape(connection.InviteID)+"/approve",
+			approvePayload, nil, correlationID); approveErr != nil {
+			return connection.Status, &connectionApprovalError{
+				status: http.StatusBadGateway, code: "issuer_approval_failed", message: approveErr.Error(),
+			}
+		}
+	}
+	if !targetDone {
+		status, statusErr := s.pairingStatus(ctx, target, "requests", "request_id",
+			connection.RequestID, correlationID)
+		if statusErr != nil {
+			return connection.Status, &connectionApprovalError{
+				status: http.StatusBadGateway, code: "target_unavailable",
+				message: "O node alvo está indisponível.",
+			}
+		}
+		if status != "pending_review" {
+			return s.persistConnectionStatus(ctx, connection, "partially_connected"),
+				&connectionApprovalError{
+					status: http.StatusConflict, code: "reconcile_requires_new_invite",
+					message: "O pedido no node alvo já não está pendente e o alvo não confia no emissor. " +
+						"Remova a confiança nos dois nodes e crie uma nova conexão.",
+				}
+		}
+		acceptPayload := map[string]any{"confirmed_fingerprint": confirmedFingerprint}
+		if acceptErr := s.callNodeJSON(ctx, target, http.MethodPost,
+			"/api/v1/pairing/requests/"+url.PathEscape(connection.RequestID)+"/accept",
+			acceptPayload, nil, correlationID); acceptErr != nil {
+			return s.persistConnectionStatus(ctx, connection, "partially_connected"),
+				&connectionApprovalError{
+					status: http.StatusBadGateway, code: "target_acceptance_failed",
+					message: "O emissor confiou no alvo, mas o alvo não concluiu a conexão. O pedido requer reconciliação.",
+				}
+		}
+	}
+	return s.persistConnectionStatus(ctx, connection, "connected"), nil
+}
+
+// persistConnectionStatus logs a failed write instead of discarding it: a
+// dropped update used to leave a fully paired connection reading
+// "pending_review" forever.
+func (s *Server) persistConnectionStatus(ctx context.Context, connection store.Connection, status string) string {
+	if err := s.store.UpdateConnectionStatus(ctx, connection.RequestID, status); err != nil {
+		s.log.Error("persist connection status", "request_id", connection.RequestID,
+			"status", status, "error", err)
+	}
+	return status
 }
 
 func (s *Server) approveConnection(w http.ResponseWriter, r *http.Request) {
@@ -2211,7 +2432,9 @@ func (s *Server) approveConnection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "connection_not_found", "Pedido de conexão não encontrado.")
 		return
 	}
-	if connection.Status != "pending_review" || time.Now().UTC().After(connection.ExpiresAt) {
+	// partially_connected is approvable because establishConnection is now
+	// idempotent: approving again finishes the half that failed.
+	if !reconcilableStatuses[connection.Status] || connectionExpired(connection) {
 		writeError(w, r, http.StatusConflict, "connection_not_pending", "O pedido não está mais disponível para aprovação.")
 		return
 	}
@@ -2220,41 +2443,16 @@ func (s *Server) approveConnection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusConflict, "fingerprint_mismatch", "A fingerprint confirmada não corresponde ao node emissor.")
 		return
 	}
-	issuer, issuerErr := s.store.GetNode(r.Context(), connection.IssuerNodeID)
-	target, targetErr := s.store.GetNode(r.Context(), connection.TargetNodeID)
-	if issuerErr != nil || targetErr != nil {
-		writeError(w, r, http.StatusNotFound, "node_not_found", "Um dos nodes do pedido não está mais cadastrado.")
+	status, approvalErr := s.establishConnection(
+		r.Context(), connection, input.ConfirmedFingerprint, r.Header.Get("X-Correlation-ID"),
+	)
+	if approvalErr != nil {
+		s.audit(r, "approve", "connections/"+connection.RequestID, "denied")
+		writeError(w, r, approvalErr.status, approvalErr.code, approvalErr.message)
 		return
 	}
-	targetMetadata, err := s.nodeMetadata(r.Context(), target)
-	if err != nil {
-		writeError(w, r, http.StatusBadGateway, "target_unavailable", "O node alvo está indisponível.")
-		return
-	}
-	inviteToken, err := security.Decrypt(s.config.EncryptionKey, connection.InviteTokenEncrypted)
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, "invite_unavailable", "O segredo do convite não pôde ser recuperado.")
-		return
-	}
-	approvePayload := map[string]any{
-		"invite_token": inviteToken, "peer_node_id": targetMetadata.NodeID,
-		"peer_name": targetMetadata.Name, "peer_fingerprint": targetMetadata.Fingerprint,
-		"peer_identity_epoch": targetMetadata.IdentityEpoch,
-		"peer_endpoint":       target.Endpoint, "peer_mtls_endpoint": targetMetadata.MTLSEndpoint,
-	}
-	if err := s.callNodeJSON(r.Context(), issuer, http.MethodPost, "/api/v1/pairing/invites/"+url.PathEscape(connection.InviteID)+"/approve", approvePayload, nil, r.Header.Get("X-Correlation-ID")); err != nil {
-		writeError(w, r, http.StatusBadGateway, "issuer_approval_failed", err.Error())
-		return
-	}
-	acceptPayload := map[string]any{"confirmed_fingerprint": input.ConfirmedFingerprint}
-	if err := s.callNodeJSON(r.Context(), target, http.MethodPost, "/api/v1/pairing/requests/"+url.PathEscape(connection.RequestID)+"/accept", acceptPayload, nil, r.Header.Get("X-Correlation-ID")); err != nil {
-		_ = s.store.UpdateConnectionStatus(r.Context(), connection.RequestID, "partially_connected")
-		writeError(w, r, http.StatusBadGateway, "target_acceptance_failed", "O emissor confiou no alvo, mas o alvo não concluiu a conexão. O pedido requer reconciliação.")
-		return
-	}
-	_ = s.store.UpdateConnectionStatus(r.Context(), connection.RequestID, "connected")
 	s.audit(r, "approve", "connections/"+connection.RequestID, "allowed")
-	writeJSON(w, http.StatusOK, map[string]any{"status": "connected", "trust_established": true, "grants_created": false})
+	writeJSON(w, http.StatusOK, map[string]any{"status": status, "trust_established": true, "grants_created": false})
 }
 
 func (s *Server) rejectConnection(w http.ResponseWriter, r *http.Request) {
@@ -2272,12 +2470,41 @@ func (s *Server) rejectConnection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "node_not_found", "Um dos nodes do pedido não está mais cadastrado.")
 		return
 	}
-	if err := s.callNodeJSON(r.Context(), target, http.MethodPost, "/api/v1/pairing/requests/"+url.PathEscape(connection.RequestID)+"/reject", map[string]any{}, nil, r.Header.Get("X-Correlation-ID")); err != nil {
-		writeError(w, r, http.StatusBadGateway, "target_rejection_failed", err.Error())
+	// Rejecting an already connected or revoked request used to be allowed and
+	// tore down the target's state while leaving both peers trusted.
+	if connection.Status != "pending_review" && connection.Status != "partially_connected" {
+		writeError(w, r, http.StatusConflict, "connection_not_pending",
+			"O pedido não está mais disponível para rejeição.")
 		return
 	}
-	_ = s.callNodeJSON(r.Context(), issuer, http.MethodDelete, "/api/v1/pairing/invites/"+url.PathEscape(connection.InviteID), nil, nil, r.Header.Get("X-Correlation-ID"))
-	_ = s.store.UpdateConnectionStatus(r.Context(), connection.RequestID, "rejected")
+	correlationID := r.Header.Get("X-Correlation-ID")
+	targetStatus, statusErr := s.pairingStatus(r.Context(), target, "requests",
+		"request_id", connection.RequestID, correlationID)
+	if statusErr != nil {
+		writeError(w, r, http.StatusBadGateway, "target_unavailable",
+			"O node alvo está indisponível, então a rejeição não pode ser confirmada.")
+		return
+	}
+	// Only a still-pending request can be rejected. A request that was already
+	// resolved or is gone is nothing to undo, and must not block the issuer
+	// cleanup below — that is exactly the partially_connected case.
+	if targetStatus == "pending_review" {
+		if err := s.callNodeJSON(r.Context(), target, http.MethodPost, "/api/v1/pairing/requests/"+url.PathEscape(connection.RequestID)+"/reject", map[string]any{}, nil, correlationID); err != nil {
+			writeError(w, r, http.StatusBadGateway, "target_rejection_failed", err.Error())
+			return
+		}
+	}
+	_ = s.callNodeJSON(r.Context(), issuer, http.MethodDelete, "/api/v1/pairing/invites/"+url.PathEscape(connection.InviteID), nil, nil, correlationID)
+	// A partially_connected rejection leaves the issuer trusting a peer that
+	// never trusted it back, so the issuer's peer row has to go too.
+	issuerSide := s.revokePeerOn(r.Context(), issuer, connection.TargetNodeID, correlationID)
+	s.persistConnectionStatus(r.Context(), connection, "rejected")
+	if !issuerSide.Done {
+		s.audit(r, "reject", "connections/"+connection.RequestID, "denied")
+		writeError(w, r, http.StatusBadGateway, "issuer_revoke_failed",
+			"O pedido foi rejeitado, mas a confiança no node emissor não pôde ser removida.")
+		return
+	}
 	s.audit(r, "reject", "connections/"+connection.RequestID, "allowed")
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -2389,18 +2616,578 @@ type transferAuthorizationInput struct {
 	PeerNodeID         string `json:"peer_node_id"`
 	SourceGrantID      string `json:"source_grant_id"`
 	DestinationGrantID string `json:"destination_grant_id"`
+	Operation          string `json:"operation"`
 }
 
 type nodeTransferGrant struct {
-	ID          string `json:"grant_id"`
-	PeerNodeID  string `json:"peer_node_id"`
-	MountID     string `json:"mount_id"`
-	Direction   string `json:"direction"`
-	Enabled     bool   `json:"enabled"`
-	Permissions struct {
-		Read  bool `json:"read"`
-		Write bool `json:"write"`
+	ID               string   `json:"grant_id"`
+	PeerNodeID       string   `json:"peer_node_id"`
+	MountID          string   `json:"mount_id"`
+	Path             string   `json:"path"`
+	Direction        string   `json:"direction"`
+	Enabled          bool     `json:"enabled"`
+	ConflictPolicies []string `json:"conflict_policies"`
+	Permissions      struct {
+		Read   bool `json:"read"`
+		Write  bool `json:"write"`
+		Delete bool `json:"delete"`
 	} `json:"permissions"`
+}
+
+// logicalTransferRequest intentionally contains only mount-relative paths. The
+// control tower resolves the node-local grants and never exposes their IDs to
+// callers of the public transfer API.
+type logicalTransferRequest struct {
+	Operation string `json:"operation"`
+	Source    struct {
+		NodeID  string   `json:"node_id"`
+		MountID string   `json:"mount_id"`
+		Paths   []string `json:"paths"`
+	} `json:"source"`
+	Destination struct {
+		MountID string `json:"mount_id"`
+		Path    string `json:"path"`
+	} `json:"destination"`
+	ConflictPolicy    string `json:"conflict_policy"`
+	VerifyChecksum    bool   `json:"verify_checksum"`
+	BandwidthLimit    int64  `json:"bandwidth_limit_bytes_per_second"`
+	MaxParallelFiles  int    `json:"max_parallel_files"`
+	MaxParallelChunks int    `json:"max_parallel_chunks"`
+}
+
+type transferTargetsRequest struct {
+	Operation     string   `json:"operation"`
+	SourceMountID string   `json:"source_mount_id"`
+	SourcePaths   []string `json:"source_paths"`
+	Source        struct {
+		NodeID  string   `json:"node_id"`
+		MountID string   `json:"mount_id"`
+		Paths   []string `json:"paths"`
+	} `json:"source"`
+}
+
+type transferTargetMount struct {
+	MountID          string   `json:"mount_id"`
+	Name             string   `json:"name"`
+	RootPath         string   `json:"root_path"`
+	ConflictPolicies []string `json:"conflict_policies"`
+	CanBrowse        bool     `json:"can_browse"`
+	Available        bool     `json:"available"`
+	State            string   `json:"state"`
+}
+
+type transferTargetNode struct {
+	NodeID    string                `json:"node_id"`
+	Name      string                `json:"name"`
+	State     string                `json:"state"`
+	Available bool                  `json:"available"`
+	Mounts    []transferTargetMount `json:"mounts"`
+}
+
+type blockedTransferTarget struct {
+	NodeID  string   `json:"node_id"`
+	Name    string   `json:"name"`
+	Reasons []string `json:"reasons"`
+}
+
+type nodeMount struct {
+	ID       string `json:"mount_id"`
+	Name     string `json:"name"`
+	Enabled  bool   `json:"enabled"`
+	State    string `json:"state"`
+	Readable bool   `json:"readable"`
+	Writable bool   `json:"writable"`
+}
+
+type resolvedLogicalTransfer struct {
+	Request          logicalTransferRequest
+	SourceNode       store.Node
+	SourcePeerNodeID string
+	DestinationNode  store.Node
+	SourceGrant      nodeTransferGrant
+	DestinationGrant nodeTransferGrant
+	SourcePaths      []string
+	DestinationPath  string
+}
+
+func (s *Server) transferTargets(w http.ResponseWriter, r *http.Request) {
+	sourceNodeID := strings.TrimSpace(r.PathValue("nodeID"))
+	var input transferTargetsRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if input.Source.MountID != "" || len(input.Source.Paths) > 0 || input.Source.NodeID != "" {
+		input.SourceMountID, input.SourcePaths = input.Source.MountID, input.Source.Paths
+		if input.Source.NodeID != "" && input.Source.NodeID != sourceNodeID {
+			writeError(w, r, http.StatusBadRequest, "invalid_selection", "O node de origem não confere com a URL.")
+			return
+		}
+	}
+	if len(input.SourcePaths) > s.transferMaxSourcePaths() {
+		writeError(w, r, http.StatusBadRequest, "selection_limit_exceeded", "A seleção excede o limite configurado de raízes.")
+		return
+	}
+	paths, operation, err := s.normalizeTransferSelection(input.SourcePaths, input.Operation)
+	if err != nil || !validPathIdentifier(sourceNodeID) || !validPathIdentifier(input.SourceMountID) {
+		writeError(w, r, http.StatusBadRequest, "invalid_selection", "A seleção de origem é inválida.")
+		return
+	}
+	if !s.authorize(w, r, "nodes/"+sourceNodeID+"/files/mounts/"+input.SourceMountID,
+		"read", "permission_denied", "Você não pode ler o mount de origem.") {
+		return
+	}
+	if operation == "move" && !s.authorize(w, r, "nodes/"+sourceNodeID+"/files/mounts/"+input.SourceMountID,
+		"delete", "permission_denied", "Você não pode remover itens do mount de origem.") {
+		return
+	}
+	sourceNode, err := s.store.GetNode(r.Context(), sourceNodeID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, r, http.StatusNotFound, "node_unavailable", "O node de origem não está disponível.")
+		return
+	}
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	sourceGrants, err := s.nodeTransferGrants(r.Context(), sourceNode)
+	if err != nil {
+		writeError(w, r, http.StatusBadGateway, "node_unavailable", "Não foi possível consultar o node de origem.")
+		return
+	}
+	sourceMetadata, err := s.nodeMetadata(r.Context(), sourceNode)
+	if err != nil {
+		writeError(w, r, http.StatusBadGateway, "node_unavailable", "Não foi possível consultar a identidade do node de origem.")
+		return
+	}
+	nodes, err := s.store.ListNodes(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	targets := make([]transferTargetNode, 0, len(nodes))
+	blockedTargets := make([]blockedTransferTarget, 0)
+	for _, candidate := range nodes {
+		if candidate.ID == sourceNodeID || candidate.State == "untrusted" {
+			continue
+		}
+		target := transferTargetNode{NodeID: candidate.ID, Name: candidate.Name, State: candidate.State,
+			Available: candidate.State == "online"}
+		if !target.Available {
+			targets = append(targets, target)
+			continue
+		}
+		if !s.transferCapabilityAllowed(r, "nodes/"+candidate.ID+"/transfers", "execute") {
+			continue
+		}
+		destinationMetadata, metadataErr := s.nodeMetadata(r.Context(), candidate)
+		if metadataErr != nil {
+			target.State, target.Available = "offline", false
+			targets = append(targets, target)
+			continue
+		}
+		destinationGrants, grantsErr := s.nodeTransferGrants(r.Context(), candidate)
+		if grantsErr != nil {
+			target.State, target.Available = "offline", false
+			targets = append(targets, target)
+			continue
+		}
+		mounts, mountsErr := s.nodeMounts(r.Context(), candidate)
+		if mountsErr != nil {
+			target.State, target.Available = "offline", false
+			targets = append(targets, target)
+			continue
+		}
+		mountByID := make(map[string]nodeMount, len(mounts))
+		for _, mount := range mounts {
+			mountByID[mount.ID] = mount
+		}
+		sourceAllowed := hasCompatibleSourceGrant(sourceGrants, destinationMetadata.NodeID, input.SourceMountID, paths, operation)
+		destinationAllowed := false
+		for _, destinationGrant := range destinationGrants {
+			if !destinationGrantAllows(destinationGrant, sourceMetadata.NodeID) ||
+				!s.transferCapabilityAllowed(r, "nodes/"+candidate.ID+"/files/mounts/"+destinationGrant.MountID, "create") {
+				continue
+			}
+			mount, exists := mountByID[destinationGrant.MountID]
+			if !exists {
+				continue
+			}
+			rootPath, rootErr := normalizeTransferPath(destinationGrant.Path, true)
+			if rootErr != nil {
+				continue
+			}
+			destinationAllowed = true
+			if !sourceAllowed {
+				continue
+			}
+			canBrowse := s.transferCapabilityAllowed(r, "nodes/"+candidate.ID+"/files/mounts/"+destinationGrant.MountID, "list")
+			target.Mounts = append(target.Mounts, transferTargetMount{
+				MountID: destinationGrant.MountID, Name: mount.Name, RootPath: rootPath,
+				ConflictPolicies: append([]string(nil), destinationGrant.ConflictPolicies...), CanBrowse: canBrowse,
+				Available: mount.Enabled && mount.State == "available" && mount.Writable, State: mount.State,
+			})
+		}
+		if len(target.Mounts) > 0 {
+			targets = append(targets, target)
+		} else {
+			blocked := blockedTransferTarget{NodeID: candidate.ID, Name: candidate.Name, Reasons: []string{}}
+			if !sourceAllowed {
+				blocked.Reasons = append(blocked.Reasons, "source_grant_missing")
+			}
+			if !destinationAllowed {
+				blocked.Reasons = append(blocked.Reasons, "destination_grant_missing")
+			}
+			blockedTargets = append(blockedTargets, blocked)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"max_source_paths": s.transferMaxSourcePaths(), "targets": targets, "blocked_targets": blockedTargets,
+	})
+}
+
+func (s *Server) planLogicalTransfer(w http.ResponseWriter, r *http.Request) {
+	resolved, ok := s.resolveLogicalTransferRequest(w, r, "create")
+	if !ok {
+		return
+	}
+	var plan any
+	if err := s.callNodeJSON(r.Context(), resolved.DestinationNode, http.MethodPost,
+		"/api/v1/transfers/pull/batch/plan", resolved.nodeRequest(r.Header.Get("X-Correlation-ID")), &plan,
+		r.Header.Get("X-Correlation-ID")); err != nil {
+		s.writeLogicalTransferNodeError(w, r, err)
+		return
+	}
+	s.audit(r, "plan", "nodes/"+resolved.DestinationNode.ID+"/transfers", "allowed")
+	writeJSON(w, http.StatusOK, map[string]any{"plan": plan, "max_source_paths": s.transferMaxSourcePaths()})
+}
+
+func (s *Server) createLogicalTransfer(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(r.Header.Get("Idempotency-Key")) == "" {
+		writeError(w, r, http.StatusBadRequest, "idempotency_key_required", "Idempotency-Key é obrigatório para criar a transferência.")
+		return
+	}
+	resolved, ok := s.resolveLogicalTransferRequest(w, r, "execute")
+	if !ok {
+		return
+	}
+	payload := resolved.nodeRequest(r.Header.Get("X-Correlation-ID"))
+	canonical, err := json.Marshal(struct {
+		DestinationNodeID string                 `json:"destination_node_id"`
+		Request           logicalTransferRequest `json:"request"`
+	}{DestinationNodeID: resolved.DestinationNode.ID, Request: resolved.Request})
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	sum := sha256.Sum256(canonical)
+	var job any
+	err = s.callNodeJSONWithHeaders(r.Context(), resolved.DestinationNode, http.MethodPost,
+		"/api/v1/transfers/pull/batch", payload, &job, r.Header.Get("X-Correlation-ID"), http.Header{
+			"Idempotency-Key":         []string{r.Header.Get("Idempotency-Key")},
+			"X-Jolt-Idempotency-Hash": []string{hex.EncodeToString(sum[:])},
+		})
+	if err != nil {
+		s.writeLogicalTransferNodeError(w, r, err)
+		return
+	}
+	s.audit(r, "execute", "nodes/"+resolved.DestinationNode.ID+"/transfers", "allowed")
+	if jobID, _ := job.(map[string]any)["job_id"].(string); jobID != "" {
+		w.Header().Set("Location", "/api/v1/nodes/"+url.PathEscape(resolved.DestinationNode.ID)+"/jobs/"+url.PathEscape(jobID))
+	}
+	writeJSON(w, http.StatusAccepted, job)
+}
+
+func (s *Server) resolveLogicalTransferRequest(w http.ResponseWriter, r *http.Request, transferCapability string) (resolvedLogicalTransfer, bool) {
+	destinationNodeID := strings.TrimSpace(r.PathValue("nodeID"))
+	var request logicalTransferRequest
+	if !decodeJSON(w, r, &request) {
+		return resolvedLogicalTransfer{}, false
+	}
+	if len(request.Source.Paths) > s.transferMaxSourcePaths() {
+		writeError(w, r, http.StatusBadRequest, "selection_limit_exceeded", "A seleção excede o limite configurado de raízes.")
+		return resolvedLogicalTransfer{}, false
+	}
+	paths, operation, err := s.normalizeTransferSelection(request.Source.Paths, request.Operation)
+	if err != nil || !validPathIdentifier(destinationNodeID) || !validPathIdentifier(request.Source.NodeID) ||
+		!validPathIdentifier(request.Source.MountID) || !validPathIdentifier(request.Destination.MountID) ||
+		request.Source.NodeID == destinationNodeID {
+		writeError(w, r, http.StatusBadRequest, "invalid_selection", "A seleção ou o destino da transferência são inválidos.")
+		return resolvedLogicalTransfer{}, false
+	}
+	destinationPath, err := normalizeTransferPath(request.Destination.Path, true)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "path_outside_grant", "A pasta de destino precisa ser relativa ao mount autorizado.")
+		return resolvedLogicalTransfer{}, false
+	}
+	request.Operation = operation
+	request.Source.Paths = paths
+	request.Destination.Path = destinationPath
+	request.ConflictPolicy = strings.ToLower(strings.TrimSpace(request.ConflictPolicy))
+	if request.ConflictPolicy == "" {
+		request.ConflictPolicy = "fail"
+	}
+	if !validConflictPolicy(request.ConflictPolicy) {
+		writeError(w, r, http.StatusBadRequest, "invalid_selection", "A política de conflito é inválida.")
+		return resolvedLogicalTransfer{}, false
+	}
+	sourceFilePath := "nodes/" + request.Source.NodeID + "/files/mounts/" + request.Source.MountID
+	destinationFilePath := "nodes/" + destinationNodeID + "/files/mounts/" + request.Destination.MountID
+	if !s.authorize(w, r, sourceFilePath, "read", "permission_denied", "Você não pode ler o mount de origem.") ||
+		!s.authorize(w, r, destinationFilePath, "create", "permission_denied", "Você não pode gravar no mount de destino.") ||
+		!s.authorize(w, r, "nodes/"+destinationNodeID+"/transfers", transferCapability,
+			"permission_denied", "Você não pode executar transferências neste node.") {
+		return resolvedLogicalTransfer{}, false
+	}
+	if operation == "move" && !s.authorize(w, r, sourceFilePath, "delete", "permission_denied", "Você não pode remover itens do mount de origem.") {
+		return resolvedLogicalTransfer{}, false
+	}
+	sourceNode, err := s.store.GetNode(r.Context(), request.Source.NodeID)
+	if err != nil {
+		writeError(w, r, http.StatusNotFound, "node_unavailable", "O node de origem não está disponível.")
+		return resolvedLogicalTransfer{}, false
+	}
+	destinationNode, err := s.store.GetNode(r.Context(), destinationNodeID)
+	if err != nil || destinationNode.State == "untrusted" {
+		writeError(w, r, http.StatusNotFound, "node_unavailable", "O node de destino não está disponível.")
+		return resolvedLogicalTransfer{}, false
+	}
+	sourceMetadata, sourceIdentityErr := s.nodeMetadata(r.Context(), sourceNode)
+	destinationMetadata, destinationIdentityErr := s.nodeMetadata(r.Context(), destinationNode)
+	if sourceIdentityErr != nil || destinationIdentityErr != nil {
+		writeError(w, r, http.StatusBadGateway, "node_unavailable", "Não foi possível consultar a identidade dos nodes da transferência.")
+		return resolvedLogicalTransfer{}, false
+	}
+	sourceGrants, err := s.nodeTransferGrants(r.Context(), sourceNode)
+	if err != nil {
+		s.writeLogicalTransferNodeError(w, r, err)
+		return resolvedLogicalTransfer{}, false
+	}
+	destinationGrants, err := s.nodeTransferGrants(r.Context(), destinationNode)
+	if err != nil {
+		s.writeLogicalTransferNodeError(w, r, err)
+		return resolvedLogicalTransfer{}, false
+	}
+	sourceGrant, destinationGrant, found := selectLogicalTransferGrants(sourceGrants, destinationGrants,
+		sourceMetadata.NodeID, destinationMetadata.NodeID, request.Source.MountID, request.Destination.MountID,
+		paths, destinationPath, operation, request.ConflictPolicy)
+	if !found {
+		writeError(w, r, http.StatusUnprocessableEntity, "no_compatible_grant", "Não há um grant compatível para toda a seleção e o destino.")
+		return resolvedLogicalTransfer{}, false
+	}
+	translatedPaths := make([]string, len(paths))
+	for index, sourcePath := range paths {
+		translatedPaths[index], _ = relativeTransferPath(sourcePath, sourceGrant.Path)
+	}
+	translatedDestination, _ := relativeTransferPath(destinationPath, destinationGrant.Path)
+	return resolvedLogicalTransfer{Request: request, SourceNode: sourceNode, DestinationNode: destinationNode,
+		SourcePeerNodeID: sourceMetadata.NodeID,
+		SourceGrant:      sourceGrant, DestinationGrant: destinationGrant, SourcePaths: translatedPaths,
+		DestinationPath: translatedDestination}, true
+}
+
+func (resolved resolvedLogicalTransfer) nodeRequest(_ string) map[string]any {
+	sourceNames := make([]string, len(resolved.Request.Source.Paths))
+	for index, sourcePath := range resolved.Request.Source.Paths {
+		sourceNames[index] = path.Base(sourcePath)
+	}
+	return map[string]any{
+		"peer_node_id": resolved.SourcePeerNodeID, "source_grant_id": resolved.SourceGrant.ID,
+		"source_paths": resolved.SourcePaths, "source_names": sourceNames, "destination_grant_id": resolved.DestinationGrant.ID,
+		"destination_path": resolved.DestinationPath, "operation": resolved.Request.Operation,
+		"conflict_policy": resolved.Request.ConflictPolicy, "verify_checksum": resolved.Request.VerifyChecksum,
+		"bandwidth_limit_bytes_per_second": resolved.Request.BandwidthLimit,
+		"max_parallel_files":               resolved.Request.MaxParallelFiles, "max_parallel_chunks": resolved.Request.MaxParallelChunks,
+	}
+}
+
+func (s *Server) normalizeTransferSelection(paths []string, operation string) ([]string, string, error) {
+	operation = strings.ToLower(strings.TrimSpace(operation))
+	if operation == "" {
+		operation = "copy"
+	}
+	if operation != "copy" && operation != "move" {
+		return nil, "", errors.New("invalid operation")
+	}
+	if len(paths) < 1 || len(paths) > s.transferMaxSourcePaths() {
+		return nil, "", errors.New("selection limit exceeded")
+	}
+	normalized := make([]string, 0, len(paths))
+	for _, value := range paths {
+		clean, err := normalizeTransferPath(value, false)
+		if err != nil {
+			return nil, "", err
+		}
+		normalized = append(normalized, clean)
+	}
+	sort.Strings(normalized)
+	for index := range normalized {
+		if index > 0 && (normalized[index] == normalized[index-1] || strings.HasPrefix(normalized[index], normalized[index-1]+"/")) {
+			return nil, "", errors.New("overlapping selection")
+		}
+	}
+	return normalized, operation, nil
+}
+
+func (s *Server) transferMaxSourcePaths() int {
+	if s.config.TransferMaxSourcePaths > 0 {
+		return s.config.TransferMaxSourcePaths
+	}
+	return 1000
+}
+
+func normalizeTransferPath(value string, allowRoot bool) (string, error) {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
+	if value == "" {
+		if allowRoot {
+			return "", nil
+		}
+		return "", errors.New("empty path")
+	}
+	if strings.HasPrefix(value, "/") {
+		return "", errors.New("absolute path")
+	}
+	clean := path.Clean(value)
+	if clean == "." {
+		if allowRoot {
+			return "", nil
+		}
+		return "", errors.New("root path")
+	}
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", errors.New("path traversal")
+	}
+	return clean, nil
+}
+
+func validConflictPolicy(policy string) bool {
+	switch policy {
+	case "fail", "skip", "overwrite", "rename", "ask", "checksum":
+		return true
+	default:
+		return false
+	}
+}
+
+func sourceGrantAllows(grant nodeTransferGrant, destinationNodeID, mountID string, paths []string, operation string) bool {
+	if !grant.Enabled || grant.PeerNodeID != destinationNodeID || grant.MountID != mountID || !grant.Permissions.Read ||
+		(grant.Direction != "send" && grant.Direction != "send_receive") || (operation == "move" && !grant.Permissions.Delete) {
+		return false
+	}
+	for _, sourcePath := range paths {
+		if _, ok := relativeTransferPath(sourcePath, grant.Path); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func destinationGrantAllows(grant nodeTransferGrant, sourceNodeID string) bool {
+	return grant.Enabled && grant.PeerNodeID == sourceNodeID && grant.Permissions.Write &&
+		(grant.Direction == "receive" || grant.Direction == "send_receive")
+}
+
+func hasCompatibleSourceGrant(grants []nodeTransferGrant, destinationNodeID, mountID string, paths []string, operation string) bool {
+	for _, grant := range grants {
+		if sourceGrantAllows(grant, destinationNodeID, mountID, paths, operation) {
+			return true
+		}
+	}
+	return false
+}
+
+func selectLogicalTransferGrants(sourceGrants, destinationGrants []nodeTransferGrant, sourceNodeID, destinationNodeID,
+	sourceMountID, destinationMountID string, paths []string, destinationPath, operation, conflictPolicy string) (nodeTransferGrant, nodeTransferGrant, bool) {
+	var sourceGrant nodeTransferGrant
+	sourceSpecificity := -1
+	for _, candidate := range sourceGrants {
+		if !sourceGrantAllows(candidate, destinationNodeID, sourceMountID, paths, operation) {
+			continue
+		}
+		root, err := normalizeTransferPath(candidate.Path, true)
+		if err != nil {
+			continue
+		}
+		if len(root) > sourceSpecificity {
+			sourceGrant, sourceSpecificity = candidate, len(root)
+		}
+	}
+	if sourceSpecificity < 0 {
+		return nodeTransferGrant{}, nodeTransferGrant{}, false
+	}
+	var destinationGrant nodeTransferGrant
+	destinationSpecificity := -1
+	for _, candidate := range destinationGrants {
+		if !destinationGrantAllows(candidate, sourceNodeID) || candidate.MountID != destinationMountID ||
+			!containsString(candidate.ConflictPolicies, conflictPolicy) {
+			continue
+		}
+		if _, ok := relativeTransferPath(destinationPath, candidate.Path); !ok {
+			continue
+		}
+		root, err := normalizeTransferPath(candidate.Path, true)
+		if err != nil {
+			continue
+		}
+		if len(root) > destinationSpecificity {
+			destinationGrant, destinationSpecificity = candidate, len(root)
+		}
+	}
+	return sourceGrant, destinationGrant, destinationSpecificity >= 0
+}
+
+func relativeTransferPath(candidate, grantPath string) (string, bool) {
+	candidate, candidateErr := normalizeTransferPath(candidate, true)
+	grantPath, grantErr := normalizeTransferPath(grantPath, true)
+	if candidateErr != nil || grantErr != nil {
+		return "", false
+	}
+	if grantPath == "" {
+		return candidate, true
+	}
+	if candidate == grantPath {
+		return "", true
+	}
+	if strings.HasPrefix(candidate, grantPath+"/") {
+		return strings.TrimPrefix(candidate, grantPath+"/"), true
+	}
+	return "", false
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), expected) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) nodeTransferGrants(ctx context.Context, node store.Node) ([]nodeTransferGrant, error) {
+	var response struct {
+		Items []nodeTransferGrant `json:"items"`
+	}
+	if err := s.callNodeJSON(ctx, node, http.MethodGet, "/api/v1/grants", nil, &response, ""); err != nil {
+		return nil, err
+	}
+	return response.Items, nil
+}
+
+func (s *Server) nodeMounts(ctx context.Context, node store.Node) ([]nodeMount, error) {
+	var response struct {
+		Items []nodeMount `json:"items"`
+	}
+	if err := s.callNodeJSON(ctx, node, http.MethodGet, "/api/v1/mounts", nil, &response, ""); err != nil {
+		return nil, err
+	}
+	return response.Items, nil
+}
+
+func (s *Server) transferCapabilityAllowed(r *http.Request, resource, capability string) bool {
+	decision, err := s.evaluateAuthorization(r, resource, capability)
+	if err != nil {
+		return false
+	}
+	return decision.Allowed
 }
 
 func transferFromBody(r *http.Request) (transferAuthorizationInput, error) {
@@ -2415,6 +3202,10 @@ func transferFromBody(r *http.Request) (transferAuthorizationInput, error) {
 		!validPathIdentifier(payload.SourceGrantID) ||
 		!validPathIdentifier(payload.DestinationGrantID) {
 		return transferAuthorizationInput{}, errors.New("invalid transfer identifiers")
+	}
+	payload.Operation = strings.ToLower(strings.TrimSpace(payload.Operation))
+	if payload.Operation != "" && payload.Operation != "copy" && payload.Operation != "move" {
+		return transferAuthorizationInput{}, errors.New("invalid transfer operation")
 	}
 	return payload, nil
 }
@@ -2432,7 +3223,7 @@ func (s *Server) transferMountRequirements(ctx context.Context, destinationNodeI
 	sourceGrant, err := s.nodeTransferGrant(ctx, sourceNode, input.SourceGrantID)
 	if err != nil || !sourceGrant.Enabled || sourceGrant.PeerNodeID != destinationNodeID ||
 		(sourceGrant.Direction != "send" && sourceGrant.Direction != "send_receive") ||
-		!sourceGrant.Permissions.Read {
+		!sourceGrant.Permissions.Read || (input.Operation == "move" && !sourceGrant.Permissions.Delete) {
 		return nil, errors.New("source grant does not authorize this transfer")
 	}
 	destinationGrant, err := s.nodeTransferGrant(ctx, destinationNode, input.DestinationGrantID)
@@ -2441,20 +3232,22 @@ func (s *Server) transferMountRequirements(ctx context.Context, destinationNodeI
 		!destinationGrant.Permissions.Write {
 		return nil, errors.New("destination grant does not authorize this transfer")
 	}
-	return []authorizationRequirement{
+	requirements := []authorizationRequirement{
 		{Path: "nodes/" + input.PeerNodeID + "/files/mounts/" + sourceGrant.MountID, Capability: "read"},
 		{Path: "nodes/" + destinationNodeID + "/files/mounts/" + destinationGrant.MountID, Capability: "create"},
-	}, nil
+	}
+	if input.Operation == "move" {
+		requirements = append(requirements, authorizationRequirement{Path: "nodes/" + input.PeerNodeID + "/files/mounts/" + sourceGrant.MountID, Capability: "delete"})
+	}
+	return requirements, nil
 }
 
 func (s *Server) nodeTransferGrant(ctx context.Context, node store.Node, grantID string) (nodeTransferGrant, error) {
-	var response struct {
-		Items []nodeTransferGrant `json:"items"`
-	}
-	if err := s.callNodeJSON(ctx, node, http.MethodGet, "/api/v1/grants", nil, &response, ""); err != nil {
+	grants, err := s.nodeTransferGrants(ctx, node)
+	if err != nil {
 		return nodeTransferGrant{}, err
 	}
-	for _, grant := range response.Items {
+	for _, grant := range grants {
 		if grant.ID == grantID && validPathIdentifier(grant.MountID) {
 			return grant, nil
 		}
@@ -2640,6 +3433,23 @@ func (s *Server) nodeMetadata(ctx context.Context, node store.Node) (nodeMetadat
 }
 
 func (s *Server) callNodeJSON(ctx context.Context, node store.Node, method, path string, body any, output any, correlationID string) error {
+	return s.callNodeJSONWithHeaders(ctx, node, method, path, body, output, correlationID, nil)
+}
+
+type nodeAPIError struct {
+	StatusCode int
+	Code       string
+	Message    string
+}
+
+func (err *nodeAPIError) Error() string {
+	if err.Message != "" {
+		return err.Message
+	}
+	return "node rejected the operation"
+}
+
+func (s *Server) callNodeJSONWithHeaders(ctx context.Context, node store.Node, method, path string, body any, output any, correlationID string, headers http.Header) error {
 	token, err := security.Decrypt(s.config.EncryptionKey, node.TokenEncrypted)
 	if err != nil {
 		return errors.New("cannot unlock node credential")
@@ -2661,6 +3471,11 @@ func (s *Server) callNodeJSON(ctx context.Context, node store.Node, method, path
 	if correlationID != "" {
 		request.Header.Set("X-Correlation-ID", correlationID)
 	}
+	for key, values := range headers {
+		for _, value := range values {
+			request.Header.Add(key, value)
+		}
+	}
 	response, err := s.client.Do(request)
 	if err != nil {
 		return errors.New("node unavailable")
@@ -2669,14 +3484,12 @@ func (s *Server) callNodeJSON(ctx context.Context, node store.Node, method, path
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var payload struct {
 			Error struct {
+				Code    string `json:"code"`
 				Message string `json:"message"`
 			} `json:"error"`
 		}
 		_ = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload)
-		if payload.Error.Message != "" {
-			return errors.New(payload.Error.Message)
-		}
-		return errors.New("node rejected the operation")
+		return &nodeAPIError{StatusCode: response.StatusCode, Code: payload.Error.Code, Message: payload.Error.Message}
 	}
 	if output != nil && response.StatusCode != http.StatusNoContent {
 		if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(output); err != nil {
@@ -2684,6 +3497,28 @@ func (s *Server) callNodeJSON(ctx context.Context, node store.Node, method, path
 		}
 	}
 	return nil
+}
+
+func (s *Server) writeLogicalTransferNodeError(w http.ResponseWriter, r *http.Request, err error) {
+	var apiErr *nodeAPIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.Code {
+		case "idempotency_conflict":
+			writeError(w, r, http.StatusConflict, "idempotency_conflict", "A chave de idempotência já foi usada com outro payload.")
+			return
+		case "grant_forbidden", "permission_denied":
+			writeError(w, r, http.StatusForbidden, "permission_denied", "A transferência não é permitida pelos grants atuais.")
+			return
+		case "mount_unavailable", "waiting_mount":
+			writeError(w, r, http.StatusServiceUnavailable, "mount_unavailable", "O mount necessário não está disponível.")
+			return
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "node unavailable") {
+		writeError(w, r, http.StatusBadGateway, "node_unavailable", "Um dos nodes necessários está indisponível.")
+		return
+	}
+	writeError(w, r, http.StatusUnprocessableEntity, "invalid_selection", "A transferência não pôde ser planejada com a seleção informada.")
 }
 
 func (s *Server) refreshNodeState(ctx context.Context, node *store.Node) {

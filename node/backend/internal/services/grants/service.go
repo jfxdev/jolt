@@ -120,7 +120,7 @@ func (s *Service) validate(ctx context.Context, input Input) (entities.TransferP
 		return grant, fmt.Errorf("%w: peer_node_id and mount_id are required", ErrInvalid)
 	}
 	peer, err := s.store.GetPeer(ctx, grant.PeerNodeID)
-	if errors.Is(err, db.ErrNotFound) || !trustedPeerState(peer.State) {
+	if errors.Is(err, db.ErrNotFound) || !entities.TrustedPeerState(peer.State) {
 		return grant, fmt.Errorf("%w: grant requires the exact trusted peer identity", ErrInvalid)
 	}
 	if err != nil {
@@ -155,20 +155,11 @@ func (s *Service) validate(ctx context.Context, input Input) (entities.TransferP
 	return grant, nil
 }
 
-func trustedPeerState(state string) bool {
-	switch state {
-	case "trusted", "unknown", "online", "offline", "degraded":
-		return true
-	default:
-		return false
-	}
-}
-
 func validateDirection(peer entities.Peer, grant entities.TransferPathGrant) error {
 	switch grant.Direction {
 	case "send":
-		if !grant.Permissions.Read || grant.Permissions.Write || grant.Permissions.Delete || grant.Permissions.Rename {
-			return fmt.Errorf("%w: send grants require read-only permissions", ErrInvalid)
+		if !grant.Permissions.Read || grant.Permissions.Write || grant.Permissions.Rename {
+			return fmt.Errorf("%w: send grants require read permission and may only additionally permit deletion after a verified move", ErrInvalid)
 		}
 	case "receive":
 		if !grant.Permissions.Write {

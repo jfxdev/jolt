@@ -12,6 +12,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -25,6 +33,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { AdminDialogProps } from "./types";
+import { AdminEntityDialog } from "./AdminEntityDialog";
 
 interface UserForm {
   username: string;
@@ -40,7 +49,11 @@ const EMPTY: UserForm = {
   enabled: true,
 };
 
-export function UsersDialog({ open, onOpenChange }: AdminDialogProps) {
+export function UsersDialog({
+  open,
+  onOpenChange,
+  inline = false,
+}: AdminDialogProps) {
   const { user, clearUser } = useAuth();
   const handleError = useApiError();
   const confirm = useConfirm();
@@ -53,18 +66,16 @@ export function UsersDialog({ open, onOpenChange }: AdminDialogProps) {
   const [roleIds, setRoleIds] = useState<string[]>([]);
   const [policyIds, setPolicyIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [search, setSearch] = useState("");
+  const [formOpen, setFormOpen] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     reset();
+    setSearch("");
     (async () => {
       try {
-        const [u, r, p] = await Promise.all([
-          api.users(),
-          api.roles(),
-          api.policies(),
-        ]);
-        setUsers(u.items || []);
+        const [r, p] = await Promise.all([api.roles(), api.policies()]);
         setRoles(r.items || []);
         setPolicies(p.items || []);
       } catch (error) {
@@ -74,8 +85,27 @@ export function UsersDialog({ open, onOpenChange }: AdminDialogProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  async function reloadUsers() {
-    const result = await api.users();
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      void api
+        .users(search)
+        .then((result) => {
+          if (!cancelled) setUsers(result.items || []);
+        })
+        .catch((error) => {
+          if (!cancelled) handleError(error);
+        });
+    }, search ? 250 : 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [handleError, open, search]);
+
+  async function reloadUsers(query = search) {
+    const result = await api.users(query);
     setUsers(result.items || []);
   }
 
@@ -86,6 +116,16 @@ export function UsersDialog({ open, onOpenChange }: AdminDialogProps) {
     setPolicyIds([]);
   }
 
+  function openCreateForm() {
+    reset();
+    setFormOpen(true);
+  }
+
+  function closeForm(open: boolean) {
+    setFormOpen(open);
+    if (!open) reset();
+  }
+
   async function edit(target: User) {
     setEditingId(target.user_id);
     setForm({
@@ -94,6 +134,7 @@ export function UsersDialog({ open, onOpenChange }: AdminDialogProps) {
       role: target.role,
       enabled: target.enabled,
     });
+    setFormOpen(true);
     try {
       const [r, p] = await Promise.all([
         api.userRoles(target.user_id),
@@ -138,6 +179,7 @@ export function UsersDialog({ open, onOpenChange }: AdminDialogProps) {
         toast.success("Usuário criado.");
       }
       reset();
+      setFormOpen(false);
       await reloadUsers();
     } catch (error) {
       handleError(error);
@@ -160,6 +202,7 @@ export function UsersDialog({ open, onOpenChange }: AdminDialogProps) {
     try {
       await api.deleteUser(target.user_id);
       if (editingId === target.user_id) reset();
+      setFormOpen(false);
       await reloadUsers();
       toast.success("Usuário removido; a auditoria foi preservada.");
     } catch (error) {
@@ -169,9 +212,30 @@ export function UsersDialog({ open, onOpenChange }: AdminDialogProps) {
     }
   }
 
+  if (inline && !open) return null;
+
+  const searchInput = (
+    <div className="grid gap-2">
+      <Label htmlFor="users-search">Buscar usuários</Label>
+      <Input
+        id="users-search"
+        type="search"
+        value={search}
+        placeholder="Nome ou nível administrativo"
+        onChange={(event) => setSearch(event.target.value)}
+      />
+    </div>
+  );
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent
+        inline={inline}
+        showCloseButton={!inline}
+        className={
+          inline ? "w-full max-w-none" : "sm:w-[calc(100vw-4rem)] sm:max-w-5xl"
+        }
+      >
         <DialogHeader>
           <div className="flex items-center justify-between">
             <div>
@@ -180,44 +244,132 @@ export function UsersDialog({ open, onOpenChange }: AdminDialogProps) {
               </p>
               <DialogTitle>Usuários</DialogTitle>
             </div>
-            <Button variant="secondary" size="sm" onClick={reset}>
+            <Button variant="secondary" size="sm" onClick={openCreateForm}>
               Novo usuário
             </Button>
           </div>
         </DialogHeader>
 
-        <div className="grid gap-4 md:grid-cols-[220px_1fr]">
-          <div className="grid max-h-[60vh] gap-1 overflow-y-auto">
-            {users.map((target) => (
-              <button
-                key={target.user_id}
-                className={cn(
-                  "flex items-center justify-between rounded-md border p-2 text-left text-sm hover:bg-accent",
-                  editingId === target.user_id && "bg-accent",
-                )}
-                onClick={() => edit(target)}
-              >
-                <span>
-                  <strong className="block">{target.username}</strong>
-                  <small className="text-muted-foreground">
-                    {target.role === "admin" ? "Administrador" : "Operador"}
-                  </small>
-                </span>
-                <small
-                  className={
-                    target.enabled ? "text-emerald-500" : "text-destructive"
-                  }
+        <div
+          className={cn(
+            "grid gap-4",
+            inline ? "" : "md:grid-cols-[220px_1fr]",
+          )}
+        >
+          {inline ? (
+            <div className="order-2 grid gap-2">
+              {searchInput}
+              <div className="overflow-hidden rounded-md border">
+                <Table aria-label="Usuários cadastrados">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Usuário</TableHead>
+                      <TableHead>Nível administrativo</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Ação</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {users.map((target) => (
+                      <TableRow
+                        key={target.user_id}
+                        data-state={
+                          editingId === target.user_id ? "selected" : undefined
+                        }
+                      >
+                        <TableCell className="font-medium">
+                          {target.username}
+                        </TableCell>
+                        <TableCell>
+                          {target.role === "admin" ? "Administrador" : "Operador"}
+                        </TableCell>
+                        <TableCell>
+                          <span
+                            className={
+                              target.enabled ? "text-emerald-500" : "text-destructive"
+                            }
+                          >
+                            {target.enabled ? "Ativo" : "Inativo"}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => edit(target)}
+                            >
+                              Editar
+                            </Button>
+                            {target.user_id !== user?.user_id && (
+                              <Button
+                                type="button"
+                                variant="destructive"
+                                size="sm"
+                                onClick={() => void remove(target)}
+                              >
+                                Remover
+                              </Button>
+                            )}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {!users.length && (
+                      <TableRow>
+                        <TableCell colSpan={4} className="text-muted-foreground">
+                          {search
+                            ? "Nenhum usuário encontrado."
+                            : "Nenhum usuário cadastrado."}
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          ) : (
+            <div className="grid max-h-[60vh] gap-1 overflow-y-auto">
+              {searchInput}
+              {users.map((target) => (
+                <button
+                  key={target.user_id}
+                  className={cn(
+                    "flex items-center justify-between rounded-md border p-2 text-left text-sm hover:bg-accent",
+                    editingId === target.user_id && "bg-accent",
+                  )}
+                  onClick={() => edit(target)}
                 >
-                  {target.enabled ? "Ativo" : "Inativo"}
-                </small>
-              </button>
-            ))}
-          </div>
+                  <span>
+                    <strong className="block">{target.username}</strong>
+                    <small className="text-muted-foreground">
+                      {target.role === "admin" ? "Administrador" : "Operador"}
+                    </small>
+                  </span>
+                  <small
+                    className={
+                      target.enabled ? "text-emerald-500" : "text-destructive"
+                    }
+                  >
+                    {target.enabled ? "Ativo" : "Inativo"}
+                  </small>
+                </button>
+              ))}
+              {!users.length && (
+                <div className="p-2 text-xs text-muted-foreground">
+                  {search ? "Nenhum usuário encontrado." : "Nenhum usuário cadastrado."}
+                </div>
+              )}
+            </div>
+          )}
 
-          <form className="grid gap-3" onSubmit={save}>
-            <h3 className="font-semibold">
-              {editingId ? "Editar usuário" : "Criar usuário"}
-            </h3>
+          <AdminEntityDialog
+            open={formOpen}
+            onOpenChange={closeForm}
+            title={editingId ? "Editar usuário" : "Criar usuário"}
+          >
+              <form className="grid gap-3" onSubmit={save}>
             <div className="grid gap-2">
               <Label htmlFor="u-name">Nome de usuário</Label>
               <Input
@@ -225,7 +377,7 @@ export function UsersDialog({ open, onOpenChange }: AdminDialogProps) {
                 value={form.username}
                 minLength={3}
                 maxLength={64}
-                pattern="[A-Za-z0-9._-]+"
+                pattern="[A-Za-z0-9._\-]+"
                 autoComplete="off"
                 required
                 onChange={(e) => setForm({ ...form, username: e.target.value })}
@@ -351,24 +503,13 @@ export function UsersDialog({ open, onOpenChange }: AdminDialogProps) {
             </label>
 
             <div className="flex justify-end gap-2">
-              {editingId && editingId !== user?.user_id && (
-                <Button
-                  type="button"
-                  variant="destructive"
-                  onClick={() => {
-                    const target = users.find((u) => u.user_id === editingId);
-                    if (target) remove(target);
-                  }}
-                >
-                  Remover
-                </Button>
-              )}
               <Button type="submit" disabled={busy}>
                 {editingId ? "Salvar alterações" : "Criar usuário"}{" "}
                 <ArrowRight />
               </Button>
             </div>
-          </form>
+              </form>
+          </AdminEntityDialog>
         </div>
       </DialogContent>
     </Dialog>

@@ -11,6 +11,8 @@ import NetworkOverviewPage from "@/pages/NetworkOverviewPage";
 import RelationshipsPage from "@/pages/RelationshipsPage";
 import NodeWorkspacePage from "@/pages/NodeWorkspacePage";
 import FileBrowserPage from "@/pages/FileBrowserPage";
+import AccessPage from "@/pages/AccessPage";
+import IdentityPage from "@/pages/IdentityPage";
 
 function Splash() {
   return (
@@ -37,6 +39,8 @@ function Gate() {
         <Route element={<AppShell />}>
           <Route index element={<NetworkOverviewPage />} />
           <Route path="relationships" element={<RelationshipsPage />} />
+          <Route path="access" element={<AccessPage />} />
+          <Route path="identity" element={<IdentityPage />} />
           <Route path="nodes/:nodeId" element={<WorkspaceLayout />}>
             <Route index element={<NodeWorkspacePage />} />
             <Route path="mounts/:mountId" element={<FileBrowserPage />} />

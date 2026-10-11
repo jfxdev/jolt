@@ -12,12 +12,24 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { AdminDialogProps } from "./types";
+import {
+  AdminEntityDialog,
+  EntityDialogFormLayout,
+} from "./AdminEntityDialog";
 
 interface GroupForm {
   name: string;
@@ -35,7 +47,11 @@ const EMPTY: GroupForm = {
   policy_ids: [],
 };
 
-export function AccessGroupsDialog({ open, onOpenChange }: AdminDialogProps) {
+export function AccessGroupsDialog({
+  open,
+  onOpenChange,
+  inline = false,
+}: AdminDialogProps) {
   const handleError = useApiError();
   const confirm = useConfirm();
   const [groups, setGroups] = useState<AccessGroup[]>([]);
@@ -44,18 +60,16 @@ export function AccessGroupsDialog({ open, onOpenChange }: AdminDialogProps) {
   const [editingId, setEditingId] = useState("");
   const [form, setForm] = useState<GroupForm>(EMPTY);
   const [busy, setBusy] = useState(false);
+  const [search, setSearch] = useState("");
+  const [formOpen, setFormOpen] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     reset();
+    setSearch("");
     (async () => {
       try {
-        const [g, n, p] = await Promise.all([
-          api.accessGroups(),
-          api.nodes(),
-          api.policies(),
-        ]);
-        setGroups(g.items || []);
+        const [n, p] = await Promise.all([api.nodes(), api.policies()]);
         setNodes(n.items || []);
         setPolicies(p.items || []);
       } catch (error) {
@@ -65,9 +79,38 @@ export function AccessGroupsDialog({ open, onOpenChange }: AdminDialogProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      void api
+        .accessGroups(search)
+        .then((result) => {
+          if (!cancelled) setGroups(result.items || []);
+        })
+        .catch((error) => {
+          if (!cancelled) handleError(error);
+        });
+    }, search ? 250 : 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [handleError, open, search]);
+
   function reset() {
     setEditingId("");
     setForm({ ...EMPTY, node_ids: [], policy_ids: [] });
+  }
+
+  function openCreateForm() {
+    reset();
+    setFormOpen(true);
+  }
+
+  function closeForm(open: boolean) {
+    setFormOpen(open);
+    if (!open) reset();
   }
 
   function edit(group: AccessGroup) {
@@ -79,6 +122,7 @@ export function AccessGroupsDialog({ open, onOpenChange }: AdminDialogProps) {
       node_ids: [...(group.node_ids || [])],
       policy_ids: [...(group.policy_ids || [])],
     });
+    setFormOpen(true);
   }
 
   function toggle(field: "node_ids" | "policy_ids", id: string, checked: boolean) {
@@ -90,8 +134,8 @@ export function AccessGroupsDialog({ open, onOpenChange }: AdminDialogProps) {
     }));
   }
 
-  async function reload() {
-    const result = await api.accessGroups();
+  async function reload(query = search) {
+    const result = await api.accessGroups(query);
     setGroups(result.items || []);
   }
 
@@ -117,6 +161,7 @@ export function AccessGroupsDialog({ open, onOpenChange }: AdminDialogProps) {
       ]);
       toast.success(editingId ? "Grupo atualizado." : "Grupo criado.");
       reset();
+      setFormOpen(false);
       await reload();
     } catch (error) {
       handleError(error);
@@ -138,6 +183,7 @@ export function AccessGroupsDialog({ open, onOpenChange }: AdminDialogProps) {
     try {
       await api.deleteAccessGroup(group.group_id);
       reset();
+      setFormOpen(false);
       await reload();
       toast.success("Grupo removido.");
     } catch (error) {
@@ -147,32 +193,144 @@ export function AccessGroupsDialog({ open, onOpenChange }: AdminDialogProps) {
     }
   }
 
+  if (inline && !open) return null;
+
+  const searchInput = (
+    <div className="grid gap-2">
+      <Label htmlFor="groups-search">Buscar grupos</Label>
+      <Input
+        id="groups-search"
+        type="search"
+        value={search}
+        placeholder="Nome ou descrição"
+        onChange={(event) => setSearch(event.target.value)}
+      />
+    </div>
+  );
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl">
+      <DialogContent
+        inline={inline}
+        showCloseButton={!inline}
+        className={
+          inline ? "w-full max-w-none" : "sm:w-[calc(100vw-4rem)] sm:max-w-5xl"
+        }
+      >
         <DialogHeader>
           <div className="flex items-center justify-between">
             <div>
               <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">Acesso de API</p>
               <DialogTitle>Grupos de acesso</DialogTitle>
             </div>
-            <Button variant="secondary" size="sm" onClick={reset}>Novo grupo</Button>
+            <Button variant="secondary" size="sm" onClick={openCreateForm}>Novo grupo</Button>
           </div>
         </DialogHeader>
-        <div className="grid gap-4 md:grid-cols-[220px_1fr]">
-          <div className="grid max-h-[60vh] gap-1 overflow-y-auto">
-            {groups.map((group) => (
-              <button key={group.group_id} className={cn("flex items-center justify-between rounded-md border p-2 text-left text-sm hover:bg-accent", editingId === group.group_id && "bg-accent")} onClick={() => edit(group)}>
-                <span><strong className="block">{group.name}</strong><small className="text-muted-foreground">{group.node_ids?.length || 0} node(s) · {group.policy_ids?.length || 0} policy(s)</small></span>
-                <small className={group.enabled ? "text-emerald-500" : "text-destructive"}>{group.enabled ? "Ativo" : "Inativo"}</small>
-              </button>
-            ))}
-            {!groups.length && <div className="p-2 text-xs text-muted-foreground">Nenhum grupo cadastrado.</div>}
-          </div>
-          <form className="grid gap-3" onSubmit={save}>
-            <h3 className="font-semibold">{editingId ? "Editar grupo" : "Criar grupo"}</h3>
-            <div className="grid gap-2"><Label htmlFor="ag-name">Nome</Label><Input id="ag-name" value={form.name} minLength={3} maxLength={64} pattern="[A-Za-z0-9._-]+" required onChange={(event) => setForm({ ...form, name: event.target.value })} /></div>
-            <div className="grid gap-2"><Label htmlFor="ag-desc">Descrição</Label><Textarea id="ag-desc" value={form.description} maxLength={512} rows={2} onChange={(event) => setForm({ ...form, description: event.target.value })} /></div>
+        <div
+          className={cn(
+            "grid gap-4",
+            inline ? "" : "md:grid-cols-[220px_1fr]",
+          )}
+        >
+          {inline ? (
+            <div className="order-2 grid gap-2">
+              {searchInput}
+              <div className="overflow-hidden rounded-md border">
+                <Table aria-label="Grupos de acesso cadastrados">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Grupo</TableHead>
+                      <TableHead>Descrição</TableHead>
+                      <TableHead>Nodes</TableHead>
+                      <TableHead>Policies</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Ação</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {groups.map((group) => (
+                      <TableRow
+                        key={group.group_id}
+                        data-state={
+                          editingId === group.group_id ? "selected" : undefined
+                        }
+                      >
+                        <TableCell className="font-medium">{group.name}</TableCell>
+                        <TableCell className="max-w-sm truncate text-muted-foreground">
+                          {group.description || "Sem descrição"}
+                        </TableCell>
+                        <TableCell>{group.node_ids?.length || 0}</TableCell>
+                        <TableCell>{group.policy_ids?.length || 0}</TableCell>
+                        <TableCell>
+                          <span
+                            className={
+                              group.enabled ? "text-emerald-500" : "text-destructive"
+                            }
+                          >
+                            {group.enabled ? "Ativo" : "Inativo"}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => edit(group)}
+                            >
+                              Editar
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="sm"
+                              onClick={() => void remove(group)}
+                            >
+                              Remover
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {!groups.length && (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-muted-foreground">
+                          {search
+                            ? "Nenhum grupo encontrado."
+                            : "Nenhum grupo cadastrado."}
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          ) : (
+            <div className="grid max-h-[60vh] gap-1 overflow-y-auto">
+              {searchInput}
+              {groups.map((group) => (
+                <button key={group.group_id} className={cn("flex items-center justify-between rounded-md border p-2 text-left text-sm hover:bg-accent", editingId === group.group_id && "bg-accent")} onClick={() => edit(group)}>
+                  <span><strong className="block">{group.name}</strong><small className="text-muted-foreground">{group.node_ids?.length || 0} node(s) · {group.policy_ids?.length || 0} policy(s)</small></span>
+                  <small className={group.enabled ? "text-emerald-500" : "text-destructive"}>{group.enabled ? "Ativo" : "Inativo"}</small>
+                </button>
+              ))}
+              {!groups.length && <div className="p-2 text-xs text-muted-foreground">{search ? "Nenhum grupo encontrado." : "Nenhum grupo cadastrado."}</div>}
+            </div>
+          )}
+          <AdminEntityDialog
+            open={formOpen}
+            onOpenChange={closeForm}
+            title={editingId ? "Editar grupo" : "Criar grupo"}
+          >
+              <form className="grid gap-3" onSubmit={save}>
+            <EntityDialogFormLayout
+              summary={
+                <>
+                  <div className="grid gap-2"><Label htmlFor="ag-name">Nome</Label><Input id="ag-name" value={form.name} minLength={3} maxLength={64} pattern="[A-Za-z0-9._\-]+" required onChange={(event) => setForm({ ...form, name: event.target.value })} /></div>
+                  <div className="grid gap-2"><Label htmlFor="ag-desc">Descrição</Label><Textarea id="ag-desc" value={form.description} maxLength={512} rows={2} onChange={(event) => setForm({ ...form, description: event.target.value })} /></div>
+                </>
+              }
+            >
             <label className="flex items-center gap-2 text-sm"><Checkbox checked={form.enabled} onCheckedChange={(value) => setForm({ ...form, enabled: value === true })} />Grupo ativo</label>
             <fieldset className="grid gap-2 rounded-md border p-3"><legend className="px-1 text-sm font-medium">Nodes autorizados</legend>
               {nodes.map((node) => <label key={node.node_id} className="flex items-center gap-2 text-sm"><Checkbox checked={form.node_ids.includes(node.node_id)} onCheckedChange={(value) => toggle("node_ids", node.node_id, value === true)} /><span><strong>{node.name}</strong> <small className="text-muted-foreground">{node.node_id}</small></span></label>)}
@@ -183,10 +341,11 @@ export function AccessGroupsDialog({ open, onOpenChange }: AdminDialogProps) {
               {!policies.length && <small className="text-muted-foreground">Crie policies para permitir arquivos, jobs ou transferências.</small>}
             </fieldset>
             <div className="flex justify-end gap-2">
-              {editingId && <Button type="button" variant="destructive" onClick={() => { const group = groups.find((item) => item.group_id === editingId); if (group) void remove(group); }}>Remover</Button>}
               <Button type="submit" disabled={busy}>{editingId ? "Salvar alterações" : "Criar grupo"} <ArrowRight /></Button>
             </div>
-          </form>
+            </EntityDialogFormLayout>
+              </form>
+          </AdminEntityDialog>
         </div>
       </DialogContent>
     </Dialog>

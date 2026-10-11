@@ -1,6 +1,8 @@
 import type {
   ApiError,
   AccessGroup,
+  Connection,
+  ConnectionStatus,
   AuditEvent,
   AuditResponse,
   AuthUser,
@@ -22,10 +24,19 @@ import type {
   ServiceAccountToken,
   ServiceCredential,
   TransferPlan,
+	LogicalTransferRequest,
+	LogicalTransferPlanResponse,
+	TransferTargetsResponse,
+  TrustView,
   User,
 } from "./types";
 
 interface RequestOptions extends RequestInit {}
+
+function withSearch(path: string, query = "") {
+  const value = query.trim();
+  return value ? `${path}?q=${encodeURIComponent(value)}` : path;
+}
 
 async function request<T = unknown>(
   path: string,
@@ -86,7 +97,8 @@ export const api = {
     }),
   logout: () =>
     request<null>("/api/v1/control-tower/auth/logout", { method: "POST" }),
-  users: () => request<ListResponse<User>>("/api/v1/control-tower/users"),
+  users: (query = "") =>
+    request<ListResponse<User>>(withSearch("/api/v1/control-tower/users", query)),
   createUser: (user: Partial<User> & { password?: string }) =>
     request<User>("/api/v1/control-tower/users", {
       method: "POST",
@@ -108,9 +120,9 @@ export const api = {
       `/api/v1/control-tower/users/${encodeURIComponent(userId)}`,
       { method: "DELETE" },
     ),
-  serviceAccounts: () =>
+  serviceAccounts: (query = "") =>
     request<ListResponse<ServiceAccount>>(
-      "/api/v1/control-tower/service-accounts",
+      withSearch("/api/v1/control-tower/service-accounts", query),
     ),
   createServiceAccount: (account: object) =>
     request<{
@@ -156,8 +168,10 @@ export const api = {
       `/api/v1/control-tower/service-accounts/${encodeURIComponent(accountId)}/tokens/${encodeURIComponent(tokenId)}`,
       { method: "DELETE" },
     ),
-  accessGroups: () =>
-    request<ListResponse<AccessGroup>>("/api/v1/control-tower/access-groups"),
+  accessGroups: (query = "") =>
+    request<ListResponse<AccessGroup>>(
+      withSearch("/api/v1/control-tower/access-groups", query),
+    ),
   createAccessGroup: (group: object) =>
     request<AccessGroup>("/api/v1/control-tower/access-groups", {
       method: "POST",
@@ -191,8 +205,10 @@ export const api = {
       `/api/v1/control-tower/access-groups/${encodeURIComponent(groupId)}/policies`,
       { method: "PUT", body: JSON.stringify({ ids }) },
     ),
-  policies: () =>
-    request<ListResponse<Policy>>("/api/v1/control-tower/policies"),
+  policies: (query = "") =>
+    request<ListResponse<Policy>>(
+      withSearch("/api/v1/control-tower/policies", query),
+    ),
   createPolicy: (policy: object) =>
     request<Policy>("/api/v1/control-tower/policies", {
       method: "POST",
@@ -211,7 +227,8 @@ export const api = {
       `/api/v1/control-tower/policies/${encodeURIComponent(policyId)}`,
       { method: "DELETE" },
     ),
-  roles: () => request<ListResponse<Role>>("/api/v1/control-tower/roles"),
+  roles: (query = "") =>
+    request<ListResponse<Role>>(withSearch("/api/v1/control-tower/roles", query)),
   createRole: (role: object) =>
     request<Role>("/api/v1/control-tower/roles", {
       method: "POST",
@@ -320,6 +337,35 @@ export const api = {
   files: (nodeId: string, mountId: string, path: string) =>
     request<ListResponse<import("./types").FileEntry>>(
       `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/files?path=${encodeURIComponent(path)}`,
+    ),
+  transferTargets: (
+    sourceNodeId: string,
+    source: { mount_id: string; paths: string[] },
+    operation: "copy" | "move",
+  ) =>
+    request<TransferTargetsResponse>(
+      `/api/v1/nodes/${encodeURIComponent(sourceNodeId)}/transfers/targets`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          operation,
+          source: { node_id: sourceNodeId, ...source },
+        }),
+      },
+    ),
+  planTransfer: (destinationNodeId: string, transfer: LogicalTransferRequest) =>
+    request<LogicalTransferPlanResponse>(
+      `/api/v1/nodes/${encodeURIComponent(destinationNodeId)}/transfers/plan`,
+      { method: "POST", body: JSON.stringify(transfer) },
+    ),
+  createTransfer: (destinationNodeId: string, transfer: LogicalTransferRequest) =>
+    request<Job>(
+      `/api/v1/nodes/${encodeURIComponent(destinationNodeId)}/transfers`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify(transfer),
+      },
     ),
   jobs: (nodeId: string) =>
     request<ListResponse<Job>>(
@@ -553,8 +599,27 @@ export const api = {
         body: JSON.stringify(transfer),
       },
     ),
+  /** Single source of truth for a node's trust: both sides, resolved server-side. */
+  nodeTrust: (nodeId: string) =>
+    request<TrustView>(
+      `/api/v1/control-tower/nodes/${encodeURIComponent(nodeId)}/trust`,
+    ),
+  connections: () =>
+    request<ListResponse<Connection>>("/api/v1/control-tower/connections"),
+  /** Idempotent: finishes whichever half of the handshake is missing. */
+  reconcileConnection: (requestId: string) =>
+    request<{ status: ConnectionStatus; trust_established: boolean }>(
+      `/api/v1/control-tower/connections/${encodeURIComponent(requestId)}/reconcile`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+  /** Removes trust on both nodes at once; a half-done revoke fails loudly. */
+  revokeConnection: (requestId: string) =>
+    request<{ status: ConnectionStatus }>(
+      `/api/v1/control-tower/connections/${encodeURIComponent(requestId)}/revoke`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
   createConnection: (connection: object) =>
-    request<unknown>("/api/v1/control-tower/connections", {
+    request<{ status: string; auto_approved: boolean }>("/api/v1/control-tower/connections", {
       method: "POST",
       body: JSON.stringify(connection),
     }),

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
+import { Copy, MoveRight } from "lucide-react";
 import { api } from "@/lib/api";
 import type { FileEntry } from "@/lib/types";
 import { useWorkspace } from "@/context/WorkspaceContext";
@@ -16,19 +17,18 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
 import { FileTable } from "@/components/files/FileTable";
-import { CopyDialog } from "@/components/files/CopyDialog";
+import { CrossNodeTransferDialog } from "@/components/files/CrossNodeTransferDialog";
 import { MediaPreviewDialog } from "@/components/files/MediaPreviewDialog";
 import { TextEditorDialog } from "@/components/files/TextEditorDialog";
 
-type ClipboardItem = {
-  entry: FileEntry;
+type TransferSelection = {
+  entries: FileEntry[];
   operation: "copy" | "move";
-  mountId: string;
 };
 
 export default function FileBrowserPage() {
   const { mountId } = useParams();
-  const { nodeId, mounts, nodePath, refreshJobs } = useWorkspace();
+  const { nodeId, mounts, refreshJobs } = useWorkspace();
   const { loadPermissions, hasPermission, hasPermissionNow } = usePermissions();
   const handleError = useApiError();
   const confirm = useConfirm();
@@ -42,8 +42,9 @@ export default function FileBrowserPage() {
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [newDirectory, setNewDirectory] = useState("");
-  const [clipboard, setClipboard] = useState<ClipboardItem | null>(null);
-  const [pasteSource, setPasteSource] = useState<FileEntry | null>(null);
+  const [selectedEntries, setSelectedEntries] = useState<FileEntry[]>([]);
+  const [transfer, setTransfer] = useState<TransferSelection | null>(null);
+  const [transferLimit, setTransferLimit] = useState(1000);
   const [preview, setPreview] = useState<FileEntry | null>(null);
   const [editor, setEditor] = useState<FileEntry | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -60,6 +61,7 @@ export default function FileBrowserPage() {
       try {
         const result = await api.files(nodeId, mountId, path);
         setFiles(result.items || []);
+        setSelectedEntries([]);
         setCurrentPath(path);
       } catch (error) {
         handleError(error);
@@ -183,7 +185,6 @@ export default function FileBrowserPage() {
         entry.type === "directory",
       );
       await Promise.all([loadFiles(currentPath), refreshJobs()]);
-      if (clipboard?.entry.path === entry.path) setClipboard(null);
       toast.success("Item removido.");
     } catch (error) {
       handleError(error);
@@ -196,15 +197,8 @@ export default function FileBrowserPage() {
 
   const writable = mount.mode === "read_write";
   const canCreate = writable && hasPermission(filePolicyPath, "create");
-  const canPaste =
-    Boolean(clipboard) &&
-    clipboard?.mountId === mount.mount_id &&
-    writable &&
-    hasPermission(nodePath("jobs"), "create") &&
-    (clipboard?.operation === "copy"
-      ? hasPermission(filePolicyPath, "create") &&
-        hasPermission(filePolicyPath, "read")
-      : hasPermission(filePolicyPath, "update"));
+  const canTransferCopy = hasPermission(filePolicyPath, "read");
+  const canTransferMove = writable && canTransferCopy && hasPermission(filePolicyPath, "delete");
 
   return (
     <div className="grid gap-4">
@@ -251,17 +245,17 @@ export default function FileBrowserPage() {
         )}
       </div>
 
-      {clipboard && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-muted/30 px-3 py-2 text-sm">
-          <span>
-            {clipboard.operation === "copy" ? "Copiado" : "Recortado"}: {clipboard.entry.name}
-          </span>
+      {selectedEntries.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-muted/30 px-3 py-2">
+          <p className="text-sm">
+            {selectedEntries.length} item{selectedEntries.length === 1 ? "" : "ns"} selecionado{selectedEntries.length === 1 ? "" : "s"}
+          </p>
           <div className="flex gap-2">
-            <Button size="sm" onClick={() => setPasteSource(clipboard.entry)} disabled={!canPaste}>
-              Colar aqui
+            <Button size="sm" variant="secondary" disabled={!canTransferCopy} onClick={() => setTransfer({ entries: selectedEntries, operation: "copy" })}>
+              <Copy /> Copiar para…
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setClipboard(null)}>
-              Cancelar
+            <Button size="sm" disabled={!canTransferMove} onClick={() => setTransfer({ entries: selectedEntries, operation: "move" })}>
+              <MoveRight /> Mover para…
             </Button>
           </div>
         </div>
@@ -275,13 +269,13 @@ export default function FileBrowserPage() {
         onDownload={downloadEntry}
         onPreview={previewEntry}
         onEdit={editEntry}
-        onCopy={(entry) =>
-          setClipboard({ entry, operation: "copy", mountId: mount.mount_id })
-        }
-        onMove={(entry) =>
-          setClipboard({ entry, operation: "move", mountId: mount.mount_id })
-        }
+        onTransferCopy={(entries) => setTransfer({ entries, operation: "copy" })}
+        onTransferMove={(entries) => setTransfer({ entries, operation: "move" })}
         onRemove={removeEntry}
+        selectedPaths={selectedEntries.map((entry) => entry.path)}
+        selectionLimit={transferLimit}
+        onSelectionChange={setSelectedEntries}
+        onSelectionLimitReached={() => toast.error(`O limite de ${transferLimit} raízes selecionadas foi atingido. Remova uma seleção para adicionar outra.`)}
       />
       <MediaPreviewDialog
         entry={preview}
@@ -300,15 +294,13 @@ export default function FileBrowserPage() {
         onError={handleError}
       />
 
-      <CopyDialog
-        source={pasteSource}
-        currentPath={currentPath}
+      <CrossNodeTransferDialog
+        open={transfer !== null}
+        entries={transfer?.entries || []}
         mount={mount}
-        operation={clipboard?.operation || "copy"}
-        onClose={() => setPasteSource(null)}
-        onCompleted={() => {
-          if (clipboard?.operation === "move") setClipboard(null);
-        }}
+        operation={transfer?.operation || "copy"}
+        onClose={() => setTransfer(null)}
+        onLimitResolved={setTransferLimit}
       />
     </div>
   );

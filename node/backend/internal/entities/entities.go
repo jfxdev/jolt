@@ -77,12 +77,17 @@ type JobItem struct {
 	Size            int64     `json:"size"`
 	ModifiedAt      time.Time `json:"modified_at"`
 	Checksum        string    `json:"checksum,omitempty"`
-	Action          string    `json:"action"`
-	State           string    `json:"state"`
-	BytesCompleted  int64     `json:"bytes_completed"`
-	Attempt         int       `json:"attempt"`
-	Error           string    `json:"error,omitempty"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	// SourceRoot marks an item selected directly by a batch request. Cleanup
+	// checkpoints remain on every expanded item so move never recursively
+	// removes an unchecked source tree.
+	SourceRoot         bool      `json:"source_root,omitempty"`
+	SourceCleanupState string    `json:"source_cleanup_state,omitempty"`
+	Action             string    `json:"action"`
+	State              string    `json:"state"`
+	BytesCompleted     int64     `json:"bytes_completed"`
+	Attempt            int       `json:"attempt"`
+	Error              string    `json:"error,omitempty"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 type CopyPlan struct {
@@ -186,6 +191,23 @@ type Peer struct {
 	ConsecutiveFailures int        `json:"consecutive_failures"`
 	TrustedAt           time.Time  `json:"trusted_at"`
 	CorrelationID       string     `json:"correlation_id"`
+}
+
+// PeerStateRevokedByPeer marks a peer whose mTLS listener rejected our
+// certificate: trust still exists locally, but the counterpart has dropped it.
+// It is deliberately distinct from "offline", which means unreachable.
+const PeerStateRevokedByPeer = "revoked_by_peer"
+
+// TrustedPeerState reports whether a peer state still authorizes data-plane
+// traffic. Single definition shared by grant validation, transfer
+// authorization and mTLS certificate verification.
+func TrustedPeerState(state string) bool {
+	switch state {
+	case "trusted", "unknown", "online", "offline", "degraded":
+		return true
+	default:
+		return false
+	}
 }
 
 type GrantPermissions struct {

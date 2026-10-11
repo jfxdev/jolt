@@ -239,7 +239,7 @@ func (m *CertificateManager) PrepareRotation(validFor time.Duration, correlation
 			return CertificateMetadata{}, fmt.Errorf("load peers for certificate rollout: %w", err)
 		}
 		for _, peer := range peers {
-			if trustedPeerState(peer.State) {
+			if entities.TrustedPeerState(peer.State) {
 				rolloutPeers[peer.NodeID] = CertificateRolloutPeer{
 					NodeID: peer.NodeID, Status: "pending",
 				}
@@ -579,21 +579,12 @@ func (m *CertificateManager) verifyPeerCertificateFingerprints(rawCerts [][]byte
 		return fmt.Errorf("load trusted peers: %w", err)
 	}
 	for _, peer := range peers {
-		if trustedPeerState(peer.State) && peer.NodeID == nodeID &&
+		if entities.TrustedPeerState(peer.State) && peer.NodeID == nodeID &&
 			(peer.Fingerprint == fingerprint || peer.PreviousFingerprint == fingerprint) {
 			return nil
 		}
 	}
 	return fmt.Errorf("%w: certificate does not belong to an exact trusted peer", ErrCertificateInvalid)
-}
-
-func trustedPeerState(state string) bool {
-	switch state {
-	case "trusted", "unknown", "online", "offline", "degraded":
-		return true
-	default:
-		return false
-	}
 }
 
 func (m *CertificateManager) generateCertificate(validFor time.Duration) (CertificateMetadata, error) {

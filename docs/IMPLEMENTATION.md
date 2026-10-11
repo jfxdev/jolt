@@ -134,8 +134,8 @@ Status legend:
 
 ### Control Tower operational slice
 
-- Separate Go service and mobile-first React 19 (Radix/shadcn, Tailwind,
-  react-router 7) interface.
+- Separate Go service and mobile-first React 19 (Base UI/shadcn Vega, Tailwind
+  CSS 4, react-router 7) interface.
 - First-boot admin creation with Argon2id password hashing.
 - Persistent, revocable, HTTP-only, SameSite browser sessions.
 - Admin-only user creation, editing, enable/disable, password reset, and deletion.
@@ -206,9 +206,31 @@ Status legend:
   optional cluster ID, issuer identity, control endpoint, and mTLS endpoint.
 - Revocable, one-time invites.
 - Incoming requests begin at `pending_review`.
-- Approval requires exact human fingerprint confirmation and creates bilateral
-  trusted-peer records.
-- Rejection resolves the target request and revokes the issuer invite.
+- Approval requires exact human fingerprint confirmation and drives both sides
+  of the handshake. Each step inspects the node's current state before acting,
+  so approval is idempotent and the two peer records converge even after a
+  partial failure.
+- A handshake that leaves only one side trusting is recorded as
+  `partially_connected` and is repaired by
+  `POST /api/v1/control-tower/connections/{requestID}/reconcile`, which
+  completes the missing half. When the invite is already consumed and the target
+  request is resolved, it answers `reconcile_requires_new_invite` instead of
+  failing silently.
+- `GET /api/v1/control-tower/connections` exposes the orchestration table, and
+  `GET /api/v1/control-tower/nodes/{nodeID}/trust` resolves both sides of every
+  relationship, classifying asymmetries (`revoked_by_peer`, `missing_on_peer`,
+  `identity_changed`, `unreachable`, `not_registered`, `remote_unreadable`).
+  Grants and pairing rows in that view keep their own capability checks.
+- Rejection resolves the target request, revokes the issuer invite, and removes
+  the issuer's peer record so a rejected request never leaves one node trusting
+  the other.
+- `POST /api/v1/control-tower/connections/{requestID}/revoke` removes trust on
+  both nodes in one call and reports each side; a half-done revoke is an error,
+  not a success.
+- A peer whose mTLS listener refuses our certificate is recorded as
+  `revoked_by_peer`, distinct from `offline`, so a revocation on the far side is
+  not reported as a network fault. Re-pairing resets the peer's heartbeat
+  counters.
 - Pending invite secrets remain encrypted in the Control Tower and are not
   returned to the browser.
 - Pairing establishes identity trust only; it never creates mounts or grants.

@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -184,15 +185,15 @@ export function NodeSettingsMenu() {
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm">
+      <DropdownMenuTrigger
+        render={<Button variant="outline" size="sm" />}
+      >
           <Settings className="h-4 w-4" />
           Configurações
-        </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-64">
         {canIdentity && (
-          <>
+          <DropdownMenuGroup>
             <DropdownMenuLabel>Identidade</DropdownMenuLabel>
             <DropdownMenuItem onClick={rotateIdentity}>
               <Fingerprint className="h-4 w-4" />
@@ -202,40 +203,44 @@ export function NodeSettingsMenu() {
               <RefreshCw className="h-4 w-4" />
               Reconciliar confiança
             </DropdownMenuItem>
-          </>
+          </DropdownMenuGroup>
         )}
         {canMtls && (
           <>
             {canIdentity && <DropdownMenuSeparator />}
-            <DropdownMenuLabel>mTLS</DropdownMenuLabel>
-            {!mtlsState?.next && (
-              <DropdownMenuItem onClick={prepareMTLS}>
-                <ShieldPlus className="h-4 w-4" />
-                Preparar mTLS
-              </DropdownMenuItem>
-            )}
-            {mtlsState?.next && (
-              <DropdownMenuItem onClick={distributeMTLS}>
-                <Share2 className="h-4 w-4" />
-                Distribuir mTLS
-              </DropdownMenuItem>
-            )}
-            {mtlsState?.next && (
-              <DropdownMenuItem onClick={promoteMTLS}>
-                <ShieldCheck className="h-4 w-4" />
-                Promover mTLS
-              </DropdownMenuItem>
-            )}
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>mTLS</DropdownMenuLabel>
+              {!mtlsState?.next && (
+                <DropdownMenuItem onClick={prepareMTLS}>
+                  <ShieldPlus className="h-4 w-4" />
+                  Preparar mTLS
+                </DropdownMenuItem>
+              )}
+              {mtlsState?.next && (
+                <DropdownMenuItem onClick={distributeMTLS}>
+                  <Share2 className="h-4 w-4" />
+                  Distribuir mTLS
+                </DropdownMenuItem>
+              )}
+              {mtlsState?.next && (
+                <DropdownMenuItem onClick={promoteMTLS}>
+                  <ShieldCheck className="h-4 w-4" />
+                  Promover mTLS
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuGroup>
           </>
         )}
         {canToken && (
           <>
             {(canIdentity || canMtls) && <DropdownMenuSeparator />}
-            <DropdownMenuLabel>Token</DropdownMenuLabel>
-            <DropdownMenuItem onClick={rotateToken}>
-              <KeyRound className="h-4 w-4" />
-              Rotacionar token
-            </DropdownMenuItem>
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Token</DropdownMenuLabel>
+              <DropdownMenuItem onClick={rotateToken}>
+                <KeyRound className="h-4 w-4" />
+                Rotacionar token
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
           </>
         )}
       </DropdownMenuContent>

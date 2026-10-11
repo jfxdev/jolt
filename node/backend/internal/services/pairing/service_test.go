@@ -247,3 +247,55 @@ func TestRevokePeerDisablesTrustAndAllRelatedGrants(t *testing.T) {
 		t.Fatal("revoked peer endpoints were updated")
 	}
 }
+
+// A peer that is paired again must not inherit the previous row's failure
+// history: a re-paired peer was showing up as degraded because thousands of
+// stale heartbeat failures survived the upsert.
+func TestRepairingAPeerResetsHeartbeatCounters(t *testing.T) {
+	storage, err := db.Open(filepath.Join(t.TempDir(), "pairing.db"), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { storage.Close() })
+	service := New(storage, entities.Identity{NodeID: "local", Fingerprint: "AA:BB"})
+	ctx := context.Background()
+
+	pair := func() {
+		t.Helper()
+		invite, token, inviteErr := service.CreateInvite(ctx, InviteInput{
+			TargetNodeID: "remote", TransferMode: "dual_channel",
+			IssuerRole: "sender_receiver", InviteeRole: "sender_receiver",
+		})
+		if inviteErr != nil {
+			t.Fatal(inviteErr)
+		}
+		if _, approveErr := service.ApproveInvite(ctx, invite.ID, ApproveInviteInput{
+			InviteToken: token, PeerNodeID: "remote", PeerName: "Remote",
+			PeerFingerprint: "CC:DD", PeerIdentityEpoch: 1,
+			PeerEndpoint: "https://peer.test", PeerMTLSEndpoint: "https://peer.test:8443",
+		}); approveErr != nil {
+			t.Fatal(approveErr)
+		}
+	}
+
+	pair()
+	seen := time.Now().UTC().Add(-time.Hour)
+	if err := storage.UpdatePeerHealth(ctx, "remote", "offline", &seen, 2354); err != nil {
+		t.Fatal(err)
+	}
+	pair()
+
+	peer, err := storage.GetPeer(ctx, "remote")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if peer.State != "trusted" {
+		t.Fatalf("state = %q, want trusted", peer.State)
+	}
+	if peer.ConsecutiveFailures != 0 {
+		t.Errorf("consecutive_failures = %d, want 0", peer.ConsecutiveFailures)
+	}
+	if peer.LastSeenAt != nil {
+		t.Errorf("last_seen_at = %v, want nil", peer.LastSeenAt)
+	}
+}

@@ -25,11 +25,11 @@ Legenda de severidade:
 
 **Problema.** `README.md` e `docs/IMPLEMENTATION.md` descrevem o frontend do
 Control Tower como "Vue 3" em vários pontos. O frontend real é **React 19 +
-Radix/shadcn + Tailwind + react-router 7**.
+Base UI/shadcn (Vega) + Tailwind CSS 4 + react-router 7**.
 
 **Evidência.**
 - `control/frontend/package.json`: `"react": "^19.0.0"`, `"react-dom"`,
-  `"react-router-dom": "^7.1.5"`, componentes `@radix-ui/react-*`.
+  `"react-router-dom": "^7.1.5"`, `@base-ui/react` e Tailwind CSS 4.
 - Todo o código-fonte em `control/frontend/src/**` é `.tsx`.
 - `README.md` (ex.: "responsive Vue 3 interface") e `docs/IMPLEMENTATION.md`
   ("mobile-first Vue 3 interface", "Vue 3 frontend").

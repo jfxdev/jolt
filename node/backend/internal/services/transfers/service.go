@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +43,18 @@ type PullRequest struct {
 	MaxParallelFiles   int
 	MaxParallelChunks  int
 	CorrelationID      string
+}
+
+// BatchPullRequest is intentionally grant-relative: it is the node-internal
+// contract used after the Control Tower has resolved logical node/mount/path
+// references to exact grants.
+type BatchPullRequest struct {
+	PullRequest
+	SourcePaths []string
+	// SourceNames preserve mount-relative root names when a selected path is
+	// exactly the root of a more restrictive send grant.
+	SourceNames []string
+	Operation   string
 }
 
 type ManifestPage struct {
@@ -108,7 +121,7 @@ func (s *Service) ConfigureDialContext(dial func(context.Context, string, string
 
 func (s *Service) CreatePull(ctx context.Context, request PullRequest, idempotencyKey string) (entities.Job, bool, error) {
 	peer, err := s.store.GetPeer(ctx, strings.TrimSpace(request.PeerNodeID))
-	if errors.Is(err, db.ErrNotFound) || !trustedPeerState(peer.State) {
+	if errors.Is(err, db.ErrNotFound) || !entities.TrustedPeerState(peer.State) {
 		return entities.Job{}, false, fmt.Errorf("%w: exact trusted peer is required", ErrForbidden)
 	}
 	if err != nil {
@@ -200,8 +213,18 @@ func (s *Service) OpenManifest(ctx context.Context, peerNodeID, grantID, relativ
 	if err != nil {
 		return ManifestPage{}, err
 	}
+	if root.Type == "file" {
+		entry := entities.FileEntry{Name: root.Name, Path: ".", Type: "file", Size: root.Size, ModifiedAt: root.ModifiedAt}
+		if checksum {
+			entry.Checksum, err = s.files.Checksum(ctx, grant.MountID, sourcePath)
+			if err != nil {
+				return ManifestPage{}, err
+			}
+		}
+		return ManifestPage{SourcePath: cleanRelative(relative), Items: []entities.FileEntry{entry}, Total: 1}, nil
+	}
 	if root.Type != "directory" {
-		return ManifestPage{}, fmt.Errorf("%w: manifest source must be a directory", ErrInvalid)
+		return ManifestPage{}, fmt.Errorf("%w: manifest source type is unsupported", ErrInvalid)
 	}
 	if after < 0 {
 		after = 0
@@ -341,6 +364,214 @@ func (s *Service) CreateDirectoryPull(ctx context.Context, request PullRequest, 
 		MaxParallelChunks: request.MaxParallelChunks,
 		CorrelationID:     request.CorrelationID,
 	}, plan, idempotencyKey)
+}
+
+func (s *Service) PlanBatchPull(ctx context.Context, request BatchPullRequest) (entities.CopyPlan, error) {
+	operation := strings.ToLower(strings.TrimSpace(request.Operation))
+	if operation == "" {
+		operation = "copy"
+	}
+	if operation != "copy" && operation != "move" {
+		return entities.CopyPlan{}, fmt.Errorf("%w: operation must be copy or move", ErrInvalid)
+	}
+	paths, err := normalizeBatchPaths(request.SourcePaths)
+	if err != nil {
+		return entities.CopyPlan{}, err
+	}
+	sourceNames, err := batchSourceNames(request.SourcePaths, request.SourceNames)
+	if err != nil {
+		return entities.CopyPlan{}, err
+	}
+	peer, err := s.trustedPeer(ctx, request.PeerNodeID)
+	if err != nil {
+		return entities.CopyPlan{}, err
+	}
+	destinationGrant, destinationBase, err := s.receiveDestination(ctx, peer.NodeID, request.DestinationGrantID, request.DestinationPath, request.ConflictPolicy)
+	if err != nil {
+		return entities.CopyPlan{}, err
+	}
+	policy := normalizePolicy(request.ConflictPolicy)
+	checksum := request.VerifyChecksum || policy == "checksum" || operation == "move"
+	plan := entities.CopyPlan{
+		DestinationPath: destinationBase, ConflictPolicy: policy,
+		Items: make([]entities.JobItem, 0),
+	}
+	seenDestinations := make(map[string]struct{}, len(paths))
+	for _, sourcePath := range paths {
+		rootName := sourceNames[sourcePath]
+		if rootName == "" {
+			rootName = path.Base(sourcePath)
+		}
+		if _, exists := seenDestinations[rootName]; exists {
+			return entities.CopyPlan{}, fmt.Errorf("%w: selected roots map to the same destination name", ErrInvalid)
+		}
+		seenDestinations[rootName] = struct{}{}
+		rootDestination := joinRelative(destinationBase, rootName)
+		rootPlan, err := s.planBatchRoot(ctx, peer, request.SourceGrantID, sourcePath, destinationGrant.MountID, rootDestination, policy, checksum)
+		if err != nil {
+			return entities.CopyPlan{}, err
+		}
+		for index := range rootPlan.Items {
+			item := &rootPlan.Items[index]
+			item.Ordinal = len(plan.Items)
+			// relative_path is the durable primary key for job items. Source paths
+			// are unique after overlap validation, including items from many roots.
+			item.RelativePath = item.SourcePath
+			if item.SourcePath == sourcePath {
+				item.SourceRoot = true
+			}
+			if operation == "move" {
+				// Every manifest entry carries its own checkpoint and ETag. Cleanup
+				// can therefore delete files first and only empty directories after
+				// a restart, without recursively removing a changed source tree.
+				item.SourceCleanupState = "pending"
+			}
+			plan.Items = append(plan.Items, *item)
+		}
+		plan.BytesTotal += rootPlan.BytesTotal
+		plan.FilesTotal += rootPlan.FilesTotal
+		plan.CopyCount += rootPlan.CopyCount
+		plan.SkipCount += rootPlan.SkipCount
+		plan.RenameCount += rootPlan.RenameCount
+		plan.ConflictCount += rootPlan.ConflictCount
+	}
+	return plan, nil
+}
+
+func (s *Service) CreateBatchPull(ctx context.Context, request BatchPullRequest, idempotencyKey, requestHash string) (entities.Job, bool, error) {
+	if job, storedHash, found, err := s.store.FindJobByIdempotency(ctx, idempotencyKey); err != nil {
+		return entities.Job{}, false, err
+	} else if found {
+		if storedHash != requestHash {
+			return entities.Job{}, false, db.ErrIdempotencyConflict
+		}
+		return job, true, nil
+	}
+	plan, err := s.PlanBatchPull(ctx, request)
+	if err != nil {
+		return entities.Job{}, false, err
+	}
+	operation := strings.ToLower(strings.TrimSpace(request.Operation))
+	if operation == "" {
+		operation = "copy"
+	}
+	typeName := "transfer_pull_batch"
+	if operation == "move" {
+		typeName = "transfer_move_batch"
+	}
+	destinationGrant, err := s.store.GetTransferGrant(ctx, strings.TrimSpace(request.DestinationGrantID))
+	if err != nil {
+		return entities.Job{}, false, err
+	}
+	return s.jobs.CreatePlannedBatchPull(ctx, jobs.CreateRequest{
+		Type: typeName, MountID: destinationGrant.MountID, PeerNodeID: strings.TrimSpace(request.PeerNodeID),
+		SourceGrantID: strings.TrimSpace(request.SourceGrantID), DestinationGrantID: strings.TrimSpace(request.DestinationGrantID),
+		Destination: plan.DestinationPath, ConflictPolicy: normalizePolicy(request.ConflictPolicy),
+		VerifyChecksum: request.VerifyChecksum || operation == "move",
+		BandwidthLimit: request.BandwidthLimit, MaxParallelFiles: request.MaxParallelFiles,
+		MaxParallelChunks: request.MaxParallelChunks, CorrelationID: request.CorrelationID,
+	}, plan, idempotencyKey, requestHash)
+}
+
+func (s *Service) planBatchRoot(ctx context.Context, peer entities.Peer, sourceGrantID, sourcePath, destinationMountID, destinationPath, policy string, checksum bool) (entities.CopyPlan, error) {
+	entries, err := s.fetchRemoteManifest(ctx, peer, sourceGrantID, sourcePath, checksum)
+	if err != nil {
+		return entities.CopyPlan{}, err
+	}
+	plan := entities.CopyPlan{SourcePath: sourcePath, DestinationPath: destinationPath, ConflictPolicy: policy, Items: make([]entities.JobItem, 0, len(entries))}
+	now := time.Now().UTC()
+	blockedDirectories := make(map[string]struct{})
+	for _, entry := range entries {
+		if entry.Path == ".." || strings.HasPrefix(entry.Path, "../") || (entry.Type != "file" && entry.Type != "directory") || entry.Size < 0 {
+			return entities.CopyPlan{}, fmt.Errorf("%w: remote manifest contains an invalid item", ErrInvalid)
+		}
+		item := entities.JobItem{
+			SourcePath: joinRelative(sourcePath, entry.Path), DestinationPath: joinRelative(destinationPath, entry.Path),
+			Type: entry.Type, Size: entry.Size, ModifiedAt: entry.ModifiedAt, Checksum: entry.Checksum,
+			State: "pending", UpdatedAt: now,
+		}
+		if hasBlockedParent(entry.Path, blockedDirectories) {
+			item.Action = "conflict"
+		} else {
+			item.Action, item.DestinationPath, err = s.planRemoteAction(ctx, destinationMountID, item, policy)
+			if err != nil {
+				return entities.CopyPlan{}, err
+			}
+		}
+		if item.Type == "directory" && item.Action == "conflict" {
+			blockedDirectories[entry.Path] = struct{}{}
+		}
+		if item.Type == "file" {
+			plan.FilesTotal++
+			switch item.Action {
+			case "copy", "overwrite":
+				plan.CopyCount++
+				plan.BytesTotal += item.Size
+			case "rename":
+				plan.RenameCount++
+				plan.BytesTotal += item.Size
+			case "skip":
+				plan.SkipCount++
+			case "conflict":
+				plan.ConflictCount++
+			}
+		}
+		plan.Items = append(plan.Items, item)
+	}
+	return plan, nil
+}
+
+func normalizeBatchPaths(values []string) ([]string, error) {
+	if len(values) == 0 {
+		return nil, fmt.Errorf("%w: at least one source path is required", ErrInvalid)
+	}
+	seen := make(map[string]struct{}, len(values))
+	paths := make([]string, 0, len(values))
+	for _, value := range values {
+		cleaned := cleanRelative(value)
+		if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+			return nil, fmt.Errorf("%w: source path is invalid", ErrInvalid)
+		}
+		if _, exists := seen[cleaned]; exists {
+			return nil, fmt.Errorf("%w: source paths must be unique", ErrInvalid)
+		}
+		seen[cleaned] = struct{}{}
+		paths = append(paths, cleaned)
+	}
+	sort.Strings(paths)
+	if len(paths) > 1 && paths[0] == "." {
+		return nil, fmt.Errorf("%w: selected paths cannot overlap", ErrInvalid)
+	}
+	for index := 1; index < len(paths); index++ {
+		if strings.HasPrefix(paths[index], paths[index-1]+"/") {
+			return nil, fmt.Errorf("%w: selected paths cannot overlap", ErrInvalid)
+		}
+	}
+	return paths, nil
+}
+
+func batchSourceNames(paths, supplied []string) (map[string]string, error) {
+	if len(supplied) != 0 && len(supplied) != len(paths) {
+		return nil, fmt.Errorf("%w: source names must match source paths", ErrInvalid)
+	}
+	names := make(map[string]string, len(paths))
+	for index, sourcePath := range paths {
+		cleaned := cleanRelative(sourcePath)
+		name := ""
+		if len(supplied) > 0 {
+			name = cleanRelative(supplied[index])
+			if name == "." || name == ".." || strings.Contains(name, "/") {
+				return nil, fmt.Errorf("%w: source name is invalid", ErrInvalid)
+			}
+		}
+		if cleaned == "." && name == "" {
+			return nil, fmt.Errorf("%w: a selected grant root requires a source name", ErrInvalid)
+		}
+		if name != "" {
+			names[cleaned] = name
+		}
+	}
+	return names, nil
 }
 
 func (s *Service) ExecutePull(ctx context.Context, job entities.Job, progress func(int64, int64) error) (int64, error) {
@@ -665,7 +896,115 @@ func (s *Service) ExecuteDirectoryPull(ctx context.Context, job entities.Job, pr
 	if warnings > 0 {
 		return bytesCompleted, fmt.Errorf("%w: %d remote item(s) could not be copied", jobs.ErrWarnings, warnings)
 	}
+	if job.Type == "transfer_move_batch" {
+		latest, latestErr := s.store.ListJobItems(ctx, job.ID)
+		if latestErr != nil {
+			return bytesCompleted, latestErr
+		}
+		for _, item := range latest {
+			if item.Action == "skip" && job.ConflictPolicy != "checksum" {
+				return bytesCompleted, fmt.Errorf("%w: source was preserved because an existing destination was skipped without checksum verification", jobs.ErrWarnings)
+			}
+		}
+		job.Phase, job.UpdatedAt = "finalizing", time.Now().UTC()
+		if err := s.store.UpdateJob(ctx, job); err != nil {
+			return bytesCompleted, err
+		}
+		if err := s.cleanupMovedSources(ctx, peer, job, latest); err != nil {
+			return bytesCompleted, err
+		}
+	}
 	return bytesCompleted, nil
+}
+
+func (s *Service) cleanupMovedSources(ctx context.Context, peer entities.Peer, job entities.Job, items []entities.JobItem) error {
+	itemsToRemove := make([]entities.JobItem, 0)
+	for _, item := range items {
+		if item.SourceCleanupState != "completed" {
+			itemsToRemove = append(itemsToRemove, item)
+		}
+	}
+	sort.Slice(itemsToRemove, func(left, right int) bool {
+		if itemsToRemove[left].Type != itemsToRemove[right].Type {
+			return itemsToRemove[left].Type == "file"
+		}
+		return strings.Count(itemsToRemove[left].SourcePath, "/") > strings.Count(itemsToRemove[right].SourcePath, "/")
+	})
+	for _, item := range itemsToRemove {
+		expectedETag := sourceEntryETag(item)
+		if item.Type == "directory" {
+			// Deleting descendants updates the directory mtime by design. A
+			// non-recursive delete still fails if a new or changed child remains.
+			expectedETag = ""
+		}
+		if err := s.deleteRemoteSource(ctx, peer, job.SourceGrantID, item.SourcePath, expectedETag, false); err != nil {
+			item.SourceCleanupState, item.Error, item.UpdatedAt = "failed", err.Error(), time.Now().UTC()
+			_ = s.store.UpdateJobItem(context.Background(), item)
+			return err
+		}
+		item.SourceCleanupState, item.Error, item.UpdatedAt = "completed", "", time.Now().UTC()
+		if err := s.store.UpdateJobItem(ctx, item); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) DeleteSource(ctx context.Context, peerNodeID, grantID, relative, expectedETag string, recursive bool) error {
+	if recursive {
+		return ErrForbidden
+	}
+	grant, err := s.sendGrant(ctx, peerNodeID, grantID)
+	if err != nil {
+		return err
+	}
+	if !grant.Permissions.Delete {
+		return ErrForbidden
+	}
+	sourcePath, err := withinGrant(grant.Path, relative)
+	if err != nil {
+		return err
+	}
+	entry, err := s.files.Metadata(ctx, grant.MountID, sourcePath)
+	if err != nil {
+		return err
+	}
+	if expectedETag != "" && sourceEntryETag(entities.JobItem{Size: entry.Size, ModifiedAt: entry.ModifiedAt}) != expectedETag {
+		return filesystem.ErrSourceChanged
+	}
+	return s.files.Delete(ctx, grant.MountID, sourcePath, recursive)
+}
+
+func (s *Service) deleteRemoteSource(ctx context.Context, peer entities.Peer, grantID, relative, expectedETag string, recursive bool) error {
+	endpoint, err := url.Parse(strings.TrimRight(peer.MTLSEndpoint, "/"))
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" {
+		return fmt.Errorf("%w: invalid peer mTLS endpoint", ErrPeer)
+	}
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/peer/v1/grants/" + url.PathEscape(grantID) + "/actions/delete"
+	body, err := json.Marshal(map[string]any{"path": relative, "expected_etag": expectedETag, "recursive": recursive})
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), strings.NewReader(string(body)))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := s.doPeerRequest(peer, request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	switch response.StatusCode {
+	case http.StatusNoContent, http.StatusOK, http.StatusNotFound:
+		return nil
+	case http.StatusForbidden:
+		return ErrForbidden
+	case http.StatusPreconditionFailed:
+		return filesystem.ErrSourceChanged
+	default:
+		return fmt.Errorf("remote source cleanup returned HTTP %d", response.StatusCode)
+	}
 }
 
 func (s *Service) CleanupPull(ctx context.Context, job entities.Job) error {
@@ -878,7 +1217,7 @@ func (s *Service) planRemoteAction(ctx context.Context, mountID string, item ent
 
 func (s *Service) trustedPeer(ctx context.Context, nodeID string) (entities.Peer, error) {
 	peer, err := s.store.GetPeer(ctx, strings.TrimSpace(nodeID))
-	if errors.Is(err, db.ErrNotFound) || (err == nil && !trustedPeerState(peer.State)) {
+	if errors.Is(err, db.ErrNotFound) || (err == nil && !entities.TrustedPeerState(peer.State)) {
 		return entities.Peer{}, fmt.Errorf("%w: exact trusted peer is required", ErrForbidden)
 	}
 	if err != nil {
@@ -1008,15 +1347,6 @@ func contains(values []string, target string) bool {
 		}
 	}
 	return false
-}
-
-func trustedPeerState(state string) bool {
-	switch state {
-	case "trusted", "unknown", "online", "offline", "degraded":
-		return true
-	default:
-		return false
-	}
 }
 
 func sourceETag(info os.FileInfo) string {

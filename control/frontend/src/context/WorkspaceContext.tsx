@@ -10,6 +10,7 @@ import {
 import { useParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import type {
+  Connection,
   Grant,
   Job,
   MTLSState,
@@ -18,6 +19,8 @@ import type {
   PairingInvite,
   PairingRequest,
   Peer,
+  TrustPeer,
+  TrustView,
 } from "@/lib/types";
 import { useNodes } from "@/context/NodesContext";
 import { usePermissions } from "@/context/PermissionsContext";
@@ -29,8 +32,12 @@ interface WorkspaceContextValue {
   node: NodeInfo | null;
   mounts: Mount[];
   jobs: Job[];
+  /** Both sides of every trust relationship, resolved by the Control Tower. */
+  trust: TrustView | null;
+  trustPeers: TrustPeer[];
   peers: Peer[];
   grants: Grant[];
+  connections: Connection[];
   pairingInvites: PairingInvite[];
   pairingRequests: PairingRequest[];
   mtlsState: MTLSState | null;
@@ -38,7 +45,7 @@ interface WorkspaceContextValue {
   setJobs: (updater: (previous: Job[]) => Job[]) => void;
   refreshJobs: () => Promise<void>;
   refreshMounts: () => Promise<void>;
-  refreshPairing: () => Promise<void>;
+  refreshTrust: () => Promise<void>;
   refreshMTLSState: () => Promise<void>;
   /** `nodes/{id}[/suffix]` — permission path helper. */
   nodePath: (suffix?: string) => string;
@@ -56,10 +63,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const [mounts, setMounts] = useState<Mount[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [peers, setPeers] = useState<Peer[]>([]);
-  const [grants, setGrants] = useState<Grant[]>([]);
-  const [pairingInvites, setPairingInvites] = useState<PairingInvite[]>([]);
-  const [pairingRequests, setPairingRequests] = useState<PairingRequest[]>([]);
+  const [trust, setTrust] = useState<TrustView | null>(null);
   const [mtlsState, setMtlsState] = useState<MTLSState | null>(null);
   const [loading, setLoading] = useState(false);
   const [canStreamJobs, setCanStreamJobs] = useState(false);
@@ -80,10 +84,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     let active = true;
     setMounts([]);
     setJobs([]);
-    setPeers([]);
-    setGrants([]);
-    setPairingInvites([]);
-    setPairingRequests([]);
+    setTrust(null);
     setMtlsState(null);
     setCanStreamJobs(false);
     setLoading(true);
@@ -103,49 +104,28 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           `${base}/keys/identity`,
           `control-tower/nodes/${nodeId}/token`,
         ]);
-        const [
-          mountResult,
-          jobResult,
-          inviteResult,
-          requestResult,
-          peerResult,
-          grantResult,
-          mtlsResult,
-        ] = await Promise.all([
-          hasPermissionNow(`${base}/mounts`, "list")
-            ? api.mounts(nodeId)
-            : empty(),
-          hasPermissionNow(`${base}/jobs`, "list")
-            ? api.jobs(nodeId)
-            : empty(),
-          hasPermissionNow(`${base}/admin/pairing`, "sudo")
-            ? api.pairingInvites(nodeId)
-            : empty(),
-          hasPermissionNow(`${base}/admin/pairing`, "sudo")
-            ? api.pairingRequests(nodeId)
-            : empty(),
-          hasPermissionNow(`${base}/peers`, "list")
-            ? api.peers(nodeId)
-            : empty(),
-          hasPermissionNow(`${base}/grants`, "list")
-            ? api.grants(nodeId)
-            : empty(),
-          hasPermissionNow(`${base}/keys/mtls`, "read")
-            ? api.mtlsState(nodeId)
-            : Promise.resolve(null),
-        ]);
+        // One trust request replaces the peers/grants/invites/requests
+        // fan-out: it is the only view that knows what the other side sees.
+        const [mountResult, jobResult, trustResult, mtlsResult] =
+          await Promise.all([
+            hasPermissionNow(`${base}/mounts`, "list")
+              ? api.mounts(nodeId)
+              : empty(),
+            hasPermissionNow(`${base}/jobs`, "list")
+              ? api.jobs(nodeId)
+              : empty(),
+            hasPermissionNow(`${base}/peers`, "list")
+              ? api.nodeTrust(nodeId)
+              : Promise.resolve(null),
+            hasPermissionNow(`${base}/keys/mtls`, "read")
+              ? api.mtlsState(nodeId)
+              : Promise.resolve(null),
+          ]);
         if (!active) return;
         const loadedJobs = (jobResult as { items: Job[] }).items || [];
         setMounts((mountResult as { items: Mount[] }).items || []);
         setJobs(loadedJobs);
-        setPairingInvites(
-          (inviteResult as { items: PairingInvite[] }).items || [],
-        );
-        setPairingRequests(
-          (requestResult as { items: PairingRequest[] }).items || [],
-        );
-        setPeers((peerResult as { items: Peer[] }).items || []);
-        setGrants((grantResult as { items: Grant[] }).items || []);
+        setTrust(trustResult as TrustView | null);
         setMtlsState(mtlsResult as MTLSState | null);
 
         const jobPaths = loadedJobs
@@ -182,62 +162,53 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setMounts(result.items || []);
   }, [nodeId]);
 
-  const refreshPairing = useCallback(async () => {
-    if (!nodeId) return;
-    const [inviteResult, requestResult] = await Promise.all([
-      api.pairingInvites(nodeId),
-      api.pairingRequests(nodeId),
-    ]);
-    setPairingInvites(inviteResult.items || []);
-    setPairingRequests(requestResult.items || []);
-    const peerResult = await api.peers(nodeId);
-    setPeers(peerResult.items || []);
-    const grantResult = await api.grants(nodeId);
-    setGrants(grantResult.items || []);
-  }, [nodeId]);
+  const refreshTrust = useCallback(async () => {
+    if (!nodeId || !hasPermissionNow(`nodes/${nodeId}/peers`, "list")) return;
+    setTrust(await api.nodeTrust(nodeId));
+  }, [nodeId, hasPermissionNow]);
 
   const refreshMTLSState = useCallback(async () => {
     if (!nodeId || !hasPermissionNow(nodePath("keys/mtls"), "read")) return;
     setMtlsState(await api.mtlsState(nodeId));
   }, [nodeId, hasPermissionNow, nodePath]);
 
-  const value = useMemo(
-    () => ({
+  const value = useMemo(() => {
+    const trustPeers = trust?.peers || [];
+    return {
       nodeId: nodeId ?? "",
       node,
       mounts,
       jobs,
-      peers,
-      grants,
-      pairingInvites,
-      pairingRequests,
+      trust,
+      trustPeers,
+      peers: trustPeers as Peer[],
+      grants: trustPeers.flatMap((peer) => peer.grants || []),
+      connections: trust?.connections || [],
+      pairingInvites: trust?.invites || [],
+      pairingRequests: trust?.requests || [],
       mtlsState,
       loading,
       setJobs,
       refreshJobs,
       refreshMounts,
-      refreshPairing,
+      refreshTrust,
       refreshMTLSState,
       nodePath,
-    }),
-    [
-      nodeId,
-      node,
-      mounts,
-      jobs,
-      peers,
-      grants,
-      pairingInvites,
-      pairingRequests,
-      mtlsState,
-      loading,
-      refreshJobs,
-      refreshMounts,
-      refreshPairing,
-      refreshMTLSState,
-      nodePath,
-    ],
-  );
+    };
+  }, [
+    nodeId,
+    node,
+    mounts,
+    jobs,
+    trust,
+    mtlsState,
+    loading,
+    refreshJobs,
+    refreshMounts,
+    refreshTrust,
+    refreshMTLSState,
+    nodePath,
+  ]);
 
   return (
     <WorkspaceContext.Provider value={value}>
