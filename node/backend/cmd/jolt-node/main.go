@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,6 +25,7 @@ import (
 	"github.com/jfxdev/jolt/backend/internal/infra/database"
 	"github.com/jfxdev/jolt/backend/internal/infra/db"
 	"github.com/jfxdev/jolt/backend/internal/infra/httpapi"
+	"github.com/jfxdev/jolt/backend/internal/infra/metrics"
 	"github.com/jfxdev/jolt/backend/internal/infra/mtlsapi"
 	"github.com/jfxdev/jolt/backend/internal/infra/recovery"
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
@@ -109,6 +112,9 @@ func main() {
 	transferService.ConfigureTimeouts(cfg.TransferConnectTimeout, cfg.TransferIdleReadTimeout,
 		cfg.TransferChunkTimeout, cfg.JobValidationTimeout)
 	jobService.ConfigureRemoteExecutor(transferService)
+	registry := metrics.NewRegistry()
+	registerNodeMetrics(registry, cfg)
+	go sweepUploadSessions(jobContext, store, fileService, logger, cfg.UploadSessionTTL)
 	recoveredJobs, err := jobService.Start(jobContext, cfg.MaxConcurrentJobs)
 	if err != nil {
 		logger.Error("start job workers", "error", err)
@@ -129,9 +135,17 @@ func main() {
 	go peerMonitor.Run(jobContext)
 	server := &http.Server{
 		Addr:              cfg.APIAddress,
-		Handler:           httpapi.New(cfg, identity, fileService, jobService, pairingService, grantService, logger, store, certificateManager, transferService),
+		Handler:           httpapi.New(cfg, identity, fileService, jobService, pairingService, grantService, logger, store, certificateManager, transferService, registry),
 		ReadHeaderTimeout: 10 * 1e9,
 		IdleTimeout:       120 * 1e9,
+	}
+	if cfg.APITLSEnabled() {
+		apiTLS, tlsErr := apiTLSConfig(cfg)
+		if tlsErr != nil {
+			logger.Error("load API TLS material", "error", tlsErr)
+			os.Exit(1)
+		}
+		server.TLSConfig = apiTLS
 	}
 	mtlsServer := &http.Server{
 		Addr: cfg.MTLSAddress, Handler: mtlsapi.New(identity, cfg.NodeName, transferService),
@@ -139,8 +153,24 @@ func main() {
 		ReadHeaderTimeout: 10 * 1e9, IdleTimeout: 120 * 1e9,
 	}
 	go func() {
-		logger.Info("jolt node started", "node_id", identity.NodeID, "fingerprint", identity.Fingerprint, "address", cfg.APIAddress)
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		scheme := "http"
+		if cfg.APITLSEnabled() {
+			scheme = "https"
+		}
+		logger.Info("jolt node started", "node_id", identity.NodeID, "fingerprint", identity.Fingerprint,
+			"address", cfg.APIAddress, "scheme", scheme, "client_certificate_required", cfg.APITLSClientCAFile != "")
+		if !cfg.APITLSEnabled() {
+			logger.Warn("control API is serving plaintext HTTP; the operational token and file bytes " +
+				"are exposed on the wire. Set API_TLS_CERT_FILE and API_TLS_KEY_FILE, or keep this " +
+				"listener on a private network. See docs/REVERSE_PROXY.md")
+		}
+		var err error
+		if cfg.APITLSEnabled() {
+			err = server.ListenAndServeTLS("", "")
+		} else {
+			err = server.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server stopped", "error", err)
 			os.Exit(1)
 		}
@@ -168,6 +198,110 @@ func main() {
 	if err := jobService.Shutdown(ctx); err != nil {
 		logger.Error("job worker shutdown failed", "error", err)
 	}
+}
+
+// registerNodeMetrics declares every metric the node exposes. Declaring them
+// up front means a scrape before the first request still returns a complete,
+// zero-valued series set instead of an empty page.
+func registerNodeMetrics(registry *metrics.Registry, cfg config.Config) {
+	registry.Counter("jolt_http_requests_total",
+		"Control API requests by method, matched route and status.", "method", "route", "status")
+	registry.Histogram("jolt_http_request_duration_seconds",
+		"Control API request latency in seconds.", nil, "route")
+	registry.Counter("jolt_http_response_bytes_total",
+		"Bytes written to control API responses.", "route")
+	registry.Counter("jolt_uploads_started_total", "Resumable upload sessions opened.")
+	registry.Counter("jolt_uploads_completed_total", "Resumable uploads published to their destination.")
+	registry.Counter("jolt_uploads_failed_total", "Resumable uploads that failed verification.")
+	registry.Counter("jolt_uploads_aborted_total", "Resumable uploads discarded by the client.")
+	registry.Counter("jolt_upload_bytes_total", "Bytes accepted from resumable uploads.")
+	registry.Gauge("jolt_uploads_active", "Resumable upload sessions currently open.")
+	registry.Counter("jolt_jobs_total", "Jobs by type and terminal state.", "type", "state")
+	registry.Counter("jolt_job_bytes_total", "Bytes moved by jobs.", "type")
+	registry.Gauge("jolt_jobs_active", "Jobs currently running.")
+	registry.GaugeFunc("jolt_node_info", "Always 1; present so a scrape confirms the node is up.",
+		func() float64 { return 1 })
+	registry.GaugeFunc("jolt_max_concurrent_jobs", "Configured job worker count.",
+		func() float64 { return float64(cfg.MaxConcurrentJobs) })
+	registry.RegisterRuntime()
+}
+
+// sweepUploadSessions discards resumable uploads whose client never came back,
+// removing the partial file before the row so a crash mid-sweep cannot leave an
+// orphan partial with no session pointing at it.
+func sweepUploadSessions(ctx context.Context, store *db.Store, files *filesystem.Service,
+	logger *slog.Logger, ttl time.Duration) {
+	interval := ttl / 4
+	if interval < time.Minute {
+		interval = time.Minute
+	}
+	if interval > time.Hour {
+		interval = time.Hour
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		expired, err := store.ExpiredUploadSessions(ctx, time.Now().UTC())
+		if err != nil {
+			logger.Error("list expired upload sessions", "error", err)
+			continue
+		}
+		for _, session := range expired {
+			if err := files.AbortUpload(ctx, session.MountID, session.Destination, session.ID); err != nil {
+				logger.Error("remove expired upload partial", "upload_id", session.ID, "error", err)
+				continue
+			}
+			if err := store.DeleteUploadSession(ctx, session.ID); err != nil {
+				logger.Error("delete expired upload session", "upload_id", session.ID, "error", err)
+				continue
+			}
+			logger.Info("expired upload session swept", "upload_id", session.ID,
+				"mount_id", session.MountID, "destination", session.Destination)
+		}
+	}
+}
+
+// apiTLSConfig builds the TLS configuration for the control API listener. The
+// certificate is reloaded from disk on every handshake so a renewal (certbot,
+// cert-manager, a homelab CA script) takes effect without restarting the node
+// and interrupting running transfers. When a client CA is configured the
+// listener also requires a verified client certificate, which turns the
+// operational token into a second factor instead of the only one.
+func apiTLSConfig(cfg config.Config) (*tls.Config, error) {
+	load := func() (*tls.Certificate, error) {
+		pair, err := tls.LoadX509KeyPair(cfg.APITLSCertFile, cfg.APITLSKeyFile)
+		if err != nil {
+			return nil, err
+		}
+		return &pair, nil
+	}
+	if _, err := load(); err != nil {
+		return nil, err
+	}
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return load()
+		},
+	}
+	if cfg.APITLSClientCAFile != "" {
+		pem, err := os.ReadFile(cfg.APITLSClientCAFile)
+		if err != nil {
+			return nil, err
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, errors.New("API_TLS_CLIENT_CA_FILE contains no usable certificate")
+		}
+		tlsConfig.ClientCAs = pool
+		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+	return tlsConfig, nil
 }
 
 func runSnapshot(arguments []string) error {
