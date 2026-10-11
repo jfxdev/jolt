@@ -1199,16 +1199,16 @@ func TestLogicalTransferSelectionLimitIsStructured(t *testing.T) {
 }
 
 func TestPeerRevocationRequiresDeleteCapability(t *testing.T) {
-	requirements := nodeAuthorizationRequirements("node-1", "peers/peer-2", http.MethodDelete)
+	requirements := nodeAuthorizationRequirements("node-1", "peers/peer-2", http.MethodDelete, fileTargets{})
 	if len(requirements) != 1 || requirements[0].Path != "nodes/node-1/peers" ||
 		requirements[0].Capability != "delete" {
 		t.Fatalf("requirements=%+v", requirements)
 	}
-	update := nodeAuthorizationRequirements("node-1", "peers/peer-2", http.MethodPatch)
+	update := nodeAuthorizationRequirements("node-1", "peers/peer-2", http.MethodPatch, fileTargets{})
 	if len(update) != 1 || update[0].Path != "nodes/node-1/peers" || update[0].Capability != "update" {
 		t.Fatalf("update requirements=%+v", update)
 	}
-	identity := nodeAuthorizationRequirements("node-1", "crypto/identity/rotate", http.MethodPost)
+	identity := nodeAuthorizationRequirements("node-1", "crypto/identity/rotate", http.MethodPost, fileTargets{})
 	if len(identity) != 1 || identity[0].Path != "nodes/node-1/keys/identity" ||
 		identity[0].Capability != "sudo" {
 		t.Fatalf("identity requirements=%+v", identity)
@@ -1512,5 +1512,67 @@ func TestBrowserConnectionRequestStaysPendingWithoutTargetAdminAccess(t *testing
 	connection, err := storage.GetConnection(ctx, "request-1")
 	if err != nil || connection.Status != "pending_review" {
 		t.Fatalf("connection=%+v err=%v", connection, err)
+	}
+}
+
+func TestFileScopeRejectsTraversalAndNormalizes(t *testing.T) {
+	base := "nodes/node-a/files/mounts/media"
+	cases := map[string]string{
+		"":                       base,
+		".":                      base,
+		"/":                      base,
+		"photos":                 base + "/photos",
+		"/photos/2024/":          base + "/photos/2024",
+		"photos//2024":           base + "/photos/2024",
+		"./photos":               base + "/photos",
+		"Fotos de Família/a.jpg": base + "/Fotos de Família/a.jpg",
+		"..":                     "",
+		"photos/../../etc":       "",
+		"photos/..":              "",
+	}
+	for relative, expected := range cases {
+		if got := fileScope(base, relative); got != expected {
+			t.Fatalf("fileScope(%q) = %q, want %q", relative, got, expected)
+		}
+	}
+}
+
+func TestMountFileRequirementsAreSubpathScoped(t *testing.T) {
+	requirements := nodeAuthorizationRequirements("node-1", "mounts/m1/files", http.MethodGet,
+		fileTargets{Paths: []string{"photos/2024"}})
+	if len(requirements) != 1 ||
+		requirements[0].Path != "nodes/node-1/files/mounts/m1/photos/2024" ||
+		requirements[0].Capability != "list" {
+		t.Fatalf("unexpected listing requirements: %+v", requirements)
+	}
+
+	// Copy authorizes reading the source subtree and writing the destination
+	// subtree separately.
+	copyRequirements := nodeAuthorizationRequirements("node-1", "mounts/m1/files/copy", http.MethodPost,
+		fileTargets{Source: "photos/a.jpg", Destination: "backup/a.jpg"})
+	expected := map[string]string{
+		"nodes/node-1/files/mounts/m1/photos/a.jpg": "read",
+		"nodes/node-1/files/mounts/m1/backup/a.jpg": "create",
+		"nodes/node-1/jobs":                         "create",
+	}
+	if len(copyRequirements) != len(expected) {
+		t.Fatalf("unexpected copy requirements: %+v", copyRequirements)
+	}
+	for _, requirement := range copyRequirements {
+		if expected[requirement.Path] != requirement.Capability {
+			t.Fatalf("unexpected copy requirement %+v", requirement)
+		}
+	}
+
+	// A traversing path must deny rather than widen to the whole mount.
+	if got := nodeAuthorizationRequirements("node-1", "mounts/m1/files", http.MethodDelete,
+		fileTargets{Paths: []string{"../../etc"}}); got != nil {
+		t.Fatalf("traversal produced requirements: %+v", got)
+	}
+
+	// With no path at all the mount itself remains the scope.
+	mountWide := nodeAuthorizationRequirements("node-1", "mounts/m1/files", http.MethodGet, fileTargets{})
+	if len(mountWide) != 1 || mountWide[0].Path != "nodes/node-1/files/mounts/m1" {
+		t.Fatalf("unexpected mount-wide requirements: %+v", mountWide)
 	}
 }
