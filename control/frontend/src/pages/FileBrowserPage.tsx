@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Copy, MoveRight } from "lucide-react";
+import { Copy, FolderArchive, MoveRight } from "lucide-react";
 import { api } from "@/lib/api";
-import type { FileEntry } from "@/lib/types";
+import type { FileEntry, SearchResponse } from "@/lib/types";
 import { useWorkspace } from "@/context/WorkspaceContext";
 import { usePermissions } from "@/context/PermissionsContext";
 import { useApiError } from "@/hooks/useApiError";
 import { useConfirm } from "@/context/ConfirmProvider";
+import { formatBytes } from "@/lib/format";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +21,10 @@ import { FileTable } from "@/components/files/FileTable";
 import { CrossNodeTransferDialog } from "@/components/files/CrossNodeTransferDialog";
 import { MediaPreviewDialog } from "@/components/files/MediaPreviewDialog";
 import { TextEditorDialog } from "@/components/files/TextEditorDialog";
+import { FileSearchBar } from "@/components/files/FileSearchBar";
+import { ShareDialog } from "@/components/files/ShareDialog";
+import { UploadQueue, type UploadItem } from "@/components/files/UploadQueue";
+import { useResumableUploads } from "@/hooks/useResumableUploads";
 
 type TransferSelection = {
   entries: FileEntry[];
@@ -47,17 +52,38 @@ export default function FileBrowserPage() {
   const [transferLimit, setTransferLimit] = useState(1000);
   const [preview, setPreview] = useState<FileEntry | null>(null);
   const [editor, setEditor] = useState<FileEntry | null>(null);
+  const [sharing, setSharing] = useState<FileEntry | null>(null);
+  const [searchResult, setSearchResult] = useState<SearchResponse | null>(null);
+  const [searching, setSearching] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
-  const filePolicyPath = mount
+  // The mount root is what existing policies name; the current folder is what
+  // a subpath policy names. Both are evaluated so the UI reflects whichever
+  // grants access.
+  const mountPolicyPath = mount
     ? `nodes/${nodeId}/files/mounts/${mount.mount_id}`
     : "";
+  const filePolicyPath = useMemo(() => {
+    if (!mountPolicyPath) return "";
+    return currentPath ? `${mountPolicyPath}/${currentPath}` : mountPolicyPath;
+  }, [mountPolicyPath, currentPath]);
   const editorMountID = mount?.mount_id;
+
+  const { uploads, start: startUpload, cancel, retry, dismiss } =
+    useResumableUploads({
+      nodeId,
+      mountId: mount?.mount_id,
+      onFinished: async () => {
+        await Promise.all([loadFilesRef.current(currentPath), refreshJobs()]);
+      },
+      onError: handleError,
+    });
 
   const loadFiles = useCallback(
     async (path: string) => {
       if (!mountId) return;
       setLoading(true);
+      setSearchResult(null);
       try {
         const result = await api.files(nodeId, mountId, path);
         setFiles(result.items || []);
@@ -71,6 +97,11 @@ export default function FileBrowserPage() {
     },
     [nodeId, mountId, handleError],
   );
+  // Upload completion refreshes the listing; a ref keeps that callback stable.
+  const loadFilesRef = useRef(loadFiles);
+  useEffect(() => {
+    loadFilesRef.current = loadFiles;
+  }, [loadFiles]);
 
   useEffect(() => {
     if (!mount) return;
@@ -88,6 +119,14 @@ export default function FileBrowserPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodeId, mount?.mount_id]);
 
+  // Permissions for the folder being viewed are loaded as the user navigates,
+  // so a subpath rule that narrows or widens access is reflected in the UI.
+  useEffect(() => {
+    if (!filePolicyPath || filePolicyPath === mountPolicyPath) return;
+    void loadPermissions([filePolicyPath]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filePolicyPath]);
+
   const breadcrumbs = useMemo(() => {
     const parts = currentPath.split("/").filter(Boolean);
     return [
@@ -104,12 +143,68 @@ export default function FileBrowserPage() {
       await loadFiles(entry.path);
     } else {
       if (!hasPermission(filePolicyPath, "read")) {
-        toast.error("A policy atual não permite baixar arquivos deste mount.");
+        toast.error("A policy atual não permite baixar arquivos desta pasta.");
         return;
       }
       window.location.href = api.downloadUrl(nodeId, mount!.mount_id, entry.path);
     }
   }
+
+  /** downloadArchive confirms the size first: a mistaken click on a multi-
+   * terabyte folder should not silently start streaming it. */
+  async function downloadArchive(entries: FileEntry[]) {
+    if (!mount) return;
+    if (!hasPermission(filePolicyPath, "read")) {
+      toast.error("A policy atual não permite baixar arquivos desta pasta.");
+      return;
+    }
+    const names = entries.map((entry) => entry.name);
+    try {
+      const plan = await api.archivePlan(nodeId, mount.mount_id, currentPath, names);
+      const target =
+        names.length === 1 ? `“${names[0]}”` : `${names.length} itens`;
+      if (
+        !(await confirm({
+          title: `Baixar ${target} como .zip?`,
+          description: `${plan.files} arquivo${plan.files === 1 ? "" : "s"} · ${formatBytes(plan.bytes)}${
+            plan.skipped_symlinks > 0
+              ? ` · ${plan.skipped_symlinks} link simbólico ignorado${plan.skipped_symlinks === 1 ? "" : "s"}`
+              : ""
+          }`,
+          confirmText: "Baixar",
+        }))
+      )
+        return;
+      window.location.href = api.archiveUrl(
+        nodeId,
+        mount.mount_id,
+        currentPath,
+        names,
+      );
+    } catch (error) {
+      handleError(error);
+    }
+  }
+
+  const runSearch = useCallback(
+    async (query: string, type: "" | "file" | "directory") => {
+      if (!mount) return;
+      setSearching(true);
+      try {
+        const result = await api.search(nodeId, mount.mount_id, currentPath, {
+          query,
+          type: type || undefined,
+        });
+        setSearchResult(result);
+      } catch (error) {
+        handleError(error);
+        setSearchResult(null);
+      } finally {
+        setSearching(false);
+      }
+    },
+    [currentPath, handleError, mount, nodeId],
+  );
 
   function previewEntry(entry: FileEntry) {
     setPreview(entry);
@@ -152,18 +247,13 @@ export default function FileBrowserPage() {
     }
   }
 
-  async function upload(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file || !mount) return;
-    const path = [currentPath, file.name].filter(Boolean).join("/");
-    try {
-      await api.upload(nodeId, mount.mount_id, path, file);
-      await Promise.all([loadFiles(currentPath), refreshJobs()]);
-      toast.success(`${file.name} enviado.`);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      event.target.value = "";
+  function upload(event: React.ChangeEvent<HTMLInputElement>) {
+    const chosen = Array.from(event.target.files || []);
+    event.target.value = "";
+    if (chosen.length === 0 || !mount) return;
+    for (const file of chosen) {
+      const path = [currentPath, file.name].filter(Boolean).join("/");
+      startUpload(file, path);
     }
   }
 
@@ -197,8 +287,11 @@ export default function FileBrowserPage() {
 
   const writable = mount.mode === "read_write";
   const canCreate = writable && hasPermission(filePolicyPath, "create");
-  const canTransferCopy = hasPermission(filePolicyPath, "read");
-  const canTransferMove = writable && canTransferCopy && hasPermission(filePolicyPath, "delete");
+  const canRead = hasPermission(filePolicyPath, "read");
+  const canTransferCopy = canRead;
+  const canTransferMove =
+    writable && canTransferCopy && hasPermission(filePolicyPath, "delete");
+  const visibleFiles = searchResult ? searchResult.entries : files;
 
   return (
     <div className="grid gap-4">
@@ -219,31 +312,52 @@ export default function FileBrowserPage() {
           </BreadcrumbList>
         </Breadcrumb>
 
-        {canCreate && (
-          <div className="flex items-center gap-2">
-            <form className="flex gap-2" onSubmit={createDirectory}>
-              <Input
-                value={newDirectory}
-                placeholder="Nova pasta"
-                className="h-9 w-40"
-                onChange={(e) => setNewDirectory(e.target.value)}
-              />
-              <Button variant="secondary" size="sm" type="submit">
-                Criar
-              </Button>
-            </form>
-            <Button size="sm" onClick={() => fileInput.current?.click()}>
-              Enviar arquivo
+        <div className="flex items-center gap-2">
+          {canRead && files.length > 0 && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => downloadArchive([])}
+            >
+              <FolderArchive /> Baixar pasta (.zip)
             </Button>
-            <input
-              ref={fileInput}
-              type="file"
-              hidden
-              onChange={upload}
-            />
-          </div>
-        )}
+          )}
+          {canCreate && (
+            <>
+              <form className="flex gap-2" onSubmit={createDirectory}>
+                <Input
+                  value={newDirectory}
+                  placeholder="Nova pasta"
+                  className="h-9 w-40"
+                  onChange={(e) => setNewDirectory(e.target.value)}
+                />
+                <Button variant="secondary" size="sm" type="submit">
+                  Criar
+                </Button>
+              </form>
+              <Button size="sm" onClick={() => fileInput.current?.click()}>
+                Enviar arquivos
+              </Button>
+              <input ref={fileInput} type="file" hidden multiple onChange={upload} />
+            </>
+          )}
+        </div>
       </div>
+
+      <FileSearchBar
+        scopeLabel={breadcrumbs[breadcrumbs.length - 1]?.label || "Mount"}
+        searching={searching}
+        result={searchResult}
+        onSearch={runSearch}
+        onClear={() => setSearchResult(null)}
+      />
+
+      <UploadQueue
+        items={uploads}
+        onCancel={cancel}
+        onRetry={retry}
+        onDismiss={dismiss}
+      />
 
       {selectedEntries.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-muted/30 px-3 py-2">
@@ -251,6 +365,14 @@ export default function FileBrowserPage() {
             {selectedEntries.length} item{selectedEntries.length === 1 ? "" : "ns"} selecionado{selectedEntries.length === 1 ? "" : "s"}
           </p>
           <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={!canRead}
+              onClick={() => downloadArchive(selectedEntries)}
+            >
+              <FolderArchive /> Baixar .zip
+            </Button>
             <Button size="sm" variant="secondary" disabled={!canTransferCopy} onClick={() => setTransfer({ entries: selectedEntries, operation: "copy" })}>
               <Copy /> Copiar para…
             </Button>
@@ -262,13 +384,15 @@ export default function FileBrowserPage() {
       )}
 
       <FileTable
-        files={files}
+        files={visibleFiles}
         loading={loading}
         writable={writable}
         filePolicyPath={filePolicyPath}
         onDownload={downloadEntry}
         onPreview={previewEntry}
         onEdit={editEntry}
+        onShare={canRead ? (entry) => setSharing(entry) : undefined}
+        onArchive={canRead ? (entry) => downloadArchive([entry]) : undefined}
         onTransferCopy={(entries) => setTransfer({ entries, operation: "copy" })}
         onTransferMove={(entries) => setTransfer({ entries, operation: "move" })}
         onRemove={removeEntry}
@@ -293,6 +417,12 @@ export default function FileBrowserPage() {
         onClose={() => setEditor(null)}
         onError={handleError}
       />
+      <ShareDialog
+        entry={sharing}
+        mount={mount}
+        nodeId={nodeId}
+        onClose={() => setSharing(null)}
+      />
 
       <CrossNodeTransferDialog
         open={transfer !== null}
@@ -305,3 +435,5 @@ export default function FileBrowserPage() {
     </div>
   );
 }
+
+export type { UploadItem };
