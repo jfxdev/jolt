@@ -89,6 +89,15 @@ CREATE TABLE IF NOT EXISTS idempotency (
  key TEXT PRIMARY KEY, job_id TEXT NOT NULL, request_hash TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
  FOREIGN KEY(job_id) REFERENCES jobs(id)
 );
+CREATE TABLE IF NOT EXISTS upload_sessions (
+ id TEXT PRIMARY KEY, mount_id TEXT NOT NULL, destination TEXT NOT NULL,
+ size INTEGER NOT NULL, overwrite INTEGER NOT NULL DEFAULT 0, checksum TEXT NOT NULL DEFAULT '',
+ chunk_size INTEGER NOT NULL DEFAULT 0, correlation_id TEXT NOT NULL DEFAULT '',
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS upload_sessions_expires_at ON upload_sessions(expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS upload_sessions_destination
+ ON upload_sessions(mount_id, destination);
 CREATE TABLE IF NOT EXISTS pairing_invites (
  id TEXT PRIMARY KEY, target_node_id TEXT, transfer_mode TEXT NOT NULL,
  issuer_role TEXT NOT NULL, invitee_role TEXT NOT NULL, purpose TEXT,
