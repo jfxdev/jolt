@@ -1,4 +1,4 @@
-.PHONY: build test acceptance acceptance-half acceptance-full node control frontend docker nodes node-a node-b node-c
+.PHONY: build test vet vulncheck check acceptance acceptance-half acceptance-full node control frontend docker nodes node-a node-b node-c
 
 TESTDATA_ROOT := $(abspath node/testdata)
 
@@ -25,6 +25,19 @@ build:
 test:
 	cd node && CGO_ENABLED=1 go test ./...
 	cd control && CGO_ENABLED=1 go test ./...
+	cd control/frontend && npm test
+
+vet:
+	cd node && CGO_ENABLED=1 go vet ./...
+	cd control && CGO_ENABLED=1 go vet ./...
+	cd control/frontend && npm run typecheck
+
+vulncheck:
+	cd node && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	cd control && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+# Mirrors the CI gate: build, vet, unit tests, and the quick acceptance profile.
+check: vet test acceptance
 
 acceptance:
 	cd node && CGO_ENABLED=1 JOLT_ACCEPTANCE_PROFILE=quick go test -tags=acceptance -run '^TestAcceptance' -timeout 15m ./backend/internal/services/jobs

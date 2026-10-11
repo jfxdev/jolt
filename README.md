@@ -35,8 +35,9 @@ Two products, one boundary:
 ### Core capabilities
 
 - **Filesystem API** — traversal/symlink-safe listing, metadata, Range downloads,
-  atomic streaming uploads, mkdir, copy, move/rename, delete, with read-only
-  enforcement and mount diagnostics.
+  atomic streaming uploads, resumable chunked uploads, streaming ZIP downloads
+  of a folder or a selection, bounded subtree search, mkdir, copy, move/rename,
+  delete, with read-only enforcement and mount diagnostics.
 - **Durable jobs** — a persistent SQLite queue with atomic claims, resumable
   16 MiB checkpoints, pause/resume/cancel/retry with backoff, per-file and
   per-chunk parallelism, node- and job-level bandwidth limits, and live SSE
@@ -48,9 +49,16 @@ Two products, one boundary:
   one-time invites, bilateral trusted peers, signed stable-identity rotation
   (dual-signed epoch handover) propagated by the Control Tower, and rotating
   mTLS certificates with rollout diagnostics.
-- **Authorization** — Argon2id logins, sessions, service accounts and API keys,
-  reusable access groups, and Node Path RBAC policies with `deny` precedence
-  evaluated before any request reaches a node.
+- **Authorization** — Argon2id logins with lockout, sessions, service accounts
+  and API keys, reusable access groups, and Node Path RBAC policies with
+  subpath rules, a recursive `**` wildcard and `deny` precedence, evaluated
+  before any request reaches a node.
+- **Public share links** — read-only links to one file or folder, with optional
+  password, expiry and download budget. A link is revocable, never grants more
+  than its creator holds, and stops working the moment the creator loses access
+  to the path.
+- **Observability** — Prometheus metrics for both services on a dedicated
+  `/metrics` endpoint behind its own token.
 - **Recovery** — offline consistent snapshots with integrity checks and SHA-256
   manifests, restore diagnostics, and emergency credential/admin recovery.
 
@@ -60,8 +68,10 @@ Two products, one boundary:
   (Control Tower), Ed25519 identities, TLS 1.3 mTLS.
 - **Frontend:** React 19 + Vite, componentes Base UI / shadcn (Vega), Tailwind
   CSS 4 e React Router.
-- **Deployment:** Docker images with LinuxServer-style `PUID`/`PGID`/`UMASK`
-  privilege drop; root Compose stack wiring both products.
+- **Deployment:** Docker images on Go 1.26 with LinuxServer-style
+  `PUID`/`PGID`/`UMASK` privilege drop, dropped capabilities and
+  `no-new-privileges`; root Compose stack wiring both products. Optional TLS on
+  the node control API.
 
 ### Documentation
 
@@ -73,6 +83,7 @@ Two products, one boundary:
 - [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) — attack surface and unauthenticated threat analysis.
 - [`docs/ACCESS_CENTER.md`](docs/ACCESS_CENTER.md) — design for a dedicated authorization/access page.
 - [`docs/TRANSFERS_API.md`](docs/TRANSFERS_API.md) — public logical API for durable transfers between nodes.
+- [`docs/SHARING_AND_BROWSING.md`](docs/SHARING_AND_BROWSING.md) — subpath RBAC, ZIP downloads, search, resumable uploads, share links, metrics.
 - [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md) — load and fault-injection profiles.
 - [`docs/DISASTER_RECOVERY.md`](docs/DISASTER_RECOVERY.md),
   [`docs/REVERSE_PROXY.md`](docs/REVERSE_PROXY.md) — operations.
@@ -378,9 +389,30 @@ transfer grants before forwarding a request to either node.
   lifecycle metadata and rotate/promote/rollback/revoke operations are exposed
   through the authenticated node API.
 - Browser mutations use strict same-site cookies and origin validation.
+- The node control API can serve TLS directly: set `API_TLS_CERT_FILE` and
+  `API_TLS_KEY_FILE`. The certificate is reloaded on every handshake, so a
+  renewal needs no restart and interrupts no transfer. Setting
+  `API_TLS_CLIENT_CA_FILE` additionally requires a verified client certificate,
+  which makes the operational token a second factor rather than the only one.
+  Point the Control Tower at a private CA with `CONTROL_TOWER_NODE_CA_FILE`, and
+  present a client certificate with `CONTROL_TOWER_NODE_CLIENT_CERT_FILE` and
+  `CONTROL_TOWER_NODE_CLIENT_KEY_FILE`. Without TLS the node logs a warning at
+  startup, because the operational token and file bytes are then on the wire in
+  the clear.
+- Public share links are read-only and carry no session. Each request
+  re-evaluates the creator's own RBAC decision on the shared path, so revoking
+  an operator's access also kills every link they published. A link never
+  reveals the node, mount or path behind it, and an unknown token and a revoked
+  token answer identically so the endpoint cannot be used to enumerate links.
+- `/metrics` is served only when `METRICS_TOKEN` (node) or
+  `CONTROL_TOWER_METRICS_TOKEN` (Control Tower) is set, and requires that token
+  rather than an operator session or the operational token. Metric labels use
+  matched route patterns, never raw paths or share tokens.
 - Pairing requests do not create trust before explicit approval. Approval creates
   peers on both nodes, but never creates mounts or Transfer Path Grants.
-- In production behind HTTPS, set `CONTROL_TOWER_SECURE_COOKIES=true`.
+- `CONTROL_TOWER_SECURE_COOKIES` defaults to `true`. Set it to `false` only to
+  reach the UI over plain HTTP on a trusted network; the session cookie then
+  travels unencrypted and the Control Tower logs a warning at startup.
 
 The Control Tower database schema, sessions, policies, audit records, indexes,
 and encrypted credential fields are stored inside a full-page SQLCipher
