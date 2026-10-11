@@ -31,17 +31,35 @@ func makeLabelKey(names, values []string) labelKey {
 	var builder strings.Builder
 	for index, name := range names {
 		if index > 0 {
-			builder.WriteByte(',')
+			builder.WriteByte(keySeparator)
 		}
 		builder.WriteString(name)
-		builder.WriteByte('=')
+		builder.WriteByte(keyAssign)
 		builder.WriteString(escapeLabelValue(values[index]))
 	}
 	return labelKey(builder.String())
 }
 
+// The key packs "name=value" pairs into one comparable string. The separators
+// are control characters that cannot occur in a label value, so a value
+// containing "," or "=" cannot forge an extra pair when the key is rendered
+// back into Prometheus syntax.
+const (
+	keySeparator = '\x1f'
+	keyAssign    = '\x1e'
+)
+
+// escapeLabelValue applies the escaping the exposition format requires. Control
+// characters are dropped rather than escaped: they are never meaningful in a
+// label and two of them are reserved as key separators.
 func escapeLabelValue(value string) string {
-	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
+	value = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, value)
+	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 	return replacer.Replace(value)
 }
 
@@ -356,9 +374,9 @@ func renderLabelsWith(key labelKey, name, value string) string {
 }
 
 func quoteLabelPairs(key string) string {
-	pairs := strings.Split(key, ",")
+	pairs := strings.Split(key, string(keySeparator))
 	for index, pair := range pairs {
-		name, value, found := strings.Cut(pair, "=")
+		name, value, found := strings.Cut(pair, string(keyAssign))
 		if !found {
 			continue
 		}

@@ -49,6 +49,19 @@ control characters are refused. A folder named `Vendas 50% off` is therefore
 reachable, even though it cannot be named literally in a policy rule — target it
 with a wildcard or a parent `**` rule instead.
 
+### Whole-subtree reads and deny rules
+
+A ZIP of a folder and a recursive search both read an entire subtree from a
+single named root. Authorizing only that root would let the node read
+descendants the subject is denied, and the node cannot filter them itself
+because it does not know the subject's policies.
+
+Both operations are therefore refused with `deny_rule_within_scope` while any
+`deny` rule applies at or below the requested path, and the subject narrows the
+request to an allowed subfolder. Each `name=` selection is authorized on its
+own rather than riding on the base path's decision. The same check guards a
+public share of a folder, so a share can never archive past a deny rule.
+
 ## Folder downloads (ZIP)
 
 `GET /api/v1/mounts/{mountID}/files/archive?path=…` streams a ZIP. Add one or
@@ -113,8 +126,14 @@ Properties that make a resumed upload trustworthy:
   `X-Jolt-Upload-Offset`, so a client seeks instead of creating a hole.
 - Publication is an **atomic rename**, so the destination is never a partial
   file. An optional `checksum` is verified first.
-- One destination may hold only **one** open session: two concurrent resumable
-  uploads to one path would interleave into the same partial file.
+- One destination may hold only **one** open session, and the appends of a
+  single session are serialized: two writers at the same offset would otherwise
+  both pass the offset check and interleave their bytes into the partial file.
+  The loser is told the real offset and resumes from it.
+- A zero-byte file sends no chunk, so its partial is materialized at completion
+  and published through the same verified path as any other file.
+- `overwrite` is not implied. The UI starts an upload without it and surfaces a
+  conflict, so replacing an existing file is always an explicit choice.
 - Partials are named `.jolt-<id>.partial` and are hidden from listings, search
   and archives, and are not addressable through the API.
 - `GET …/files/uploads` lists unfinished sessions so the UI can offer to resume
@@ -140,9 +159,13 @@ Security properties:
 - Creating a link requires the `create` capability on `control-tower/shares`
   **and** `read` on the exact path. A link can never widen what its creator
   already reached.
-- **Every public request re-evaluates the creator's own RBAC decision.**
-  Revoking an operator's access, or disabling their account, kills every link
-  they published — a departed operator's shares do not keep serving data.
+- **Every public request re-evaluates the creator's own access.** Revoking an
+  operator's policies, disabling their account, or demoting an administrator
+  kills every link they published — a departed operator's shares do not keep
+  serving data. The creator's role is read from storage on each request, which
+  is what makes a demotion take effect; an administrator is authorized by the
+  same built-in override that applies to their interactive requests.
+- A folder share is refused while a `deny` rule applies inside its subtree.
 - The token is returned **once** and stored only as a digest, so a leaked
   database cannot be turned into working links.
 - Public metadata exposes only a display name and whether the link is a file or
@@ -155,8 +178,10 @@ Security properties:
   An unlock mints a stateless HMAC ticket scoped to that one share, bound to the
   stored password hash, so changing the password invalidates outstanding
   tickets and a ticket for one link never opens another.
-- Ranged requests do not consume the download budget: a resumed download sends
-  several requests for one logical download.
+- A ranged request consumes the budget unless it is a genuine resume, meaning a
+  single range starting past byte zero. Counting every ranged request would
+  spend the budget several times on one download; exempting all of them would
+  let `Range: bytes=0-` fetch the whole file without limit.
 - Responses are `Cache-Control: private, no-store`, because the URL is the
   credential.
 - The public surface accepts no writes under any method.

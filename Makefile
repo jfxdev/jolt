@@ -36,8 +36,8 @@ vulncheck:
 	cd node && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 	cd control && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-# Mirrors the CI gate: build, vet, unit tests, and the quick acceptance profile.
-check: vet test acceptance
+# Mirrors the CI gate.
+check: build vet test acceptance
 
 acceptance:
 	cd node && CGO_ENABLED=1 JOLT_ACCEPTANCE_PROFILE=quick go test -tags=acceptance -run '^TestAcceptance' -timeout 15m ./backend/internal/services/jobs

@@ -227,6 +227,32 @@ func (s *Server) shareURL(r *http.Request, token string) string {
 	return base + "/s/" + token
 }
 
+// isResumeRange reports whether a Range header continues an earlier download
+// rather than starting a new one. Only a single range whose first byte position
+// is greater than zero qualifies; anything else, including a malformed header
+// or a multi-range request, is treated as a fresh download.
+func isResumeRange(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	spec, found := strings.CutPrefix(value, "bytes=")
+	if !found || strings.Contains(spec, ",") {
+		return false
+	}
+	start, _, found := strings.Cut(spec, "-")
+	if !found {
+		return false
+	}
+	start = strings.TrimSpace(start)
+	// A suffix range ("bytes=-500") has no start and is not a resume.
+	if start == "" {
+		return false
+	}
+	offset, err := strconv.ParseInt(start, 10, 64)
+	return err == nil && offset > 0
+}
+
 func normalizeSharePath(value string) string {
 	return strings.Trim(strings.ReplaceAll(strings.TrimSpace(value), "\\", "/"), "/")
 }
@@ -402,9 +428,12 @@ func (s *Server) publicShareContent(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Range requests are resumed downloads of the same file, so they must not
-	// each consume a download from the budget.
-	if r.Header.Get("Range") == "" {
+	// A genuine resume continues from a non-zero offset, so only those skip the
+	// budget. Counting every ranged request would spend the budget several
+	// times on one download, but skipping all of them would let "Range:
+	// bytes=0-" fetch the whole file unlimited times and defeat the limit
+	// entirely.
+	if !isResumeRange(r.Header.Get("Range")) {
 		if err := s.store.RegisterShareDownload(r.Context(), share.ID, time.Now().UTC()); err != nil {
 			writeError(w, r, http.StatusGone, "share_exhausted", "Este link não está mais disponível.")
 			return
@@ -488,22 +517,37 @@ func (s *Server) loadPublicShare(w http.ResponseWriter, r *http.Request, forCont
 	return share, true
 }
 
-// shareCreatorStillAuthorized re-evaluates the creator's policies against the
-// shared path.
+// shareCreatorStillAuthorized re-evaluates the creator's access to the shared
+// path on every public request, so revoking it also revokes their links.
+//
+// The role check mirrors the built-in admin override in evaluateAuthorization:
+// an administrator is authorized without any explicit policy, so reading only
+// their policies would make every admin-created link fail. The role is read
+// from storage rather than trusted from the share, so demoting an admin
+// likewise stops their links.
 func (s *Server) shareCreatorStillAuthorized(r *http.Request, share store.Share) bool {
 	user, err := s.store.GetUser(r.Context(), share.CreatedBy)
 	if err != nil || !user.Enabled {
-		return false
-	}
-	policies, err := s.store.RBACPoliciesForSubject(r.Context(), "user", share.CreatedBy)
-	if err != nil {
 		return false
 	}
 	scope := fileScope("nodes/"+share.NodeID+"/files/mounts/"+share.MountID, share.Path)
 	if scope == "" {
 		return false
 	}
-	decision := rbac.Evaluate(rbac.ExpandCompatibilityRules(policies), scope, "read")
+	policies, err := s.store.RBACPoliciesForSubject(r.Context(), "user", share.CreatedBy)
+	if err != nil {
+		return false
+	}
+	expanded := rbac.ExpandCompatibilityRules(policies)
+	// A deny rule inside the shared subtree still wins, even for an admin, so
+	// an archive of a shared folder cannot reach a denied descendant.
+	if share.Kind == "directory" && rbac.DeniesWithin(expanded, scope) {
+		return false
+	}
+	if user.Role == "admin" {
+		return true
+	}
+	decision := rbac.Evaluate(expanded, scope, "read")
 	return decision.Allowed && !decision.Denied
 }
 

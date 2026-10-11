@@ -202,6 +202,61 @@ func match(pattern, path string) (bool, int) {
 	return true, specificity + len(patternParts)
 }
 
+// DeniesWithin reports whether any deny rule applies to a path at or below
+// scope.
+//
+// It exists for operations that read a whole subtree in one request — a ZIP of
+// a folder, a recursive search — where the caller names only the subtree root.
+// Evaluating the root alone would authorize the request while the node happily
+// read descendants the subject is denied, so deny would stop winning globally.
+// The node cannot filter them itself: it does not know the subject's policies.
+// Callers therefore refuse the whole operation when this returns true, and the
+// subject narrows the request to an allowed subfolder.
+func DeniesWithin(policies []Policy, scope string) bool {
+	scopeParts := strings.Split(NormalizePath(scope), "/")
+	for _, policy := range policies {
+		for _, rule := range policy.Rules {
+			if !capabilitySet(rule.Capabilities)["deny"] {
+				continue
+			}
+			if denyReachesScope(strings.Split(NormalizePath(rule.Path), "/"), scopeParts) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// denyReachesScope reports whether a deny rule covers the scope itself or
+// anything under it. The rule's fixed prefix must agree with the scope on every
+// segment they share; a "*" agrees with anything. A rule shorter than the scope
+// only reaches it when it is recursive, otherwise it names an ancestor and
+// matching is exact elsewhere.
+func denyReachesScope(ruleParts, scopeParts []string) bool {
+	recursive := ruleParts[len(ruleParts)-1] == Recursive
+	if recursive {
+		ruleParts = ruleParts[:len(ruleParts)-1]
+	}
+	shared := len(ruleParts)
+	if len(scopeParts) < shared {
+		shared = len(scopeParts)
+	}
+	for index := 0; index < shared; index++ {
+		if ruleParts[index] == "*" || scopeParts[index] == "*" {
+			continue
+		}
+		if ruleParts[index] != scopeParts[index] {
+			return false
+		}
+	}
+	if len(ruleParts) >= len(scopeParts) {
+		// The rule is at or below the scope: it denies something being read.
+		return true
+	}
+	// The rule sits above the scope and only reaches into it when recursive.
+	return recursive
+}
+
 // ExpandCompatibilityRules keeps policies written before recursive paths
 // existed working unchanged. A rule that stops exactly at a mount
 // ("nodes/<id>/files/mounts/<mountID>") used to authorize every path inside

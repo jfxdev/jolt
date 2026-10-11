@@ -9,7 +9,7 @@ export interface UploadItem {
   name: string;
   uploaded: number;
   total: number;
-  status: "uploading" | "retrying" | "done" | "failed" | "cancelled";
+  status: "uploading" | "retrying" | "done" | "failed" | "cancelled" | "conflict";
   error?: string;
   /** resumable marks an item whose session still exists on the node, so the
    * same file can continue instead of starting over. */
@@ -20,6 +20,9 @@ interface Props {
   items: UploadItem[];
   onCancel: (id: string) => void;
   onRetry: (id: string) => void;
+  /** onReplace retries an upload that stopped on a conflict, this time
+   * authorizing it to replace the file already at the destination. */
+  onReplace: (id: string) => void;
   onDismiss: (id: string) => void;
 }
 
@@ -29,9 +32,10 @@ const statusLabel: Record<UploadItem["status"], string> = {
   done: "Concluído",
   failed: "Falhou",
   cancelled: "Cancelado",
+  conflict: "Já existe",
 };
 
-export function UploadQueue({ items, onCancel, onRetry, onDismiss }: Props) {
+export function UploadQueue({ items, onCancel, onRetry, onReplace, onDismiss }: Props) {
   if (items.length === 0) return null;
 
   return (
@@ -47,7 +51,7 @@ export function UploadQueue({ items, onCancel, onRetry, onDismiss }: Props) {
                 {item.status === "done" && (
                   <CheckCircle2 className="size-4 text-emerald-600 dark:text-emerald-500" />
                 )}
-                {item.status === "failed" && (
+                {(item.status === "failed" || item.status === "conflict") && (
                   <AlertTriangle className="size-4 text-destructive" />
                 )}
                 <span>
@@ -63,6 +67,25 @@ export function UploadQueue({ items, onCancel, onRetry, onDismiss }: Props) {
                   >
                     <X className="size-4" />
                   </Button>
+                )}
+                {item.status === "conflict" && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => onReplace(item.id)}
+                    >
+                      Substituir
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      aria-label={`Manter o arquivo existente e descartar ${item.name}`}
+                      onClick={() => onDismiss(item.id)}
+                    >
+                      <X className="size-4" />
+                    </Button>
+                  </>
                 )}
                 {(item.status === "failed" || item.status === "cancelled") && (
                   <>

@@ -203,3 +203,66 @@ func TestValidResourcePathAcceptsRealNamesButNotPatterns(t *testing.T) {
 		}
 	}
 }
+
+func TestDeniesWithinDetectsDenyAtOrBelowScope(t *testing.T) {
+	policies := []Policy{{ID: "p", Rules: []Rule{
+		{Path: "nodes/*/files/mounts/media/**", Capabilities: []string{"read", "list"}},
+		{Path: "nodes/*/files/mounts/media/privado/**", Capabilities: []string{"deny"}},
+	}}}
+	// Reading a subtree that contains the denied folder must be refused: the
+	// node would otherwise stream files the subject cannot read.
+	for _, scope := range []string{
+		"nodes/node-a/files/mounts/media",
+		"nodes/node-a/files/mounts/media/privado",
+		"nodes/node-a/files/mounts/media/privado/contabilidade",
+	} {
+		if !DeniesWithin(policies, scope) {
+			t.Fatalf("deny not detected within %q", scope)
+		}
+	}
+	// A sibling subtree holds no deny rule and stays readable as a whole.
+	for _, scope := range []string{
+		"nodes/node-a/files/mounts/media/publico",
+		"nodes/node-a/files/mounts/media/publico/fotos",
+		"nodes/node-a/files/mounts/outro",
+	} {
+		if DeniesWithin(policies, scope) {
+			t.Fatalf("false positive for %q", scope)
+		}
+	}
+}
+
+func TestDeniesWithinHandlesExactAndAncestorRules(t *testing.T) {
+	exact := []Policy{{ID: "p", Rules: []Rule{
+		{Path: "nodes/node-a/files/mounts/media/privado", Capabilities: []string{"deny"}},
+	}}}
+	// An exact deny on a folder blocks archiving its parent, because the
+	// archive would include that folder.
+	if !DeniesWithin(exact, "nodes/node-a/files/mounts/media") {
+		t.Fatal("an exact deny below the scope was missed")
+	}
+	if !DeniesWithin(exact, "nodes/node-a/files/mounts/media/privado") {
+		t.Fatal("an exact deny at the scope was missed")
+	}
+	// A non-recursive deny on an ancestor does not itself deny the descendant.
+	if DeniesWithin(exact, "nodes/node-a/files/mounts/media/privado/sub") {
+		t.Fatal("a non-recursive ancestor deny leaked downward")
+	}
+	recursive := []Policy{{ID: "p", Rules: []Rule{
+		{Path: "nodes/node-a/files/mounts/media/**", Capabilities: []string{"deny"}},
+	}}}
+	// A recursive deny above the scope does reach into it.
+	if !DeniesWithin(recursive, "nodes/node-a/files/mounts/media/privado/sub") {
+		t.Fatal("a recursive ancestor deny was missed")
+	}
+}
+
+func TestDeniesWithinIgnoresAllowRulesAndOtherFamilies(t *testing.T) {
+	policies := []Policy{{ID: "p", Rules: []Rule{
+		{Path: "nodes/*/files/mounts/media/**", Capabilities: []string{"read"}},
+		{Path: "nodes/*/transfers", Capabilities: []string{"deny"}},
+	}}}
+	if DeniesWithin(policies, "nodes/node-a/files/mounts/media") {
+		t.Fatal("an allow rule or an unrelated family triggered a deny")
+	}
+}

@@ -56,6 +56,7 @@ export default function FileBrowserPage() {
   const [searchResult, setSearchResult] = useState<SearchResponse | null>(null);
   const [searching, setSearching] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const searchSequence = useRef(0);
 
   // The mount root is what existing policies name; the current folder is what
   // a subpath policy names. Both are evaluated so the UI reflects whichever
@@ -69,12 +70,22 @@ export default function FileBrowserPage() {
   }, [mountPolicyPath, currentPath]);
   const editorMountID = mount?.mount_id;
 
-  const { uploads, start: startUpload, cancel, retry, dismiss } =
+  // An upload can outlive the folder it started in, so completion refreshes
+  // whatever folder is on screen rather than the one captured at start.
+  const currentPathRef = useRef(currentPath);
+  useEffect(() => {
+    currentPathRef.current = currentPath;
+  }, [currentPath]);
+
+  const { uploads, start: startUpload, cancel, retry, replace, dismiss } =
     useResumableUploads({
       nodeId,
       mountId: mount?.mount_id,
       onFinished: async () => {
-        await Promise.all([loadFilesRef.current(currentPath), refreshJobs()]);
+        await Promise.all([
+          loadFilesRef.current(currentPathRef.current),
+          refreshJobs(),
+        ]);
       },
       onError: handleError,
     });
@@ -83,7 +94,10 @@ export default function FileBrowserPage() {
     async (path: string) => {
       if (!mountId) return;
       setLoading(true);
+      // Navigating away invalidates a search in flight for the old folder.
+      searchSequence.current += 1;
       setSearchResult(null);
+      setSearching(false);
       try {
         const result = await api.files(nodeId, mountId, path);
         setFiles(result.items || []);
@@ -189,18 +203,24 @@ export default function FileBrowserPage() {
   const runSearch = useCallback(
     async (query: string, type: "" | "file" | "directory") => {
       if (!mount) return;
+      // Responses can arrive out of order, so only the newest request is
+      // allowed to publish its result or clear the spinner.
+      const sequence = searchSequence.current + 1;
+      searchSequence.current = sequence;
       setSearching(true);
       try {
         const result = await api.search(nodeId, mount.mount_id, currentPath, {
           query,
           type: type || undefined,
         });
-        setSearchResult(result);
+        if (searchSequence.current === sequence) setSearchResult(result);
       } catch (error) {
-        handleError(error);
-        setSearchResult(null);
+        if (searchSequence.current === sequence) {
+          handleError(error);
+          setSearchResult(null);
+        }
       } finally {
-        setSearching(false);
+        if (searchSequence.current === sequence) setSearching(false);
       }
     },
     [currentPath, handleError, mount, nodeId],
@@ -345,17 +365,24 @@ export default function FileBrowserPage() {
       </div>
 
       <FileSearchBar
+        // Remounting on folder change clears the query text, so the box never
+        // shows a stale term with no results beneath it.
+        key={currentPath}
         scopeLabel={breadcrumbs[breadcrumbs.length - 1]?.label || "Mount"}
         searching={searching}
         result={searchResult}
         onSearch={runSearch}
-        onClear={() => setSearchResult(null)}
+        onClear={() => {
+          searchSequence.current += 1;
+          setSearchResult(null);
+        }}
       />
 
       <UploadQueue
         items={uploads}
         onCancel={cancel}
         onRetry={retry}
+        onReplace={replace}
         onDismiss={dismiss}
       />
 

@@ -355,9 +355,44 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		Name: sessionCookie, Value: token, Path: "/", Expires: expires,
 		HttpOnly: true, Secure: s.config.SecureCookies, SameSite: http.SameSiteStrictMode,
 	})
+	// A Secure cookie is dropped by the browser over plain HTTP unless the
+	// origin is a secure context such as localhost. Silently issuing one makes
+	// login appear to succeed and then fail, so the misconfiguration is
+	// reported instead of guessed at.
+	if s.config.SecureCookies && !requestIsSecureContext(r) {
+		s.log.Error("refusing to issue a Secure session cookie over plaintext HTTP",
+			"host", r.Host,
+			"hint", "serve the Control Tower over HTTPS, or set CONTROL_TOWER_SECURE_COOKIES=false on a trusted network")
+		writeError(w, r, http.StatusMisdirectedRequest, "insecure_transport",
+			"A Control Tower exige HTTPS para manter a sessão. Acesse por HTTPS ou "+
+				"defina CONTROL_TOWER_SECURE_COOKIES=false em uma rede confiável.")
+		return
+	}
 	s.registry.Inc("jolt_control_logins_total")
 	s.store.Audit(r.Context(), user.ID, "login", "control-tower", "allowed", r.Header.Get("X-Correlation-ID"))
 	writeJSON(w, http.StatusOK, map[string]any{"user": publicUser(user)})
+}
+
+// requestIsSecureContext reports whether the browser will accept a Secure
+// cookie for this request. TLS terminated upstream is reported through
+// X-Forwarded-Proto, which is trusted only for this decision: a client that
+// spoofs it merely re-enables a cookie its own browser would then refuse to
+// send, which harms nobody else. Loopback origins are secure contexts by
+// specification, so a local `docker compose up` keeps working over HTTP.
+func requestIsSecureContext(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
+		return true
+	}
+	host := r.Host
+	if parsed, _, err := net.SplitHostPort(r.Host); err == nil {
+		host = parsed
+	}
+	host = strings.ToLower(strings.Trim(host, "[]"))
+	return host == "localhost" || host == "127.0.0.1" || host == "::1" ||
+		strings.HasSuffix(host, ".localhost")
 }
 
 // clientIP returns the direct TCP peer address. It deliberately ignores
@@ -2590,8 +2625,16 @@ func (s *Server) rejectConnection(w http.ResponseWriter, r *http.Request) {
 // restored so the proxy can still forward it; everything else uses ?path=.
 func fileTargetsFromRequest(r *http.Request) (fileTargets, error) {
 	targets := fileTargets{}
-	if value := r.URL.Query().Get("path"); strings.TrimSpace(value) != "" {
-		targets.Paths = append(targets.Paths, value)
+	base := strings.TrimSpace(r.URL.Query().Get("path"))
+	if base != "" {
+		targets.Paths = append(targets.Paths, base)
+	}
+	// Each archive selection is a separate path being read, so each one is
+	// authorized on its own instead of riding on the base path's decision.
+	for _, name := range r.URL.Query()["name"] {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			targets.Paths = append(targets.Paths, path.Join(base, trimmed))
+		}
 	}
 	if r.Method != http.MethodPost || r.Body == nil {
 		return targets, nil
@@ -2620,6 +2663,35 @@ func fileTargetsFromRequest(r *http.Request) (fileTargets, error) {
 	return targets, nil
 }
 
+// subtreeReadResource reports whether a resource reads a whole subtree from a
+// single named root, rather than one explicitly named path.
+func subtreeReadResource(resource string) bool {
+	segments := strings.Split(strings.Trim(resource, "/"), "/")
+	if len(segments) < 4 || segments[0] != "mounts" || segments[2] != "files" {
+		return false
+	}
+	return segments[3] == "archive" || segments[3] == "search"
+}
+
+func mountIDFromResource(resource string) string {
+	segments := strings.Split(strings.Trim(resource, "/"), "/")
+	if len(segments) < 2 {
+		return ""
+	}
+	return segments[1]
+}
+
+// deniesWithinScope loads the subject's policies and asks whether any deny rule
+// applies at or below scope. A service account outside the node's access group
+// is already refused by the ordinary capability check.
+func (s *Server) deniesWithinScope(r *http.Request, scope string) (bool, error) {
+	policies, err := s.store.RBACPoliciesForSubject(r.Context(), currentActorType(r), currentUser(r).ID)
+	if err != nil {
+		return false, err
+	}
+	return rbac.DeniesWithin(rbac.ExpandCompatibilityRules(policies), scope), nil
+}
+
 // isMountFileResource reports whether resource addresses files inside a mount,
 // which is the only family whose authorization is subpath-scoped.
 func isMountFileResource(resource string) bool {
@@ -2638,6 +2710,26 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		targets = parsed
+	}
+	// Archive and search read an entire subtree from one named root, so
+	// authorizing the root alone would let them reach descendants the subject
+	// is denied. Refuse while any deny rule applies inside the requested
+	// subtree; a narrower request on an allowed subfolder still works.
+	if subtreeReadResource(resource) && r.Method == http.MethodGet {
+		mountBase := "nodes/" + r.PathValue("nodeID") + "/files/mounts/" + mountIDFromResource(resource)
+		for _, scope := range fileScopes(mountBase, targets.all()) {
+			denied, err := s.deniesWithinScope(r, scope)
+			if err != nil {
+				s.fail(w, r, err)
+				return
+			}
+			if denied {
+				s.audit(r, "read", scope, "denied")
+				writeError(w, r, http.StatusForbidden, "deny_rule_within_scope",
+					"Há regras de negação dentro desta pasta. Baixe ou pesquise em uma subpasta permitida.")
+				return
+			}
+		}
 	}
 	requirements := nodeAuthorizationRequirements(r.PathValue("nodeID"), resource, r.Method, targets)
 	if len(requirements) == 0 {

@@ -20,6 +20,18 @@ interface Pending {
   path: string;
   controller: AbortController;
   session?: UploadSession;
+  /** overwrite stays false until the user explicitly chooses to replace the
+   * file already at the destination. */
+  overwrite: boolean;
+}
+
+/** isConflict recognises the responses that mean "something is already at this
+ * destination": a conflicting session, or an existing file refused at
+ * completion. */
+function isConflict(error: unknown) {
+  const status = (error as { status?: number })?.status;
+  const code = (error as { code?: string })?.code;
+  return status === 409 && code !== "upload_offset_mismatch";
 }
 
 /**
@@ -62,7 +74,7 @@ export function useResumableUploads({ nodeId, mountId, onFinished, onError }: Op
           },
           entry.file,
           entry.path,
-          true,
+          entry.overwrite,
           {
             signal: entry.controller.signal,
             resumeFrom: entry.session,
@@ -82,6 +94,19 @@ export function useResumableUploads({ nodeId, mountId, onFinished, onError }: Op
           patch(id, { status: "cancelled", resumable: true });
           return;
         }
+        if (isConflict(error)) {
+          // Replacing a file is the user's decision, so the upload stops here
+          // and waits rather than silently overwriting.
+          patch(id, {
+            status: "conflict",
+            resumable: entry.session !== undefined,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Já existe um arquivo com este nome.",
+          });
+          return;
+        }
         patch(id, {
           status: "failed",
           resumable: entry.session !== undefined,
@@ -94,10 +119,15 @@ export function useResumableUploads({ nodeId, mountId, onFinished, onError }: Op
   );
 
   const start = useCallback(
-    (file: File, path: string) => {
+    (file: File, path: string, overwrite = false) => {
       if (!mountId) return;
       const id = `${path}:${file.size}:${file.lastModified}`;
-      const entry: Pending = { file, path, controller: new AbortController() };
+      const entry: Pending = {
+        file,
+        path,
+        overwrite,
+        controller: new AbortController(),
+      };
       pending.current.set(id, entry);
       setUploads((current) => [
         ...current.filter((item) => item.id !== id),
@@ -113,17 +143,31 @@ export function useResumableUploads({ nodeId, mountId, onFinished, onError }: Op
   }, []);
 
   const retry = useCallback(
-    (id: string) => {
+    (id: string, overwrite?: boolean) => {
       const entry = pending.current.get(id);
       if (!entry) return;
       // A fresh controller is required: the previous one is already aborted.
-      const resumed: Pending = { ...entry, controller: new AbortController() };
+      const resumed: Pending = {
+        ...entry,
+        controller: new AbortController(),
+        overwrite: overwrite ?? entry.overwrite,
+      };
+      // A session created without overwrite carries that flag on the node, so
+      // replacing requires a new session rather than completing the old one.
+      if (overwrite && entry.session) {
+        void api
+          .abortUpload(nodeId, mountId!, entry.session.upload_id)
+          .catch(() => undefined);
+        resumed.session = undefined;
+      }
       pending.current.set(id, resumed);
-      patch(id, { status: "uploading", error: undefined });
+      patch(id, { status: "uploading", error: undefined, resumable: false });
       void run(id, resumed);
     },
-    [patch, run],
+    [mountId, nodeId, patch, run],
   );
+
+  const replace = useCallback((id: string) => retry(id, true), [retry]);
 
   const dismiss = useCallback(
     (id: string) => {
@@ -141,5 +185,5 @@ export function useResumableUploads({ nodeId, mountId, onFinished, onError }: Op
     [mountId, nodeId],
   );
 
-  return { uploads, start, cancel, retry, dismiss };
+  return { uploads, start, cancel, retry, replace, dismiss };
 }

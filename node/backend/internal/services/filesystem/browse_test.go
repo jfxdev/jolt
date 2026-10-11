@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -588,4 +589,83 @@ func TestUploadPartialIsHiddenFromListings(t *testing.T) {
 func sha256Hex(content []byte) string {
 	sum := sha256.Sum256(content)
 	return hex.EncodeToString(sum[:])
+}
+
+func TestEmptyResumableUploadCompletes(t *testing.T) {
+	service, mountID, root := newTestService(t, "read_write")
+	// A zero-byte file sends no chunk, so the partial never exists. Completing
+	// it must still publish an empty file rather than report "not found".
+	size, _, err := service.CompleteUpload(context.Background(), mountID, "empty.bin",
+		"upl_empty", 0, "", false)
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if size != 0 {
+		t.Fatalf("published %d bytes", size)
+	}
+	info, err := os.Stat(filepath.Join(root, "empty.bin"))
+	if err != nil || info.Size() != 0 {
+		t.Fatalf("empty file was not published: %v %+v", err, info)
+	}
+}
+
+func TestEmptyResumableUploadVerifiesItsChecksum(t *testing.T) {
+	service, mountID, _ := newTestService(t, "read_write")
+	// The empty file still goes through verification, so a declared checksum
+	// that does not match the empty digest must refuse to publish.
+	if _, _, err := service.CompleteUpload(context.Background(), mountID, "empty.bin",
+		"upl_empty_bad", 0, strings.Repeat("a", 64), false); err == nil {
+		t.Fatal("a mismatched checksum published an empty file")
+	}
+	if _, _, err := service.CompleteUpload(context.Background(), mountID, "empty2.bin",
+		"upl_empty_ok", 0, sha256Hex(nil), false); err != nil {
+		t.Fatalf("the empty digest was rejected: %v", err)
+	}
+}
+
+func TestConcurrentAppendsToOneSessionStaySerialized(t *testing.T) {
+	service, mountID, _ := newTestService(t, "read_write")
+	ctx := context.Background()
+	const uploadID = "upl_concurrent"
+	const total = 2000
+	// Two writers race at the same offset. Exactly one may win; the other must
+	// see an offset mismatch rather than interleaving its bytes into the
+	// partial file.
+	type result struct {
+		written int64
+		err     error
+	}
+	results := make(chan result, 2)
+	var start sync.WaitGroup
+	start.Add(1)
+	for writer := 0; writer < 2; writer++ {
+		payload := strings.Repeat(string(rune('a'+writer)), 1000)
+		go func() {
+			start.Wait()
+			written, err := service.AppendUpload(ctx, mountID, "race.bin", uploadID, 0, total,
+				strings.NewReader(payload))
+			results <- result{written, err}
+		}()
+	}
+	start.Done()
+	first, second := <-results, <-results
+	succeeded := 0
+	for _, outcome := range []result{first, second} {
+		if outcome.err == nil {
+			succeeded++
+		} else if !errors.Is(outcome.err, ErrOffsetMismatch) {
+			t.Fatalf("unexpected error: %v", outcome.err)
+		}
+	}
+	if succeeded != 1 {
+		t.Fatalf("%d writers succeeded at the same offset, want 1", succeeded)
+	}
+	offset, err := service.UploadOffset(ctx, mountID, "race.bin", uploadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One winner means exactly one payload landed: no interleaving.
+	if offset != 1000 {
+		t.Fatalf("partial holds %d bytes, want 1000", offset)
+	}
 }

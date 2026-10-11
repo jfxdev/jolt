@@ -27,6 +27,10 @@ type shareHarness struct {
 }
 
 func newShareHarness(t *testing.T, rules []rbac.Rule) *shareHarness {
+	return newShareHarnessAs(t, "operator", rules)
+}
+
+func newShareHarnessAs(t *testing.T, role string, rules []rbac.Rule) *shareHarness {
 	t.Helper()
 	harness := &shareHarness{nodeID: "nod_a"}
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -40,7 +44,7 @@ func newShareHarness(t *testing.T, rules []rbac.Rule) *shareHarness {
 			Body:       io.NopCloser(strings.NewReader("file-bytes")),
 		}, nil
 	})}
-	actor := store.User{ID: "usr_owner", Username: "owner", Role: "operator", Enabled: true}
+	actor := store.User{ID: "usr_owner", Username: "owner", Role: role, Enabled: true}
 	handler, storage, session := testUserHandlerWithClient(t, actor, client)
 	harness.handler, harness.storage, harness.session = handler, storage, session
 
@@ -297,22 +301,28 @@ func TestPublicShareEnforcesDownloadBudget(t *testing.T) {
 	}
 }
 
-func TestRangeRequestDoesNotConsumeTheDownloadBudget(t *testing.T) {
+func TestResumeRangeDoesNotConsumeTheDownloadBudgetButAFullFetchDoes(t *testing.T) {
 	harness := newShareHarness(t, fullAccessRules())
 	_, token := createShareFor(t, harness, map[string]any{
 		"node_id": "nod_a", "mount_id": "media", "path": "big.bin", "kind": "file",
 		"max_downloads": 1,
 	})
-	// A resumed download sends several ranged requests for one logical
-	// download, so they must not each spend the budget.
-	for attempt := 0; attempt < 3; attempt++ {
+	ranged := func(value string) int {
 		request := httptest.NewRequest(http.MethodGet,
 			"/api/v1/public/shares/"+token+"/content", nil)
-		request.Header.Set("Range", "bytes=0-9")
+		if value != "" {
+			request.Header.Set("Range", value)
+		}
 		recorder := httptest.NewRecorder()
 		harness.handler.ServeHTTP(recorder, request)
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("ranged request %d returned %d", attempt, recorder.Code)
+		return recorder.Code
+	}
+
+	// A genuine resume continues from a non-zero offset and must not spend the
+	// budget: one download can take several such requests.
+	for attempt := 0; attempt < 3; attempt++ {
+		if code := ranged("bytes=500-999"); code != http.StatusOK {
+			t.Fatalf("resume request %d returned %d", attempt, code)
 		}
 	}
 	share, err := harness.storage.ShareByTokenHash(context.Background(), security.Digest(token))
@@ -320,7 +330,39 @@ func TestRangeRequestDoesNotConsumeTheDownloadBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	if share.DownloadCount != 0 {
-		t.Fatalf("ranged requests consumed %d downloads", share.DownloadCount)
+		t.Fatalf("resume requests consumed %d downloads", share.DownloadCount)
+	}
+
+	// "bytes=0-" fetches the whole file, so it is a download, not a resume.
+	// Treating it as a resume would make the limit trivially bypassable.
+	if code := ranged("bytes=0-"); code != http.StatusOK {
+		t.Fatalf("full ranged fetch returned %d", code)
+	}
+	if code := ranged("bytes=0-"); code != http.StatusGone {
+		t.Fatalf("a second full fetch past the budget returned %d", code)
+	}
+	if code := ranged(""); code != http.StatusGone {
+		t.Fatalf("an unranged fetch past the budget returned %d", code)
+	}
+}
+
+func TestIsResumeRangeClassifiesHeaders(t *testing.T) {
+	resumes := []string{"bytes=1-", "bytes=500-999", " bytes=42-100 "}
+	for _, value := range resumes {
+		if !isResumeRange(value) {
+			t.Fatalf("%q should count as a resume", value)
+		}
+	}
+	// Anything that can return the start of the file, or that cannot be parsed
+	// confidently, is treated as a fresh download.
+	fresh := []string{
+		"", "bytes=0-", "bytes=0-999", "bytes=-500", "bytes=abc-", "items=1-2",
+		"bytes=0-10,20-30", "bytes=5-10,20-30", "bytes",
+	}
+	for _, value := range fresh {
+		if isResumeRange(value) {
+			t.Fatalf("%q should count as a fresh download", value)
+		}
 	}
 }
 
@@ -603,5 +645,84 @@ func TestCreateShareNeedsTheSharesCapability(t *testing.T) {
 	})
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("share was created without the capability: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAdminCreatedShareServesContent(t *testing.T) {
+	// An administrator is authorized by the built-in override rather than by an
+	// explicit policy, so a share they create must still serve. Reading only
+	// their policies would make every admin link fail with 410.
+	harness := newShareHarnessAs(t, "admin", nil)
+	_, token := createShareFor(t, harness, map[string]any{
+		"node_id": "nod_a", "mount_id": "media", "path": "docs/a.txt", "kind": "file",
+	})
+	if recorder := harness.public(t, http.MethodGet,
+		"/api/v1/public/shares/"+token+"/content", nil); recorder.Code != http.StatusOK {
+		t.Fatalf("admin-created share returned %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestDemotedAdminShareStopsServing(t *testing.T) {
+	harness := newShareHarnessAs(t, "admin", nil)
+	_, token := createShareFor(t, harness, map[string]any{
+		"node_id": "nod_a", "mount_id": "media", "path": "docs/a.txt", "kind": "file",
+	})
+	// The store refuses to demote the last administrator, so another one has to
+	// exist before this one can lose the role.
+	now := time.Now().UTC()
+	if err := harness.storage.CreateUser(context.Background(), store.User{
+		ID: "usr_other_admin", Username: "other-admin", PasswordHash: "unused-hash",
+		Role: "admin", Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := harness.storage.GetUser(context.Background(), "usr_owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.Role = "operator"
+	if err := harness.storage.UpdateUser(context.Background(), owner, ""); err != nil {
+		t.Fatal(err)
+	}
+	// The role is re-read on every request, so losing admin loses the link.
+	if recorder := harness.public(t, http.MethodGet,
+		"/api/v1/public/shares/"+token+"/content", nil); recorder.Code != http.StatusGone {
+		t.Fatalf("a demoted admin's share still served: %d", recorder.Code)
+	}
+}
+
+func TestDirectoryShareRefusesWhenADenyRuleSitsInside(t *testing.T) {
+	// Archiving or listing a folder reads its whole subtree, so a deny rule
+	// inside it must stop the share rather than be silently bypassed.
+	harness := newShareHarness(t, []rbac.Rule{
+		{Path: "control-tower/shares", Capabilities: []string{"create", "list", "delete"}},
+		{Path: "nodes/nod_a/files/mounts/media/**", Capabilities: []string{"read", "list"}},
+	})
+	_, token := createShareFor(t, harness, map[string]any{
+		"node_id": "nod_a", "mount_id": "media", "path": "publico", "kind": "directory",
+	})
+	if recorder := harness.public(t, http.MethodGet,
+		"/api/v1/public/shares/"+token+"/archive", nil); recorder.Code != http.StatusOK {
+		t.Fatalf("archive refused before any deny existed: %d", recorder.Code)
+	}
+	if err := harness.storage.CreatePolicy(context.Background(), store.Policy{
+		ID: "pol_deny", Name: "deny",
+		Rules: []rbac.Rule{{
+			Path:         "nodes/nod_a/files/mounts/media/publico/privado/**",
+			Capabilities: []string{"deny"},
+		}},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := harness.storage.SetSubjectPolicies(context.Background(), "user", "usr_owner",
+		[]string{"pol_share", "pol_deny"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/archive", "/list", "/content"} {
+		recorder := harness.public(t, http.MethodGet, "/api/v1/public/shares/"+token+path, nil)
+		if recorder.Code != http.StatusGone {
+			t.Fatalf("%s served despite a deny rule inside the share: %d", path, recorder.Code)
+		}
 	}
 }

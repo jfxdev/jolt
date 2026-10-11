@@ -8,7 +8,35 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 )
+
+// uploadLocks serializes the writes of one upload session. The unique index on
+// the session table stops two sessions targeting one destination, but it does
+// not stop a client (or a retry racing its own original request) from issuing
+// two appends for the same session at once. Both would pass the offset check
+// and write at the same position, interleaving their bytes into the partial
+// file and publishing corrupted content.
+var uploadLocks sync.Map
+
+// lockUpload blocks until this session's writer slot is free. The context is
+// honoured so a client that hangs up does not keep a worker parked.
+func lockUpload(ctx context.Context, uploadID string) (func(), error) {
+	value, _ := uploadLocks.LoadOrStore(uploadID, make(chan struct{}, 1))
+	gate := value.(chan struct{})
+	select {
+	case gate <- struct{}{}:
+		return func() { <-gate }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// releaseUploadLock drops the lock entry once a session is finished, so a
+// long-lived node does not accumulate one channel per completed upload.
+func releaseUploadLock(uploadID string) {
+	uploadLocks.Delete(uploadID)
+}
 
 // ErrOffsetMismatch reports that the client tried to append at an offset other
 // than the one the partial file is actually at. Appending anywhere else would
@@ -49,6 +77,11 @@ func (s *Service) AppendUpload(ctx context.Context, mountID, destination, upload
 	if offset < 0 || offset > expectedSize {
 		return 0, fmt.Errorf("%w: offset is outside the declared size", ErrInvalid)
 	}
+	unlock, err := lockUpload(ctx, uploadID)
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
 	partialPath := resumablePartialPath(dst, uploadID)
 	partial, err := os.OpenFile(partialPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -103,7 +136,26 @@ func (s *Service) CompleteUpload(ctx context.Context, mountID, destination, uplo
 	if err := writable(mount); err != nil {
 		return 0, "", err
 	}
+	unlock, err := lockUpload(ctx, uploadID)
+	if err != nil {
+		return 0, "", err
+	}
+	defer unlock()
 	partialPath := resumablePartialPath(dst, uploadID)
+	// A zero-byte upload sends no chunk at all, so its partial file was never
+	// created. Materializing it here lets an empty file publish through the
+	// same verified path as any other instead of failing as "not found".
+	if expectedSize == 0 {
+		if _, statErr := os.Stat(partialPath); errors.Is(statErr, os.ErrNotExist) {
+			empty, createErr := os.OpenFile(partialPath, os.O_CREATE|os.O_WRONLY, 0o600)
+			if createErr != nil {
+				return 0, "", createErr
+			}
+			if closeErr := empty.Close(); closeErr != nil {
+				return 0, "", closeErr
+			}
+		}
+	}
 	partial, err := os.Open(partialPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -147,6 +199,7 @@ func (s *Service) CompleteUpload(ctx context.Context, mountID, destination, uplo
 	if err := os.Rename(partialPath, dst); err != nil {
 		return info.Size(), checksum, err
 	}
+	releaseUploadLock(uploadID)
 	return info.Size(), checksum, nil
 }
 
@@ -161,8 +214,14 @@ func (s *Service) AbortUpload(ctx context.Context, mountID, destination, uploadI
 		}
 		return err
 	}
+	unlock, err := lockUpload(ctx, uploadID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := os.Remove(resumablePartialPath(dst, uploadID)); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	releaseUploadLock(uploadID)
 	return nil
 }

@@ -29,8 +29,18 @@ SQLite (C5).
 
 ---
 
-Inclui achados de análise profunda de código
-(seção "Achados de análise profunda").
+## Como ler o restante deste documento
+
+> **Atenção.** Tudo a partir daqui é o **registro histórico** da análise de
+> 2026-08-17, preservado com a redação original para que as decisões continuem
+> rastreáveis. As descrições de "problema" e "evidência" descrevem o código
+> **daquela data**, não o atual. Onde a tabela acima marca um item como
+> resolvido, ela prevalece sobre o texto histórico — por exemplo, as seções que
+> afirmam não haver métricas, upload retomável, RBAC recursivo ou cookies
+> seguros por padrão já não refletem o código.
+>
+> Itens ainda abertos estão listados em "Pendências conhecidas" acima e na
+> priorização consolidada ao final.
 
 Este documento consolida os achados de uma análise da plataforma (node +
 Control Tower). Cada item descreve o **problema**, a **evidência** no código e a

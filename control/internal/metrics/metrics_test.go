@@ -151,3 +151,36 @@ func TestRegisterRuntimeExposesGoroutines(t *testing.T) {
 		t.Fatalf("runtime metrics missing:\n%s", output)
 	}
 }
+
+func TestLabelValuesContainingSeparatorsRenderOnePair(t *testing.T) {
+	registry := NewRegistry()
+	registry.Counter("jolt_tricky_total", "Tricky.", "left", "right")
+	// A value holding "," or "=" must not forge an extra label when the packed
+	// key is rendered back into Prometheus syntax.
+	registry.Inc("jolt_tricky_total", "x,y=z", "plain")
+	output := render(t, registry)
+	requireLine(t, output, `jolt_tricky_total{left="x,y=z",right="plain"} 1`)
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "jolt_tricky_total{") &&
+			strings.Count(line, `="`) != 2 {
+			t.Fatalf("value forged an extra label: %q", line)
+		}
+	}
+}
+
+func TestLabelValuesDropControlCharacters(t *testing.T) {
+	registry := NewRegistry()
+	registry.Counter("jolt_control_chars_total", "Control chars.", "name")
+	registry.Inc("jolt_control_chars_total", "a\nb\tc")
+	output := render(t, registry)
+	// A newline would terminate the exposition line early.
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "jolt_control_chars_total{") {
+			if !strings.HasSuffix(line, "} 1") {
+				t.Fatalf("control character broke the line: %q", line)
+			}
+			return
+		}
+	}
+	t.Fatalf("metric missing:\n%s", output)
+}
