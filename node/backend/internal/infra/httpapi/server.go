@@ -21,6 +21,7 @@ import (
 	"github.com/jfxdev/jolt/backend/internal/infra/config"
 	joltcrypto "github.com/jfxdev/jolt/backend/internal/infra/crypto"
 	"github.com/jfxdev/jolt/backend/internal/infra/db"
+	"github.com/jfxdev/jolt/backend/internal/infra/metrics"
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
 	"github.com/jfxdev/jolt/backend/internal/services/grants"
 	"github.com/jfxdev/jolt/backend/internal/services/jobs"
@@ -38,6 +39,7 @@ type Server struct {
 	grants       *grants.Service
 	certificates *joltcrypto.CertificateManager
 	transfers    *transfers.Service
+	registry     *metrics.Registry
 	log          *slog.Logger
 }
 
@@ -47,6 +49,8 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 	s := &Server{config: cfg, identity: identity, files: files, jobs: jobService, pairing: pairingService, grants: grantService, log: logger}
 	for _, dependency := range dependencies {
 		switch value := dependency.(type) {
+		case *metrics.Registry:
+			s.registry = value
 		case *joltcrypto.CertificateManager:
 			s.certificates = value
 		case *transfers.Service:
@@ -71,11 +75,22 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/metadata", s.metadata)
 	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/content", s.download)
 	mux.HandleFunc("PUT /api/v1/mounts/{mountID}/files/content", s.upload)
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/archive", s.archive)
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/archive/plan", s.archivePlan)
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/search", s.search)
 	mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/directories", s.mkdir)
 	mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/copy/plan", s.planCopy)
 	mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/copy", s.copy)
 	mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/move", s.move)
 	mux.HandleFunc("DELETE /api/v1/mounts/{mountID}/files", s.deleteFile)
+	if s.store != nil {
+		mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/uploads", s.listUploadSessions)
+		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads", s.createUploadSession)
+		mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.getUploadSession)
+		mux.HandleFunc("PATCH /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.appendUploadChunk)
+		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads/{uploadID}/complete", s.completeUploadSession)
+		mux.HandleFunc("DELETE /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.abortUploadSession)
+	}
 	mux.HandleFunc("GET /api/v1/jobs", s.listJobs)
 	mux.HandleFunc("GET /api/v1/jobs/events", s.streamJobEvents)
 	mux.HandleFunc("GET /api/v1/jobs/{jobID}", s.getJob)
@@ -127,7 +142,10 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 		mux.HandleFunc("POST /api/v1/transfers/pull/batch/plan", s.planBatchPullTransfer)
 		mux.HandleFunc("POST /api/v1/transfers/pull/batch", s.createBatchPullTransfer)
 	}
-	return s.recover(s.correlation(s.logging(s.auth(mux))))
+	if s.registry != nil && s.config.MetricsToken != "" {
+		mux.HandleFunc("GET /metrics", s.metrics)
+	}
+	return s.recover(s.correlation(s.logging(s.instrument(s.auth(mux)))))
 }
 
 func (s *Server) auth(next http.Handler) http.Handler {
@@ -138,13 +156,84 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		}
 		const prefix = "Bearer "
 		header := r.Header.Get("Authorization")
-		if !strings.HasPrefix(header, prefix) ||
-			!s.acceptOperationalToken(r.Context(), strings.TrimPrefix(header, prefix)) {
+		token := strings.TrimPrefix(header, prefix)
+		// /metrics carries its own token so a Prometheus scraper never holds
+		// the operational token, which can write to every mount.
+		if r.URL.Path == "/metrics" && s.config.MetricsToken != "" {
+			if !strings.HasPrefix(header, prefix) || !secureEqual(token, s.config.MetricsToken) {
+				writeError(w, r, http.StatusUnauthorized, "unauthorized", "A valid metrics token is required.", nil)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !strings.HasPrefix(header, prefix) || !s.acceptOperationalToken(r.Context(), token) {
 			writeError(w, r, http.StatusUnauthorized, "unauthorized", "A valid bearer token is required.", nil)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// instrument records request counts and latency. The route label is the
+// matched pattern, never the raw path: a label per file path would blow up
+// Prometheus cardinality on a mount with thousands of files.
+func (s *Server) instrument(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.registry == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		start := time.Now()
+		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		defer func() {
+			route := routeLabel(r)
+			status := strconv.Itoa(recorder.status)
+			s.registry.Inc("jolt_http_requests_total", r.Method, route, status)
+			s.registry.ObserveDuration("jolt_http_request_duration_seconds", start, route)
+			s.registry.Add("jolt_http_response_bytes_total", recorder.written, route)
+		}()
+		next.ServeHTTP(recorder, r)
+	})
+}
+
+// routeLabel reduces a request to a bounded set of label values.
+func routeLabel(r *http.Request) string {
+	if pattern := r.Pattern; pattern != "" {
+		if _, path, found := strings.Cut(pattern, " "); found {
+			return path
+		}
+		return pattern
+	}
+	return "unmatched"
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status  int
+	written int64
+	wrote   bool
+}
+
+func (w *statusRecorder) WriteHeader(status int) {
+	if !w.wrote {
+		w.status, w.wrote = status, true
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusRecorder) Write(data []byte) (int, error) {
+	w.wrote = true
+	count, err := w.ResponseWriter.Write(data)
+	w.written += int64(count)
+	return count, err
+}
+
+// Flush keeps SSE and streamed archives working through the recorder.
+func (w *statusRecorder) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func (s *Server) acceptOperationalToken(ctx context.Context, token string) bool {
@@ -199,10 +288,21 @@ func (s *Server) logging(next http.Handler) http.Handler {
 func (s *Server) recover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
-			if value := recover(); value != nil {
-				s.log.Error("request panic", "error", value, "correlation_id", r.Header.Get("X-Correlation-ID"))
-				writeError(w, r, http.StatusInternalServerError, "internal_error", "An unexpected error occurred.", nil)
+			value := recover()
+			if value == nil {
+				return
 			}
+			// http.ErrAbortHandler is how a handler says "drop this
+			// connection". It is raised deliberately when a streamed response
+			// such as an archive fails after its headers were already sent:
+			// writing a 500 body onto that stream would hand the client a
+			// valid-looking but incomplete file instead of a failed transfer.
+			// Re-panicking lets net/http close the connection silently.
+			if value == http.ErrAbortHandler {
+				panic(value)
+			}
+			s.log.Error("request panic", "error", value, "correlation_id", r.Header.Get("X-Correlation-ID"))
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "An unexpected error occurred.", nil)
 		}()
 		next.ServeHTTP(w, r)
 	})
@@ -750,8 +850,54 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request) {
 			"O editor aceita arquivos de até 512 KB.", nil)
 		return
 	}
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, strings.ReplaceAll(info.Name(), `"`, "")))
+	w.Header().Set("Content-Disposition", contentDisposition("attachment", info.Name()))
 	http.ServeContent(w, r, info.Name(), info.ModTime(), file)
+}
+
+// contentDisposition builds a header that survives non-ASCII names. The quoted
+// filename stays as an ASCII fallback for old clients, and the RFC 5987
+// filename* parameter carries the real UTF-8 name, so "Relatório 2024.pdf"
+// downloads under its own name instead of a mangled one.
+func contentDisposition(disposition, name string) string {
+	name = strings.Map(func(r rune) rune {
+		// Control characters, quotes and path separators would break parsing or
+		// let a crafted name redirect where the client writes the file.
+		if r < 0x20 || r == 0x7f || r == '"' || r == '\\' || r == '/' {
+			return -1
+		}
+		return r
+	}, name)
+	if name == "" {
+		name = "download"
+	}
+	ascii := make([]rune, 0, len(name))
+	for _, r := range name {
+		if r > 0x7f {
+			ascii = append(ascii, '_')
+			continue
+		}
+		ascii = append(ascii, r)
+	}
+	return fmt.Sprintf("%s; filename=%q; filename*=UTF-8''%s",
+		disposition, string(ascii), encodeRFC5987(name))
+}
+
+// encodeRFC5987 percent-encodes everything outside the attr-char set defined by
+// RFC 5987, which is stricter than url.QueryEscape: a space must become %20 and
+// never '+', or the client stores the literal plus sign.
+func encodeRFC5987(value string) string {
+	const unreserved = "!#$&+-.^_`|~"
+	var builder strings.Builder
+	for _, b := range []byte(value) {
+		switch {
+		case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9',
+			strings.IndexByte(unreserved, b) >= 0:
+			builder.WriteByte(b)
+		default:
+			fmt.Fprintf(&builder, "%%%02X", b)
+		}
+	}
+	return builder.String()
 }
 
 func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
@@ -1607,6 +1753,172 @@ paths:
             schema: {type: string, format: binary}
       responses:
         "201": {description: Completed upload job}
+  /api/v1/mounts/{mountID}/files/metadata:
+    get:
+      summary: Returns metadata for one entry
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: query, name: path, required: true, schema: {type: string}}
+      responses:
+        "200": {description: Entry name, type, size and modification time}
+        "404": {description: Entry not found}
+  /api/v1/mounts/{mountID}/files/directories:
+    post:
+      summary: Creates a directory
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path: {type: string}
+      responses:
+        "200": {description: Completed mkdir job}
+        "403": {description: The mount is read-only}
+  /api/v1/mounts/{mountID}/files/move:
+    post:
+      summary: Moves or renames an entry inside one mount
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_path, destination_path]
+              properties:
+                source_path: {type: string}
+                destination_path: {type: string}
+                overwrite: {type: boolean}
+      responses:
+        "200": {description: Completed move job}
+        "409": {description: The destination exists and overwrite was not requested}
+  /api/v1/mounts/{mountID}/files/archive:
+    get:
+      summary: Streams a ZIP of a directory, or of the selected entries inside it
+      description: >
+        Symlinks are skipped and counted in X-Jolt-Archive-Skipped-Symlinks
+        rather than followed. The size is measured before streaming begins, so
+        an oversized selection is refused with a status code instead of
+        producing a truncated download.
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: query, name: path, required: true, schema: {type: string}}
+        - {in: query, name: name, schema: {type: array, items: {type: string}}, description: Direct children to include; omit for the whole directory}
+        - {in: query, name: compress, schema: {type: boolean}, description: Deflate instead of Store; off by default because media is already compressed}
+      responses:
+        "200": {description: ZIP stream}
+        "400": {description: Selection exceeds the configured entry or byte limit}
+  /api/v1/mounts/{mountID}/files/archive/plan:
+    get:
+      summary: Reports what an archive would contain without writing it
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: query, name: path, required: true, schema: {type: string}}
+        - {in: query, name: name, schema: {type: array, items: {type: string}}}
+      responses:
+        "200": {description: File count, total bytes, skipped symlinks and the configured limits}
+  /api/v1/mounts/{mountID}/files/search:
+    get:
+      summary: Searches a subtree by name and metadata
+      description: >
+        Bounded by SEARCH_MAX_RESULTS, SEARCH_MAX_ENTRIES and SEARCH_TIMEOUT.
+        Symlinks are never followed. A partial result sets truncated with a
+        truncated_reason of results, entries or timeout.
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: query, name: path, required: true, schema: {type: string}}
+        - {in: query, name: query, schema: {type: string}, description: Case-insensitive substring of the entry name}
+        - {in: query, name: type, schema: {type: string, enum: [file, directory]}}
+        - {in: query, name: extensions, schema: {type: string}, description: Comma-separated extensions}
+        - {in: query, name: min_size, schema: {type: integer, format: int64}}
+        - {in: query, name: max_size, schema: {type: integer, format: int64}}
+        - {in: query, name: modified_after, schema: {type: string, format: date-time}}
+        - {in: query, name: modified_before, schema: {type: string, format: date-time}}
+        - {in: query, name: limit, schema: {type: integer}}
+      responses:
+        "200": {description: Matching entries plus scanned count and truncation state}
+        "400": {description: No query or filter was supplied}
+  /api/v1/mounts/{mountID}/files/uploads:
+    get:
+      summary: Lists unfinished resumable uploads for a mount
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+      responses:
+        "200": {description: Upload sessions with their durable offsets}
+    post:
+      summary: Opens a resumable upload session
+      description: >
+        The declared size caps what the node will write and is verified before
+        the file is published, so a truncated upload can never replace a good
+        file. One destination may hold only one open session.
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path, size]
+              properties:
+                path: {type: string}
+                size: {type: integer, format: int64}
+                overwrite: {type: boolean}
+                checksum: {type: string, description: Optional SHA-256 verified before publishing}
+                chunk_size: {type: integer, format: int64}
+      responses:
+        "201": {description: Created session}
+        "409": {description: Another unfinished upload already targets this destination}
+  /api/v1/mounts/{mountID}/files/uploads/{uploadID}:
+    get:
+      summary: Reports the durable offset of a resumable upload
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: path, name: uploadID, required: true, schema: {type: string}}
+      responses:
+        "200": {description: Session with its current offset}
+        "410": {description: The session expired}
+    patch:
+      summary: Appends one chunk at the offset named by Content-Range
+      description: >
+        Each chunk is fsynced before the new offset is reported. A mismatch
+        answers 409 with the authoritative offset in X-Jolt-Upload-Offset so the
+        client seeks there instead of restarting.
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: path, name: uploadID, required: true, schema: {type: string}}
+        - {in: header, name: Content-Range, required: true, schema: {type: string}, description: "bytes <start>-<end>/<total>"}
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        "200": {description: Session with the new offset}
+        "409": {description: Offset mismatch; X-Jolt-Upload-Offset carries the stored offset}
+    delete:
+      summary: Aborts a resumable upload and removes its partial file
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: path, name: uploadID, required: true, schema: {type: string}}
+      responses:
+        "204": {description: Upload discarded}
+  /api/v1/mounts/{mountID}/files/uploads/{uploadID}/complete:
+    post:
+      summary: Verifies and publishes a completed resumable upload
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: path, name: uploadID, required: true, schema: {type: string}}
+      responses:
+        "201": {description: File published atomically at its destination}
+        "400": {description: The upload is short of the declared size or its checksum does not match}
+        "409": {description: The destination exists and the session does not allow overwrite}
   /api/v1/mounts/{mountID}/files/copy/plan:
     post:
       parameters:
