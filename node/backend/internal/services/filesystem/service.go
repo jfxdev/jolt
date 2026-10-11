@@ -1528,8 +1528,13 @@ func (s *Service) resolve(ctx context.Context, mountID, relative string, allowMi
 	return mount, candidate, nil
 }
 
+// isInternalPartialName hides every in-flight partial the node writes: resumable
+// transfer checkpoints (".jolt-job_*"), resumable upload sessions
+// (".jolt-upl_*") and the temporary files a streaming upload renames into place.
+// They are all named ".jolt-<key>.partial", and none of them is a file an
+// operator should see in a listing or be able to address through the API.
 func isInternalPartialName(name string) bool {
-	return strings.HasPrefix(name, ".jolt-job_") && strings.HasSuffix(name, ".partial")
+	return strings.HasPrefix(name, ".jolt-") && strings.HasSuffix(name, ".partial")
 }
 
 func within(root, candidate string) bool {
