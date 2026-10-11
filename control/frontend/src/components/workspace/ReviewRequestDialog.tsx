@@ -37,7 +37,7 @@ export function ReviewRequestDialog({ request, onClose, onComplete }: Props) {
       await api.approveConnection(request.request_id, fingerprint.trim());
       onClose();
       await onComplete?.();
-      toast.success("Conexão aprovada. Nenhum mount foi compartilhado.");
+      toast.success("Conexão confirmada. Nenhum arquivo foi compartilhado.");
     } catch (error) {
       handleError(error);
     } finally {
@@ -75,9 +75,9 @@ export function ReviewRequestDialog({ request, onClose, onComplete }: Props) {
       <DialogContent>
         <DialogHeader>
           <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
-            Confirmação humana
+            Confirmar conexão
           </p>
-          <DialogTitle>Revisar conexão</DialogTitle>
+          <DialogTitle>Aceitar pedido de conexão</DialogTitle>
         </DialogHeader>
         <form
           className="grid gap-4"
@@ -87,19 +87,19 @@ export function ReviewRequestDialog({ request, onClose, onComplete }: Props) {
           }}
         >
           <p className="text-sm text-muted-foreground">
-            Compare a fingerprint abaixo com a exibida diretamente pelo
-            responsável do node emissor.
+            Para proteger a conexão, compare este código com o informado pelo
+            responsável pelo outro node antes de aceitar.
           </p>
           <div className="grid gap-1 rounded-md border p-3">
             <span className="text-xs text-muted-foreground">
-              Fingerprint esperada
+              Código de verificação
             </span>
             <code className="break-all text-sm">
               {request?.issuer_fingerprint}
             </code>
           </div>
           <div className="grid gap-2">
-            <Label htmlFor="fp">Digite a fingerprint para confirmar</Label>
+            <Label htmlFor="fp">Cole o código para confirmar</Label>
             <Input
               id="fp"
               value={fingerprint}
@@ -110,8 +110,8 @@ export function ReviewRequestDialog({ request, onClose, onComplete }: Props) {
             />
           </div>
           <p className="text-xs text-muted-foreground">
-            A aprovação cria confiança entre as identidades, mas não cria grants
-            nem libera mounts.
+            A confirmação apenas estabelece a conexão. Os arquivos continuam
+            protegidos até que você autorize uma transferência.
           </p>
           <DialogFooter>
             <Button
@@ -123,7 +123,7 @@ export function ReviewRequestDialog({ request, onClose, onComplete }: Props) {
               Rejeitar
             </Button>
             <Button type="submit" disabled={busy || !matches}>
-              Aprovar conexão <ArrowRight />
+              Aceitar conexão <ArrowRight />
             </Button>
           </DialogFooter>
         </form>

@@ -124,6 +124,8 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 		mux.HandleFunc("POST /api/v1/transfers/pull", s.createPullTransfer)
 		mux.HandleFunc("POST /api/v1/transfers/pull/directory/plan", s.planDirectoryPullTransfer)
 		mux.HandleFunc("POST /api/v1/transfers/pull/directory", s.createDirectoryPullTransfer)
+		mux.HandleFunc("POST /api/v1/transfers/pull/batch/plan", s.planBatchPullTransfer)
+		mux.HandleFunc("POST /api/v1/transfers/pull/batch", s.createBatchPullTransfer)
 	}
 	return s.recover(s.correlation(s.logging(s.auth(mux))))
 }
@@ -412,6 +414,34 @@ type pullTransferRequest struct {
 	MaxParallelChunks  int    `json:"max_parallel_chunks"`
 }
 
+type batchPullTransferRequest struct {
+	PeerNodeID         string   `json:"peer_node_id"`
+	SourceGrantID      string   `json:"source_grant_id"`
+	SourcePaths        []string `json:"source_paths"`
+	SourceNames        []string `json:"source_names"`
+	DestinationGrantID string   `json:"destination_grant_id"`
+	DestinationPath    string   `json:"destination_path"`
+	Operation          string   `json:"operation"`
+	ConflictPolicy     string   `json:"conflict_policy"`
+	VerifyChecksum     bool     `json:"verify_checksum"`
+	BandwidthLimit     int64    `json:"bandwidth_limit_bytes_per_second"`
+	MaxParallelFiles   int      `json:"max_parallel_files"`
+	MaxParallelChunks  int      `json:"max_parallel_chunks"`
+}
+
+func (r batchPullTransferRequest) transferRequest(correlationID string) transfers.BatchPullRequest {
+	return transfers.BatchPullRequest{
+		PullRequest: transfers.PullRequest{
+			PeerNodeID: r.PeerNodeID, SourceGrantID: r.SourceGrantID,
+			DestinationGrantID: r.DestinationGrantID, DestinationPath: r.DestinationPath,
+			ConflictPolicy: r.ConflictPolicy, VerifyChecksum: r.VerifyChecksum,
+			BandwidthLimit: r.BandwidthLimit, MaxParallelFiles: r.MaxParallelFiles,
+			MaxParallelChunks: r.MaxParallelChunks, CorrelationID: correlationID,
+		},
+		SourcePaths: r.SourcePaths, SourceNames: r.SourceNames, Operation: r.Operation,
+	}
+}
+
 func (s *Server) createPullTransfer(w http.ResponseWriter, r *http.Request) {
 	var request pullTransferRequest
 	if !decodeJSON(w, r, &request) {
@@ -477,6 +507,50 @@ func (s *Server) createDirectoryPullTransfer(w http.ResponseWriter, r *http.Requ
 		MaxParallelChunks: request.MaxParallelChunks,
 	}, r.Header.Get("Idempotency-Key"))
 	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	status := http.StatusCreated
+	if repeated {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, job)
+}
+
+func (s *Server) planBatchPullTransfer(w http.ResponseWriter, r *http.Request) {
+	var request batchPullTransferRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	plan, err := s.transfers.PlanBatchPull(r.Context(), request.transferRequest(r.Header.Get("X-Correlation-ID")))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	const previewLimit = 500
+	if len(plan.Items) > previewLimit {
+		plan.Items, plan.Truncated = plan.Items[:previewLimit], true
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
+func (s *Server) createBatchPullTransfer(w http.ResponseWriter, r *http.Request) {
+	var request batchPullTransferRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	requestHash := strings.TrimSpace(r.Header.Get("X-Jolt-Idempotency-Hash"))
+	if requestHash == "" {
+		encoded, _ := json.Marshal(request)
+		sum := sha256.Sum256(encoded)
+		requestHash = hex.EncodeToString(sum[:])
+	}
+	job, repeated, err := s.transfers.CreateBatchPull(r.Context(), request.transferRequest(r.Header.Get("X-Correlation-ID")), r.Header.Get("Idempotency-Key"), requestHash)
+	if err != nil {
+		if errors.Is(err, db.ErrIdempotencyConflict) {
+			writeError(w, r, http.StatusConflict, "idempotency_conflict", "The Idempotency-Key was already used for a different request.", nil)
+			return
+		}
 		s.fail(w, r, err)
 		return
 	}
@@ -1763,6 +1837,38 @@ paths:
       responses:
         "201": {description: Durable remote directory pull job queued}
         "403": {description: Exact-peer source or destination grant does not authorize the transfer}
+  /api/v1/transfers/pull/batch/plan:
+    post:
+      description: Node-internal grant-relative batch preview. The Control Tower public API resolves grants before invoking this route.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [peer_node_id, source_grant_id, source_paths, destination_grant_id, destination_path, operation]
+              properties:
+                peer_node_id: {type: string}
+                source_grant_id: {type: string}
+                source_paths: {type: array, minItems: 1, items: {type: string}}
+                source_names: {type: array, description: Mount-relative display names for source_paths; required when a path is exactly the grant root, items: {type: string}}
+                destination_grant_id: {type: string}
+                destination_path: {type: string}
+                operation: {type: string, enum: [copy, move]}
+                conflict_policy: {type: string, enum: [skip, overwrite, rename, fail, ask, checksum], default: fail}
+                verify_checksum: {type: boolean}
+      responses:
+        "200": {description: Complete totals and an item preview truncated to 500 entries when necessary}
+  /api/v1/transfers/pull/batch:
+    post:
+      description: Persists one destination-owned batch job. Move forces checksum verification and source removal is requested only after every item has completed.
+      parameters:
+        - {in: header, name: Idempotency-Key, required: true, schema: {type: string}}
+        - {in: header, name: X-Jolt-Idempotency-Hash, schema: {type: string, description: Canonical logical request hash from the Control Tower}}
+      responses:
+        "201": {description: New durable batch job}
+        "200": {description: Existing job for the same idempotency key and payload}
+        "409": {description: Idempotency key was reused with a different payload}
   /peer/v1/heartbeat:
     get:
       description: Available only on the mTLS listener and requires an exact trusted peer certificate

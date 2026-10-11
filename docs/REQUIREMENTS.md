@@ -56,7 +56,7 @@ O sistema deve ser especialmente robusto para:
 
 - Ser simples de instalar via Docker.
 - Ter backend preferencialmente em Go.
-- Ter frontend da Control Tower preferencialmente em Vue 3 com shadcn-vue.
+- Ter frontend da Control Tower em React 19 com shadcn/Base UI e Tailwind CSS 4.
 - Usar armazenamento local leve, preferencialmente SQLite.
 - Separar comunicacao de controle da transferencia de dados.
 - Suportar evolucao futura para protocolos como `rsync`, `SSH/SFTP` ou outros backends de transferencia.
@@ -1112,10 +1112,10 @@ Nenhum endpoint deve retornar chave privada. Exportacao de certificado publico e
 ### 7.5 Frontend da Control Tower
 
 - O frontend deve existir na Control Tower, nao nos nodes.
-- O frontend da Control Tower deve ser implementado preferencialmente em Vue 3.
+- O frontend da Control Tower deve ser implementado em React 19.
 - O frontend da Control Tower deve usar Vite.
 - O frontend da Control Tower deve usar TypeScript.
-- O frontend da Control Tower deve usar shadcn-vue como base de componentes.
+- O frontend da Control Tower deve usar shadcn/Base UI como base de componentes.
 - O frontend da Control Tower deve ser responsivo e mobile-first.
 - O frontend da Control Tower deve consumir eventos de progresso em tempo real ou quase real a partir das APIs dos nodes.
 
@@ -1177,13 +1177,13 @@ Responsabilidades:
 - `src/features`: fluxos acionaveis pelo usuario, como criar transferencia, navegar arquivos, acompanhar job, gerenciar mount, aceitar convite, editar policy ou encerrar sessao.
 - `src/entities`: modelos de interface e pequenos componentes ligados a conceitos do dominio, como card de node, linha de arquivo, badge de peer, resumo de job ou permissao efetiva de mount.
 - `src/shared/api`: cliente HTTP, tipagem de contratos gerados ou manuais, tratamento de erro estruturado, idempotency key e correlacao.
-- `src/shared/ui`: componentes genericos reutilizaveis, preferencialmente baseados em shadcn-vue e Tailwind, sem conhecimento direto de dominio.
+- `src/shared/ui`: componentes genericos reutilizaveis, preferencialmente baseados em shadcn/Base UI e Tailwind CSS, sem conhecimento direto de dominio.
 - `src/shared/composables`: composables genericos ou transversais, como `usePagination`, `useEventStream`, `useConfirmDialog` e `useResponsive`.
 - `src/shared/lib`: funcoes utilitarias puras, formatadores, normalizacao de erros, datas, bytes e duracoes.
 - `src/shared/constants`: constantes do frontend, como rotas, estados visuais, labels de capabilities e limites de UI.
 - `src/shared/types`: tipos compartilhados quando nao pertencem claramente a uma entidade especifica.
 - `src/shared/stores`: stores globais pequenas, como autenticacao, preferencias locais e estado de conexao. Estado de tela deve permanecer perto da page ou feature quando possivel.
-- `src/shared/styles`: estilos globais, tokens, tema e integracao com Tailwind/shadcn-vue.
+- `src/shared/styles`: estilos globais, tokens, tema e integracao com Tailwind/shadcn.
 
 Diretrizes para o frontend:
 

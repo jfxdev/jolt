@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -166,6 +167,96 @@ func TestOperatorCannotManageUsers(t *testing.T) {
 	handler.ServeHTTP(response, authenticatedRequest(http.MethodGet, "/api/v1/control-tower/users", token, nil))
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestControlTowerListsSearchOnServer(t *testing.T) {
+	handler, storage, token := testUserHandler(t, store.User{
+		ID: "admin-1", Username: "admin", Role: "admin", Enabled: true,
+	})
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, user := range []store.User{
+		{ID: "search-user", Username: "find-user", PasswordHash: "unused-hash", Role: "operator", Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "other-user", Username: "other-user", PasswordHash: "unused-hash", Role: "operator", Enabled: true, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := storage.CreateUser(ctx, user); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, account := range []store.ServiceAccount{
+		{ID: "search-key", Name: "find-key", Description: "key to find", Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "other-key", Name: "other-key", Enabled: true, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := storage.CreateServiceAccount(ctx, account); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, group := range []store.AccessGroup{
+		{ID: "search-group", Name: "find-group", Description: "group to find", Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "other-group", Name: "other-group", Enabled: true, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := storage.CreateAccessGroup(ctx, group); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, policy := range []store.Policy{
+		{ID: "search-policy", Name: "find-policy", Description: "policy to find", CreatedAt: now, UpdatedAt: now},
+		{ID: "other-policy", Name: "other-policy", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := storage.CreatePolicy(ctx, policy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, role := range []store.Role{
+		{ID: "search-role", Name: "find-role", Description: "role to find", CreatedAt: now, UpdatedAt: now},
+		{ID: "other-role", Name: "other-role", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := storage.CreateRole(ctx, role); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, test := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "users", path: "/api/v1/control-tower/users?q=find-user", want: `"username":"find-user"`},
+		{name: "api keys", path: "/api/v1/control-tower/service-accounts?q=key%20to%20find", want: `"name":"find-key"`},
+		{name: "groups", path: "/api/v1/control-tower/access-groups?q=find-group", want: `"name":"find-group"`},
+		{name: "policies", path: "/api/v1/control-tower/policies?q=find-policy", want: `"name":"find-policy"`},
+		{name: "roles", path: "/api/v1/control-tower/roles?q=find-role", want: `"name":"find-role"`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, authenticatedRequest(http.MethodGet, test.path, token, nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			var payload struct {
+				Items []json.RawMessage `json:"items"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if len(payload.Items) != 1 || !strings.Contains(string(payload.Items[0]), test.want) {
+				t.Fatalf("unexpected search result: %s", response.Body.String())
+			}
+		})
+	}
+
+	wildcard := httptest.NewRecorder()
+	handler.ServeHTTP(wildcard, authenticatedRequest(http.MethodGet,
+		"/api/v1/control-tower/users?q=%25", token, nil))
+	var wildcardPayload struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(wildcard.Body.Bytes(), &wildcardPayload); err != nil {
+		t.Fatal(err)
+	}
+	if wildcard.Code != http.StatusOK || len(wildcardPayload.Items) != 0 {
+		t.Fatalf("wildcard search body=%s", wildcard.Body.String())
 	}
 }
 
@@ -949,6 +1040,164 @@ func TestRemoteTransferAuthorizationResolvesExactGrantMounts(t *testing.T) {
 	}
 }
 
+func TestLogicalTransfersResolveGrantsWithoutLeakingThemAndForwardIdempotency(t *testing.T) {
+	for _, test := range []struct {
+		name                 string
+		currentIDs           bool
+		missingSource        bool
+		missingDestination   bool
+		wrongDestinationPeer bool
+	}{
+		{name: "registered IDs match"},
+		{name: "current peer IDs differ from registered IDs", currentIDs: true},
+		{name: "source grant disabled", currentIDs: true, missingSource: true},
+		{name: "destination grant missing", currentIDs: true, missingDestination: true},
+		{name: "both authorizations missing", currentIDs: true, missingSource: true, missingDestination: true},
+		{name: "destination grant for another peer", currentIDs: true, wrongDestinationPeer: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sourcePeerID, destinationPeerID := "source", "destination"
+			if test.currentIDs {
+				sourcePeerID, destinationPeerID = "source-current", "destination-current"
+			}
+			var planCalls, createCalls atomic.Int32
+			var receivedCreate map[string]any
+			client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				header := make(http.Header)
+				header.Set("Content-Type", "application/json")
+				body, status := `{}`, http.StatusOK
+				switch request.URL.Path {
+				case "/api/v1/node":
+					peerID := destinationPeerID
+					if request.URL.Host == "source.test" {
+						peerID = sourcePeerID
+					}
+					body = `{"node_id":"` + peerID + `","fingerprint":"FP"}`
+				case "/api/v1/grants":
+					if request.URL.Host == "source.test" {
+						body = `{"items":[{"grant_id":"source-grant","peer_node_id":"` + destinationPeerID + `","mount_id":"source-media","path":"exports","direction":"send","enabled":` + fmt.Sprint(!test.missingSource) + `,"permissions":{"read":true,"delete":true}}]}`
+					} else {
+						grantPeerID := sourcePeerID
+						if test.wrongDestinationPeer {
+							grantPeerID = "other-peer"
+						}
+						body = `{"items":[{"grant_id":"destination-grant","peer_node_id":"` + grantPeerID + `","mount_id":"incoming","path":"imports","direction":"receive","enabled":true,"permissions":{"write":true},"conflict_policies":["fail","rename"]}]}`
+						if test.missingDestination {
+							body = `{"items":[]}`
+						}
+					}
+				case "/api/v1/mounts":
+					body = `{"items":[{"mount_id":"incoming","name":"Incoming","enabled":true,"state":"available","writable":true}]}`
+				case "/api/v1/transfers/pull/batch/plan":
+					planCalls.Add(1)
+					body = `{"files_total":2,"bytes_total":12,"copy_count":2,"skip_count":0,"rename_count":0,"conflict_count":0}`
+				case "/api/v1/transfers/pull/batch":
+					createCalls.Add(1)
+					if request.Header.Get("Idempotency-Key") != "logical-key" || request.Header.Get("X-Jolt-Idempotency-Hash") == "" {
+						t.Errorf("idempotency headers = %q %q", request.Header.Get("Idempotency-Key"), request.Header.Get("X-Jolt-Idempotency-Hash"))
+					}
+					if err := json.NewDecoder(request.Body).Decode(&receivedCreate); err != nil {
+						t.Error(err)
+					}
+					body, status = `{"job_id":"batch-job"}`, http.StatusCreated
+				}
+				return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body))}, nil
+			})}
+			handler, storage, session := testUserHandlerWithClient(t, store.User{
+				ID: "admin-1", Username: "admin", Role: "admin", Enabled: true,
+			}, client)
+			now := time.Now().UTC()
+			encrypted, err := security.Encrypt(make([]byte, 32), "node-token")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, node := range []store.Node{
+				{ID: "source", Name: "Source", Endpoint: "http://source.test", TokenEncrypted: encrypted, State: "online", CreatedAt: now, UpdatedAt: now},
+				{ID: "destination", Name: "Destination", Endpoint: "http://destination.test", TokenEncrypted: encrypted, State: "online", CreatedAt: now, UpdatedAt: now},
+			} {
+				if err := storage.SaveNode(context.Background(), node); err != nil {
+					t.Fatal(err)
+				}
+			}
+			targets := httptest.NewRecorder()
+			handler.ServeHTTP(targets, authenticatedRequest(http.MethodPost, "/api/v1/nodes/source/transfers/targets", session,
+				[]byte(`{"operation":"move","source":{"mount_id":"source-media","paths":["exports/one.txt","exports/folder"]}}`)))
+			payload := []byte(`{"operation":"move","source":{"node_id":"source","mount_id":"source-media","paths":["exports/one.txt","exports/folder"]},"destination":{"mount_id":"incoming","path":"imports/archive"},"conflict_policy":"fail"}`)
+			if test.missingSource || test.missingDestination || test.wrongDestinationPeer {
+				var response struct {
+					Targets []transferTargetNode    `json:"targets"`
+					Blocked []blockedTransferTarget `json:"blocked_targets"`
+				}
+				if err := json.Unmarshal(targets.Body.Bytes(), &response); err != nil || targets.Code != http.StatusOK || len(response.Targets) != 0 || len(response.Blocked) != 1 {
+					t.Fatalf("targets status=%d body=%s err=%v", targets.Code, targets.Body.String(), err)
+				}
+				reasons := response.Blocked[0].Reasons
+				if response.Blocked[0].NodeID != "destination" ||
+					containsString(reasons, "source_grant_missing") != test.missingSource ||
+					containsString(reasons, "destination_grant_missing") != (test.missingDestination || test.wrongDestinationPeer) ||
+					strings.Contains(targets.Body.String(), "grant_id") {
+					t.Fatalf("unexpected authorization diagnostics: %s", targets.Body.String())
+				}
+				plan := httptest.NewRecorder()
+				handler.ServeHTTP(plan, authenticatedRequest(http.MethodPost, "/api/v1/nodes/destination/transfers/plan", session, payload))
+				createRequest := authenticatedRequest(http.MethodPost, "/api/v1/nodes/destination/transfers", session, payload)
+				createRequest.Header.Set("Idempotency-Key", "logical-key")
+				create := httptest.NewRecorder()
+				handler.ServeHTTP(create, createRequest)
+				if plan.Code != http.StatusUnprocessableEntity || create.Code != http.StatusUnprocessableEntity || planCalls.Load() != 0 || createCalls.Load() != 0 {
+					t.Fatalf("incompatible grants must block plan/create: plan=%d create=%d calls=%d/%d", plan.Code, create.Code, planCalls.Load(), createCalls.Load())
+				}
+				return
+			}
+			if targets.Code != http.StatusOK || strings.Contains(targets.Body.String(), "grant_id") ||
+				!strings.Contains(targets.Body.String(), `"root_path":"imports"`) || !strings.Contains(targets.Body.String(), `"max_source_paths":1000`) {
+				t.Fatalf("targets status=%d body=%s", targets.Code, targets.Body.String())
+			}
+			plan := httptest.NewRecorder()
+			handler.ServeHTTP(plan, authenticatedRequest(http.MethodPost, "/api/v1/nodes/destination/transfers/plan", session, payload))
+			if plan.Code != http.StatusOK || planCalls.Load() != 1 || !strings.Contains(plan.Body.String(), `"files_total":2`) {
+				t.Fatalf("plan status=%d calls=%d body=%s", plan.Code, planCalls.Load(), plan.Body.String())
+			}
+			createRequest := authenticatedRequest(http.MethodPost, "/api/v1/nodes/destination/transfers", session, payload)
+			createRequest.Header.Set("Idempotency-Key", "logical-key")
+			create := httptest.NewRecorder()
+			handler.ServeHTTP(create, createRequest)
+			if create.Code != http.StatusAccepted || createCalls.Load() != 1 ||
+				create.Header().Get("Location") != "/api/v1/nodes/destination/jobs/batch-job" {
+				t.Fatalf("create status=%d calls=%d location=%q body=%s", create.Code, createCalls.Load(), create.Header().Get("Location"), create.Body.String())
+			}
+			if receivedCreate["source_grant_id"] != "source-grant" || receivedCreate["destination_grant_id"] != "destination-grant" ||
+				receivedCreate["destination_path"] != "archive" || receivedCreate["operation"] != "move" || receivedCreate["peer_node_id"] != sourcePeerID {
+				t.Fatalf("unexpected resolved node payload: %+v", receivedCreate)
+			}
+			paths, _ := receivedCreate["source_paths"].([]any)
+			if len(paths) != 2 || paths[0] != "folder" || paths[1] != "one.txt" {
+				t.Fatalf("unexpected translated paths: %+v", paths)
+			}
+		})
+	}
+}
+
+func TestLogicalTransferSelectionLimitIsStructured(t *testing.T) {
+	handler, _, session := testUserHandler(t, store.User{ID: "admin-1", Username: "admin", Role: "admin", Enabled: true})
+	paths := make([]string, 1001)
+	for index := range paths {
+		paths[index] = fmt.Sprintf("file-%d", index)
+	}
+	body, err := json.Marshal(map[string]any{
+		"operation": "copy", "source": map[string]any{"node_id": "source", "mount_id": "mount", "paths": paths},
+		"destination": map[string]any{"mount_id": "mount", "path": "target"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, authenticatedRequest(http.MethodPost, "/api/v1/nodes/destination/transfers/plan", session, body))
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"selection_limit_exceeded"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestPeerRevocationRequiresDeleteCapability(t *testing.T) {
 	requirements := nodeAuthorizationRequirements("node-1", "peers/peer-2", http.MethodDelete)
 	if len(requirements) != 1 || requirements[0].Path != "nodes/node-1/peers" ||
@@ -1107,5 +1356,161 @@ func TestLoginLocksOutAfterRepeatedFailuresAndClearsOnSuccess(t *testing.T) {
 	}
 	if blocked.Header().Get("Retry-After") == "" {
 		t.Fatal("expected Retry-After header on lockout response")
+	}
+}
+
+func TestBrowserConnectionRequestAutoApprovesWhenActorCanAdministerTarget(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	expiresAt := now.Add(time.Hour).Format(time.RFC3339Nano)
+	var inviteApproved, requestAccepted atomic.Bool
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		header := http.Header{"Content-Type": []string{"application/json"}}
+		body, status := `{}`, http.StatusOK
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/v1/node" && request.URL.Host == "source.test":
+			body = `{"node_id":"source","name":"Source","fingerprint":"SOURCE-FP","identity_epoch":1,"mtls_endpoint":"https://source.test:8443"}`
+		case request.Method == http.MethodGet && request.URL.Path == "/api/v1/node" && request.URL.Host == "target.test":
+			body = `{"node_id":"target","name":"Target","fingerprint":"TARGET-FP","identity_epoch":1,"mtls_endpoint":"https://target.test:8443"}`
+		case request.Method == http.MethodPost && request.URL.Path == "/api/v1/pairing/invites" && request.URL.Host == "source.test":
+			status = http.StatusCreated
+			body = `{"invite":{"invite_id":"invite-1","transfer_mode":"dual_channel","issuer_role":"sender_receiver","invitee_role":"sender_receiver","expires_at":"` + expiresAt + `"},"invite_token":"invite-token"}`
+		case request.Method == http.MethodPost && request.URL.Path == "/api/v1/pairing/requests" && request.URL.Host == "target.test":
+			status = http.StatusCreated
+			body = `{"request_id":"request-1","expires_at":"` + expiresAt + `","status":"pending_review"}`
+		case request.Method == http.MethodGet && request.URL.Path == "/api/v1/peers":
+			// establishConnection probes both sides before acting so it can be
+			// re-run; neither node trusts the other yet.
+			body = `{"items":[]}`
+		case request.Method == http.MethodGet && request.URL.Path == "/api/v1/pairing/invites" && request.URL.Host == "source.test":
+			body = `{"items":[{"invite_id":"invite-1","status":"pending"}]}`
+		case request.Method == http.MethodGet && request.URL.Path == "/api/v1/pairing/requests" && request.URL.Host == "target.test":
+			body = `{"items":[{"request_id":"request-1","status":"pending_review"}]}`
+		case request.Method == http.MethodPost && request.URL.Path == "/api/v1/pairing/invites/invite-1/approve" && request.URL.Host == "source.test":
+			inviteApproved.Store(true)
+		case request.Method == http.MethodPost && request.URL.Path == "/api/v1/pairing/requests/request-1/accept" && request.URL.Host == "target.test":
+			var payload struct {
+				ConfirmedFingerprint string `json:"confirmed_fingerprint"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Errorf("decode acceptance payload: %v", err)
+			}
+			if payload.ConfirmedFingerprint != "SOURCE-FP" {
+				t.Errorf("confirmed fingerprint = %q", payload.ConfirmedFingerprint)
+			}
+			requestAccepted.Store(true)
+		default:
+			t.Errorf("unexpected node call: %s %s%s", request.Method, request.URL.Host, request.URL.Path)
+			status = http.StatusNotFound
+		}
+		return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	handler, storage, session := testUserHandlerWithClient(t, store.User{
+		ID: "admin-1", Username: "admin", Role: "admin", Enabled: true,
+	}, client)
+	encrypted, err := security.Encrypt(make([]byte, 32), "node-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []store.Node{
+		{ID: "source", Name: "Source", Endpoint: "http://source.test", TokenEncrypted: encrypted, State: "online", CreatedAt: now, UpdatedAt: now},
+		{ID: "target", Name: "Target", Endpoint: "http://target.test", TokenEncrypted: encrypted, State: "online", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := storage.SaveNode(ctx, node); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, authenticatedRequest(http.MethodPost, "/api/v1/control-tower/connections", session,
+		[]byte(`{"issuer_node_id":"source","target_node_id":"target","transfer_mode":"dual_channel","issuer_role":"sender_receiver","invitee_role":"sender_receiver","expiry_minutes":20}`)))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result struct {
+		Status       string `json:"status"`
+		AutoApproved bool   `json:"auto_approved"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.AutoApproved || result.Status != "connected" || !inviteApproved.Load() || !requestAccepted.Load() {
+		t.Fatalf("result=%+v inviteApproved=%t requestAccepted=%t", result, inviteApproved.Load(), requestAccepted.Load())
+	}
+	connection, err := storage.GetConnection(ctx, "request-1")
+	if err != nil || connection.Status != "connected" {
+		t.Fatalf("connection=%+v err=%v", connection, err)
+	}
+}
+
+func TestBrowserConnectionRequestStaysPendingWithoutTargetAdminAccess(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	expiresAt := now.Add(time.Hour).Format(time.RFC3339Nano)
+	var targetMetadataCalled atomic.Bool
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		header := http.Header{"Content-Type": []string{"application/json"}}
+		body, status := `{}`, http.StatusOK
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/api/v1/node" && request.URL.Host == "source.test":
+			body = `{"node_id":"source","name":"Source","fingerprint":"SOURCE-FP","identity_epoch":1,"mtls_endpoint":"https://source.test:8443"}`
+		case request.URL.Host == "target.test" && request.URL.Path == "/api/v1/node":
+			targetMetadataCalled.Store(true)
+			status = http.StatusInternalServerError
+		case request.Method == http.MethodPost && request.URL.Path == "/api/v1/pairing/invites" && request.URL.Host == "source.test":
+			status = http.StatusCreated
+			body = `{"invite":{"invite_id":"invite-1","transfer_mode":"dual_channel","issuer_role":"sender_receiver","invitee_role":"sender_receiver","expires_at":"` + expiresAt + `"},"invite_token":"invite-token"}`
+		case request.Method == http.MethodPost && request.URL.Path == "/api/v1/pairing/requests" && request.URL.Host == "target.test":
+			status = http.StatusCreated
+			body = `{"request_id":"request-1","expires_at":"` + expiresAt + `","status":"pending_review"}`
+		default:
+			t.Errorf("unexpected node call: %s %s%s", request.Method, request.URL.Host, request.URL.Path)
+			status = http.StatusNotFound
+		}
+		return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	handler, storage, session := testUserHandlerWithClient(t, store.User{
+		ID: "operator-1", Username: "operator", Role: "operator", Enabled: true,
+	}, client)
+	encrypted, err := security.Encrypt(make([]byte, 32), "node-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []store.Node{
+		{ID: "source", Name: "Source", Endpoint: "http://source.test", TokenEncrypted: encrypted, State: "online", CreatedAt: now, UpdatedAt: now},
+		{ID: "target", Name: "Target", Endpoint: "http://target.test", TokenEncrypted: encrypted, State: "online", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := storage.SaveNode(ctx, node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	policy := store.Policy{ID: "connections-sudo", Name: "connections-sudo", CreatedAt: now, UpdatedAt: now,
+		Rules: []rbac.Rule{{Path: "control-tower/connections", Capabilities: []string{"sudo"}}}}
+	if err := storage.CreatePolicy(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.SetSubjectPolicies(ctx, "user", "operator-1", []string{policy.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, authenticatedRequest(http.MethodPost, "/api/v1/control-tower/connections", session,
+		[]byte(`{"issuer_node_id":"source","target_node_id":"target","transfer_mode":"dual_channel","issuer_role":"sender_receiver","invitee_role":"sender_receiver","expiry_minutes":20}`)))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result struct {
+		Status       string `json:"status"`
+		AutoApproved bool   `json:"auto_approved"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.AutoApproved || result.Status != "pending_review" || targetMetadataCalled.Load() {
+		t.Fatalf("result=%+v targetMetadataCalled=%t", result, targetMetadataCalled.Load())
+	}
+	connection, err := storage.GetConnection(ctx, "request-1")
+	if err != nil || connection.Status != "pending_review" {
+		t.Fatalf("connection=%+v err=%v", connection, err)
 	}
 }

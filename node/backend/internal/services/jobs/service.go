@@ -280,6 +280,46 @@ func (s *Service) CreatePlannedDirectoryPull(ctx context.Context, request Create
 	return created, repeated, err
 }
 
+// CreatePlannedBatchPull persists a whole remote selection as one job. The
+// caller has already expanded and conflict-checked the selection, so retries
+// resume the same item list instead of rediscovering a changing source tree.
+func (s *Service) CreatePlannedBatchPull(ctx context.Context, request CreateRequest, plan entities.CopyPlan, idempotencyKey, requestHash string) (entities.Job, bool, error) {
+	if request.Type != "transfer_pull_batch" && request.Type != "transfer_move_batch" {
+		return entities.Job{}, false, fmt.Errorf("%w: invalid remote batch type", ErrInvalid)
+	}
+	if request.BandwidthLimit < 0 || request.BandwidthLimit > 1<<40 {
+		return entities.Job{}, false, fmt.Errorf("%w: bandwidth limit is outside the supported range", ErrInvalid)
+	}
+	if request.MaxParallelFiles < 0 || request.MaxParallelFiles > 32 {
+		return entities.Job{}, false, fmt.Errorf("%w: max parallel files is outside the supported range", ErrInvalid)
+	}
+	if request.MaxParallelChunks < 0 || request.MaxParallelChunks > 16 {
+		return entities.Job{}, false, fmt.Errorf("%w: max parallel chunks is outside the supported range", ErrInvalid)
+	}
+	if s.remote == nil || request.PeerNodeID == "" || request.SourceGrantID == "" || request.DestinationGrantID == "" {
+		return entities.Job{}, false, fmt.Errorf("%w: remote executor, peer and source/destination grants are required", ErrInvalid)
+	}
+	policy, err := normalizeConflictPolicy(request.ConflictPolicy, request.Overwrite)
+	if err != nil {
+		return entities.Job{}, false, err
+	}
+	request.ConflictPolicy, request.Recursive = policy, true
+	if policy == "checksum" || request.Type == "transfer_move_batch" {
+		request.VerifyChecksum = true
+	}
+	job := s.newJob(request, "queued")
+	job.BytesTotal, job.FilesTotal = plan.BytesTotal, plan.FilesTotal
+	for index := range plan.Items {
+		plan.Items[index].JobID = job.ID
+	}
+	created, repeated, err := s.store.CreateJobWithItemsHashed(ctx, job, plan.Items, idempotencyKey, requestHash)
+	if err == nil && !repeated {
+		s.recordEvent(ctx, created, "job.created", "planned remote batch job queued")
+		s.notify()
+	}
+	return created, repeated, err
+}
+
 // CreateInline records operations whose input only exists for the lifetime of the
 // HTTP request (currently streaming uploads). It cannot be claimed by a worker.
 func (s *Service) CreateInline(ctx context.Context, request CreateRequest, idempotencyKey string) (entities.Job, bool, error) {
@@ -910,7 +950,7 @@ func (s *Service) execute(job entities.Job) {
 		}
 		s.mu.Unlock()
 		watchDone := make(chan struct{})
-		chunked := job.Type == "copy_local" || job.Type == "transfer_pull" || job.Type == "transfer_pull_directory"
+		chunked := job.Type == "copy_local" || job.Type == "transfer_pull" || job.Type == "transfer_pull_directory" || job.Type == "transfer_pull_batch" || job.Type == "transfer_move_batch"
 		go s.watchProgress(operationCtx, operationCancel, progress, watchDone, chunked)
 		bytes, operationErr := s.executeOperation(operationCtx, job)
 		operationCancel(nil)
@@ -1163,7 +1203,7 @@ func (s *Service) executeOperation(ctx context.Context, job entities.Job) (int64
 		return s.remote.ExecutePull(ctx, job, func(completed, total int64) error {
 			return s.checkpointProgress(job.ID, completed, total)
 		})
-	case "transfer_pull_directory":
+	case "transfer_pull_directory", "transfer_pull_batch", "transfer_move_batch":
 		if s.remote == nil {
 			return 0, errors.New("remote transfer executor is unavailable")
 		}
@@ -1732,7 +1772,7 @@ func (s *Service) cleanupJobPartials(ctx context.Context, job entities.Job) {
 		_ = s.remote.CleanupPull(ctx, job)
 		return
 	}
-	if job.Type == "transfer_pull_directory" && s.remote != nil {
+	if (job.Type == "transfer_pull_directory" || job.Type == "transfer_pull_batch" || job.Type == "transfer_move_batch") && s.remote != nil {
 		_ = s.remote.CleanupDirectoryPull(ctx, job)
 		return
 	}

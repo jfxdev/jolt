@@ -18,12 +18,24 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { AdminDialogProps } from "./types";
+import {
+  AdminEntityDialog,
+  EntityDialogFormLayout,
+} from "./AdminEntityDialog";
 
 interface ServiceAccountForm {
   name: string;
@@ -52,6 +64,7 @@ function credentialExpiry(value: string) {
 export function ServiceAccountsDialog({
   open,
   onOpenChange,
+  inline = false,
 }: AdminDialogProps) {
   const handleError = useApiError();
   const confirm = useConfirm();
@@ -64,18 +77,16 @@ export function ServiceAccountsDialog({
   const [tokens, setTokens] = useState<ServiceAccountToken[]>([]);
   const [credential, setCredential] = useState<ServiceCredential | null>(null);
   const [busy, setBusy] = useState(false);
+  const [search, setSearch] = useState("");
+  const [formOpen, setFormOpen] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     reset();
+    setSearch("");
     (async () => {
       try {
-        const [a, p, g] = await Promise.all([
-          api.serviceAccounts(),
-          api.policies(),
-          api.accessGroups(),
-        ]);
-        setAccounts(a.items || []);
+        const [p, g] = await Promise.all([api.policies(), api.accessGroups()]);
         setPolicies(p.items || []);
         setGroups(g.items || []);
       } catch (error) {
@@ -85,6 +96,25 @@ export function ServiceAccountsDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      void api
+        .serviceAccounts(search)
+        .then((result) => {
+          if (!cancelled) setAccounts(result.items || []);
+        })
+        .catch((error) => {
+          if (!cancelled) handleError(error);
+        });
+    }, search ? 250 : 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [handleError, open, search]);
+
   function reset() {
     setEditingId("");
     setForm(emptyForm());
@@ -93,8 +123,18 @@ export function ServiceAccountsDialog({
     setCredential(null);
   }
 
-  async function reloadAccounts() {
-    const result = await api.serviceAccounts();
+  function openCreateForm() {
+    reset();
+    setFormOpen(true);
+  }
+
+  function closeForm(open: boolean) {
+    setFormOpen(open);
+    if (!open) reset();
+  }
+
+  async function reloadAccounts(query = search) {
+    const result = await api.serviceAccounts(query);
     setAccounts(result.items || []);
   }
 
@@ -109,6 +149,7 @@ export function ServiceAccountsDialog({
       token_name: "rotated",
       expires_at: "",
     });
+    setFormOpen(true);
     try {
       const [t, p, g] = await Promise.all([
         api.serviceAccountTokens(target.service_account_id),
@@ -226,6 +267,7 @@ export function ServiceAccountsDialog({
     try {
       await api.deleteServiceAccount(target.service_account_id);
       reset();
+      setFormOpen(false);
       await reloadAccounts();
       toast.success("Conta removida; a auditoria foi preservada.");
     } catch (error) {
@@ -245,9 +287,30 @@ export function ServiceAccountsDialog({
     }
   }
 
+  if (inline && !open) return null;
+
+  const searchInput = (
+    <div className="grid gap-2">
+      <Label htmlFor="api-keys-search">Buscar API keys</Label>
+      <Input
+        id="api-keys-search"
+        type="search"
+        value={search}
+        placeholder="Nome ou descrição"
+        onChange={(event) => setSearch(event.target.value)}
+      />
+    </div>
+  );
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent
+        inline={inline}
+        showCloseButton={!inline}
+        className={
+          inline ? "w-full max-w-none" : "sm:w-[calc(100vw-4rem)] sm:max-w-5xl"
+        }
+      >
         <DialogHeader>
           <div className="flex items-center justify-between">
             <div>
@@ -256,49 +319,133 @@ export function ServiceAccountsDialog({
               </p>
               <DialogTitle>API Keys</DialogTitle>
             </div>
-            <Button variant="secondary" size="sm" onClick={reset}>
+            <Button variant="secondary" size="sm" onClick={openCreateForm}>
               Nova API key
             </Button>
           </div>
         </DialogHeader>
 
-        <div className="grid gap-4 md:grid-cols-[220px_1fr]">
-          <div className="grid max-h-[60vh] gap-1 overflow-y-auto">
-            {accounts.map((target) => (
-              <button
-                key={target.service_account_id}
-                className={cn(
-                  "flex items-center justify-between rounded-md border p-2 text-left text-sm hover:bg-accent",
-                  editingId === target.service_account_id && "bg-accent",
-                )}
-                onClick={() => edit(target)}
-              >
-                <span>
-                  <strong className="block">{target.name}</strong>
-                  <small className="text-muted-foreground">
-                    {target.description || "Sem descrição"}
-                  </small>
-                </span>
-                <small
-                  className={
-                    target.enabled ? "text-emerald-500" : "text-destructive"
-                  }
-                >
-                  {target.enabled ? "Ativa" : "Inativa"}
-                </small>
-              </button>
-            ))}
-            {!accounts.length && (
-              <div className="p-2 text-xs text-muted-foreground">
-                Nenhuma conta de serviço.
+        <div
+          className={cn(
+            "grid gap-4",
+            inline ? "" : "md:grid-cols-[220px_1fr]",
+          )}
+        >
+          {inline ? (
+            <div className="order-2 grid gap-2">
+              {searchInput}
+              <div className="overflow-hidden rounded-md border">
+                <Table aria-label="API Keys cadastradas">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>API Key</TableHead>
+                      <TableHead>Descrição</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Ação</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {accounts.map((target) => (
+                      <TableRow
+                        key={target.service_account_id}
+                        data-state={
+                          editingId === target.service_account_id
+                            ? "selected"
+                            : undefined
+                        }
+                      >
+                        <TableCell className="font-medium">{target.name}</TableCell>
+                        <TableCell className="max-w-sm truncate text-muted-foreground">
+                          {target.description || "Sem descrição"}
+                        </TableCell>
+                        <TableCell>
+                          <span
+                            className={
+                              target.enabled ? "text-emerald-500" : "text-destructive"
+                            }
+                          >
+                            {target.enabled ? "Ativa" : "Inativa"}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => edit(target)}
+                            >
+                              Editar
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="sm"
+                              onClick={() => void remove(target)}
+                            >
+                              Remover
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {!accounts.length && (
+                      <TableRow>
+                        <TableCell colSpan={4} className="text-muted-foreground">
+                          {search
+                            ? "Nenhuma API key encontrada."
+                            : "Nenhuma conta de serviço."}
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
               </div>
-            )}
-          </div>
+            </div>
+          ) : (
+            <div className="grid max-h-[60vh] gap-1 overflow-y-auto">
+              {searchInput}
+              {accounts.map((target) => (
+                <button
+                  key={target.service_account_id}
+                  className={cn(
+                    "flex items-center justify-between rounded-md border p-2 text-left text-sm hover:bg-accent",
+                    editingId === target.service_account_id && "bg-accent",
+                  )}
+                  onClick={() => edit(target)}
+                >
+                  <span>
+                    <strong className="block">{target.name}</strong>
+                    <small className="text-muted-foreground">
+                      {target.description || "Sem descrição"}
+                    </small>
+                  </span>
+                  <small
+                    className={
+                      target.enabled ? "text-emerald-500" : "text-destructive"
+                    }
+                  >
+                    {target.enabled ? "Ativa" : "Inativa"}
+                  </small>
+                </button>
+              ))}
+              {!accounts.length && (
+                <div className="p-2 text-xs text-muted-foreground">
+                  {search ? "Nenhuma API key encontrada." : "Nenhuma conta de serviço."}
+                </div>
+              )}
+            </div>
+          )}
 
-          <form className="grid gap-3" onSubmit={save}>
-            <h3 className="font-semibold">
-              {editingId ? "Editar conta" : "Criar conta"}
-            </h3>
+          <AdminEntityDialog
+            open={formOpen}
+            onOpenChange={closeForm}
+            title={editingId ? "Editar conta" : "Criar conta"}
+          >
+              <form className="grid gap-3" onSubmit={save}>
+            <EntityDialogFormLayout
+              summary={
+                <>
             <div className="grid gap-2">
               <Label htmlFor="sa-name">Nome</Label>
               <Input
@@ -306,7 +453,7 @@ export function ServiceAccountsDialog({
                 value={form.name}
                 minLength={3}
                 maxLength={64}
-                pattern="[A-Za-z0-9._-]+"
+                pattern="[A-Za-z0-9._\-]+"
                 autoComplete="off"
                 required
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
@@ -324,6 +471,9 @@ export function ServiceAccountsDialog({
                 }
               />
             </div>
+                </>
+              }
+            >
             <fieldset className="grid gap-2 rounded-md border p-3">
               <legend className="px-1 text-sm font-medium">Grupos de acesso</legend>
               {groups.map((group) => (
@@ -499,26 +649,14 @@ export function ServiceAccountsDialog({
             )}
 
             <div className="flex justify-end gap-2">
-              {editingId && (
-                <Button
-                  type="button"
-                  variant="destructive"
-                  onClick={() => {
-                    const target = accounts.find(
-                      (a) => a.service_account_id === editingId,
-                    );
-                    if (target) remove(target);
-                  }}
-                >
-                  Remover
-                </Button>
-              )}
               <Button type="submit" disabled={busy}>
                 {editingId ? "Salvar alterações" : "Criar e emitir API key"}{" "}
                 <ArrowRight />
               </Button>
             </div>
-          </form>
+            </EntityDialogFormLayout>
+              </form>
+          </AdminEntityDialog>
         </div>
       </DialogContent>
     </Dialog>

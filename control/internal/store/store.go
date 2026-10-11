@@ -341,6 +341,15 @@ func (s *Store) renameColumnIfNeeded(table, oldName, newName string) error {
 
 const serviceAccountSelect = `SELECT id,name,description,enabled,created_at,updated_at FROM service_accounts`
 
+func searchPattern(query string) string {
+	escaped := strings.NewReplacer(
+		`\`, `\\`,
+		`%`, `\%`,
+		`_`, `\_`,
+	).Replace(strings.TrimSpace(query))
+	return "%" + escaped + "%"
+}
+
 func scanServiceAccount(scanner interface{ Scan(...any) error }) (ServiceAccount, error) {
 	var account ServiceAccount
 	var enabled int
@@ -353,7 +362,18 @@ func scanServiceAccount(scanner interface{ Scan(...any) error }) (ServiceAccount
 }
 
 func (s *Store) ListServiceAccounts(ctx context.Context) ([]ServiceAccount, error) {
-	rows, err := s.db.QueryContext(ctx, serviceAccountSelect+` ORDER BY name`)
+	return s.SearchServiceAccounts(ctx, "")
+}
+
+func (s *Store) SearchServiceAccounts(ctx context.Context, query string) ([]ServiceAccount, error) {
+	statement := serviceAccountSelect
+	var args []any
+	if strings.TrimSpace(query) != "" {
+		statement += ` WHERE LOWER(name) LIKE LOWER(?) ESCAPE '\' OR LOWER(description) LIKE LOWER(?) ESCAPE '\'`
+		pattern := searchPattern(query)
+		args = []any{pattern, pattern}
+	}
+	rows, err := s.db.QueryContext(ctx, statement+` ORDER BY name`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -603,7 +623,18 @@ func scanAccessGroup(scanner interface{ Scan(...any) error }) (AccessGroup, erro
 }
 
 func (s *Store) ListAccessGroups(ctx context.Context) ([]AccessGroup, error) {
-	rows, err := s.db.QueryContext(ctx, accessGroupSelect+` ORDER BY name`)
+	return s.SearchAccessGroups(ctx, "")
+}
+
+func (s *Store) SearchAccessGroups(ctx context.Context, query string) ([]AccessGroup, error) {
+	statement := accessGroupSelect
+	var args []any
+	if strings.TrimSpace(query) != "" {
+		statement += ` WHERE LOWER(name) LIKE LOWER(?) ESCAPE '\' OR LOWER(description) LIKE LOWER(?) ESCAPE '\'`
+		pattern := searchPattern(query)
+		args = []any{pattern, pattern}
+	}
+	rows, err := s.db.QueryContext(ctx, statement+` ORDER BY name`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -809,7 +840,18 @@ func (s *Store) NodeInAccessGroup(ctx context.Context, groupID, nodeID string) (
 }
 
 func (s *Store) ListPolicies(ctx context.Context) ([]Policy, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,description,created_at,updated_at FROM policies ORDER BY name`)
+	return s.SearchPolicies(ctx, "")
+}
+
+func (s *Store) SearchPolicies(ctx context.Context, query string) ([]Policy, error) {
+	statement := `SELECT id,name,description,created_at,updated_at FROM policies`
+	var args []any
+	if strings.TrimSpace(query) != "" {
+		statement += ` WHERE LOWER(name) LIKE LOWER(?) ESCAPE '\' OR LOWER(description) LIKE LOWER(?) ESCAPE '\'`
+		pattern := searchPattern(query)
+		args = []any{pattern, pattern}
+	}
+	rows, err := s.db.QueryContext(ctx, statement+` ORDER BY name`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -950,7 +992,18 @@ func (s *Store) DeletePolicy(ctx context.Context, id string) error {
 }
 
 func (s *Store) ListRoles(ctx context.Context) ([]Role, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,description,created_at,updated_at FROM roles ORDER BY name`)
+	return s.SearchRoles(ctx, "")
+}
+
+func (s *Store) SearchRoles(ctx context.Context, query string) ([]Role, error) {
+	statement := `SELECT id,name,description,created_at,updated_at FROM roles`
+	var args []any
+	if strings.TrimSpace(query) != "" {
+		statement += ` WHERE LOWER(name) LIKE LOWER(?) ESCAPE '\' OR LOWER(description) LIKE LOWER(?) ESCAPE '\'`
+		pattern := searchPattern(query)
+		args = []any{pattern, pattern}
+	}
+	rows, err := s.db.QueryContext(ctx, statement+` ORDER BY name`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1416,7 +1469,18 @@ func scanUser(scanner interface{ Scan(...any) error }) (User, error) {
 }
 
 func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
-	rows, err := s.db.QueryContext(ctx, userSelect+` ORDER BY username`)
+	return s.SearchUsers(ctx, "")
+}
+
+func (s *Store) SearchUsers(ctx context.Context, query string) ([]User, error) {
+	statement := userSelect
+	var args []any
+	if strings.TrimSpace(query) != "" {
+		statement += ` WHERE LOWER(username) LIKE LOWER(?) ESCAPE '\' OR LOWER(role) LIKE LOWER(?) ESCAPE '\'`
+		pattern := searchPattern(query)
+		args = []any{pattern, pattern}
+	}
+	rows, err := s.db.QueryContext(ctx, statement+` ORDER BY username`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1798,21 +1862,72 @@ invite_token_encrypted,issuer_fingerprint,status,expires_at,created_at,updated_a
 	return err
 }
 
-func (s *Store) GetConnection(ctx context.Context, requestID string) (Connection, error) {
+const connectionSelect = `SELECT request_id,invite_id,issuer_node_id,target_node_id,
+invite_token_encrypted,issuer_fingerprint,status,expires_at,created_at,updated_at FROM connections`
+
+func scanConnection(row scanner) (Connection, error) {
 	var connection Connection
 	var expires, created, updated string
-	err := s.db.QueryRowContext(ctx, `SELECT request_id,invite_id,issuer_node_id,target_node_id,
-invite_token_encrypted,issuer_fingerprint,status,expires_at,created_at,updated_at FROM connections WHERE request_id=?`, requestID).
-		Scan(&connection.RequestID, &connection.InviteID, &connection.IssuerNodeID, &connection.TargetNodeID,
-			&connection.InviteTokenEncrypted, &connection.IssuerFingerprint, &connection.Status,
-			&expires, &created, &updated)
-	if errors.Is(err, sql.ErrNoRows) {
-		return connection, ErrNotFound
+	err := row.Scan(&connection.RequestID, &connection.InviteID, &connection.IssuerNodeID,
+		&connection.TargetNodeID, &connection.InviteTokenEncrypted, &connection.IssuerFingerprint,
+		&connection.Status, &expires, &created, &updated)
+	if err != nil {
+		return connection, err
 	}
 	connection.ExpiresAt, _ = time.Parse(time.RFC3339Nano, expires)
 	connection.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	connection.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+	return connection, nil
+}
+
+func (s *Store) GetConnection(ctx context.Context, requestID string) (Connection, error) {
+	connection, err := scanConnection(s.db.QueryRowContext(ctx,
+		connectionSelect+` WHERE request_id=?`, requestID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return connection, ErrNotFound
+	}
 	return connection, err
+}
+
+// ListConnections returns every orchestrated connection, newest first. The
+// encrypted invite secret stays in the struct for reconciliation but is never
+// serialized (Connection.InviteTokenEncrypted is `json:"-"`).
+func (s *Store) ListConnections(ctx context.Context) ([]Connection, error) {
+	rows, err := s.db.QueryContext(ctx, connectionSelect+` ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	connections := []Connection{}
+	for rows.Next() {
+		connection, scanErr := scanConnection(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		connections = append(connections, connection)
+	}
+	return connections, rows.Err()
+}
+
+// ConnectionsForNode returns the connections where the node is either the
+// issuer or the target, newest first.
+func (s *Store) ConnectionsForNode(ctx context.Context, nodeID string) ([]Connection, error) {
+	rows, err := s.db.QueryContext(ctx,
+		connectionSelect+` WHERE issuer_node_id=? OR target_node_id=? ORDER BY created_at DESC`,
+		nodeID, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	connections := []Connection{}
+	for rows.Next() {
+		connection, scanErr := scanConnection(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		connections = append(connections, connection)
+	}
+	return connections, rows.Err()
 }
 
 func (s *Store) UpdateConnectionStatus(ctx context.Context, requestID, status string) error {

@@ -18,6 +18,8 @@ type Store interface {
 	CommitOperationalToken(context.Context, string, string, time.Time) error
 	CreateJob(context.Context, entities.Job, string) (entities.Job, bool, error)
 	CreateJobWithItems(context.Context, entities.Job, []entities.JobItem, string) (entities.Job, bool, error)
+	CreateJobWithItemsHashed(context.Context, entities.Job, []entities.JobItem, string, string) (entities.Job, bool, error)
+	FindJobByIdempotency(context.Context, string) (entities.Job, string, bool, error)
 	UpdateJob(context.Context, entities.Job) error
 	ListJobs(context.Context, int) ([]entities.Job, error)
 	ListJobsByPeer(context.Context, string) ([]entities.Job, error)

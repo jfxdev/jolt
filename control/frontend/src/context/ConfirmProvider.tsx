@@ -7,16 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { ConfirmationDialog } from "@/components/ui/confirmation-dialog";
 import {
   Dialog,
   DialogContent,
@@ -27,8 +18,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { cn } from "@/lib/utils";
-import { buttonVariants } from "@/components/ui/button";
 
 interface ConfirmOptions {
   title: string;
@@ -94,37 +83,18 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
     <ConfirmContext.Provider value={value}>
       {children}
 
-      <AlertDialog
+      <ConfirmationDialog
         open={confirmState !== null}
         onOpenChange={(open) => {
           if (!open) resolveConfirm(false);
         }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{confirmState?.title}</AlertDialogTitle>
-            {confirmState?.description ? (
-              <AlertDialogDescription>
-                {confirmState.description}
-              </AlertDialogDescription>
-            ) : null}
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => resolveConfirm(false)}>
-              {confirmState?.cancelText ?? "Cancelar"}
-            </AlertDialogCancel>
-            <AlertDialogAction
-              className={cn(
-                confirmState?.destructive &&
-                  buttonVariants({ variant: "destructive" }),
-              )}
-              onClick={() => resolveConfirm(true)}
-            >
-              {confirmState?.confirmText ?? "Confirmar"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        title={confirmState?.title ?? "Confirmar ação"}
+        description={confirmState?.description}
+        confirmText={confirmState?.confirmText}
+        cancelText={confirmState?.cancelText}
+        destructive={confirmState?.destructive}
+        onConfirm={() => resolveConfirm(true)}
+      />
 
       <Dialog
         open={promptState !== null}

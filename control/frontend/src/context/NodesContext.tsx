@@ -16,6 +16,7 @@ import { useApiError } from "@/hooks/useApiError";
 const CONTROL_PERMISSION_PATHS = [
   "control-tower/users",
   "control-tower/service-accounts",
+  "control-tower/access-groups",
   "control-tower/policies",
   "control-tower/roles",
   "control-tower/nodes",

@@ -1,15 +1,21 @@
+import type { CSSProperties } from "react";
 import { Outlet } from "react-router-dom";
-import { Header } from "./Header";
-import { NodeSidebar } from "./NodeSidebar";
+import { AppSidebar } from "./AppSidebar";
+import { SiteHeader } from "./SiteHeader";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 
 export function AppShell() {
   return (
-    <div className="grid min-h-screen grid-cols-[270px_1fr] grid-rows-[64px_1fr]">
-      <Header />
-      <NodeSidebar />
-      <main className="overflow-x-hidden p-6 lg:p-10">
-        <Outlet />
-      </main>
-    </div>
+    <SidebarProvider
+      style={{ "--sidebar-width": "17rem" } as CSSProperties}
+    >
+      <AppSidebar />
+      <SidebarInset>
+        <SiteHeader />
+        <div className="flex flex-1 flex-col overflow-x-hidden p-4 md:p-6 lg:p-8">
+          <Outlet />
+        </div>
+      </SidebarInset>
+    </SidebarProvider>
   );
 }

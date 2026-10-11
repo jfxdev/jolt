@@ -134,7 +134,7 @@ direto.
 - Go: rodar `govulncheck ./...` em `node/` e `control/`; revisar `go.mod`
   (versões de `mutecomm/go-sqlcipher`, `modernc.org/sqlite`, `x/crypto`).
 - Frontend: `npm audit` em `control/frontend`; revisar versões de React 19,
-  Radix, Vite, react-router.
+  Base UI, Vite, Tailwind CSS e react-router.
 - Verificar se há dependências não usadas ou pinadas em versões vulneráveis.
 
 **Comandos.**

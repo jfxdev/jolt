@@ -7,30 +7,36 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
 type Config struct {
-	Address       string
-	DataDir       string
-	StaticDir     string
-	AdminUsername string
-	AdminPassword string
-	EncryptionKey []byte
-	SecureCookies bool
+	Address                string
+	DataDir                string
+	StaticDir              string
+	AdminUsername          string
+	AdminPassword          string
+	EncryptionKey          []byte
+	SecureCookies          bool
+	TransferMaxSourcePaths int
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		Address:       value("CONTROL_TOWER_ADDRESS", ":8090"),
-		DataDir:       value("CONTROL_TOWER_DATA_DIR", "./.jolt-control"),
-		StaticDir:     value("CONTROL_TOWER_STATIC_DIR", "./frontend/dist"),
-		AdminUsername: value("CONTROL_TOWER_ADMIN_USERNAME", "admin"),
-		AdminPassword: os.Getenv("CONTROL_TOWER_ADMIN_PASSWORD"),
-		SecureCookies: boolValue("CONTROL_TOWER_SECURE_COOKIES", false),
+		Address:                value("CONTROL_TOWER_ADDRESS", ":8090"),
+		DataDir:                value("CONTROL_TOWER_DATA_DIR", "./.jolt-control"),
+		StaticDir:              value("CONTROL_TOWER_STATIC_DIR", "./frontend/dist"),
+		AdminUsername:          value("CONTROL_TOWER_ADMIN_USERNAME", "admin"),
+		AdminPassword:          os.Getenv("CONTROL_TOWER_ADMIN_PASSWORD"),
+		SecureCookies:          boolValue("CONTROL_TOWER_SECURE_COOKIES", false),
+		TransferMaxSourcePaths: intValue("TRANSFER_MAX_SOURCE_PATHS", 1000),
 	}
 	if len(cfg.AdminPassword) < 12 {
 		return Config{}, errors.New("CONTROL_TOWER_ADMIN_PASSWORD must contain at least 12 characters")
+	}
+	if cfg.TransferMaxSourcePaths < 1 || cfg.TransferMaxSourcePaths > 100000 {
+		return Config{}, errors.New("TRANSFER_MAX_SOURCE_PATHS must be between 1 and 100000")
 	}
 	rawKey := strings.TrimSpace(os.Getenv("CONTROL_TOWER_DB_ENCRYPTION_KEY"))
 	encryptionKey, err := ParseEncryptionKey(rawKey)
@@ -86,4 +92,16 @@ func boolValue(key string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func intValue(key string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return -1
+	}
+	return value
 }

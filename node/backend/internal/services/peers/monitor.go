@@ -80,7 +80,7 @@ func (m *Monitor) checkAll(ctx context.Context) {
 			return
 		}
 		if peer.MTLSEndpoint == "" || peer.State == "untrusted" || peer.State == "identity_changed" ||
-			peer.State == "revoked" {
+			peer.State == "revoked" || peer.State == entities.PeerStateRevokedByPeer {
 			continue
 		}
 		m.check(ctx, peer)
@@ -112,6 +112,11 @@ func (m *Monitor) check(parent context.Context, peer entities.Peer) {
 		state = "identity_changed"
 	} else if errors.Is(err, joltcrypto.ErrCertificateRevoked) {
 		state = "untrusted"
+	} else if rejectedByPeer(err) {
+		// The peer's listener refused our certificate, which only happens when
+		// it no longer has us as a trusted peer. Reporting this as "offline"
+		// made a revocation on the far side look like a network problem.
+		state = entities.PeerStateRevokedByPeer
 	} else if failures >= m.failureThreshold {
 		state = "offline"
 	}
@@ -119,6 +124,37 @@ func (m *Monitor) check(parent context.Context, peer entities.Peer) {
 		m.logger.Error("persist failed peer heartbeat", "peer_node_id", peer.NodeID, "error", updateErr)
 	}
 	m.logger.Warn("peer heartbeat failed", "peer_node_id", peer.NodeID, "state", state, "failures", failures, "error", err)
+}
+
+// crypto/tls never exposes an alert received from a peer as a typed value on a
+// TCP connection: it arrives as a net.OpError with Op "remote error" wrapping
+// an unexported alert whose message is "tls: <name>". tls.AlertError only
+// covers QUIC. These are the alert names that mean the peer refused our
+// identity (RFC 8446 section 6.2).
+var peerRejectionAlerts = []string{
+	"bad certificate",
+	"unknown certificate authority",
+	"certificate unknown",
+	"certificate required",
+	"unsupported certificate",
+	"revoked certificate",
+}
+
+// rejectedByPeer reports whether the handshake failed because the peer refused
+// our certificate, as opposed to the connection failing or our own
+// verification rejecting the peer.
+func rejectedByPeer(err error) bool {
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) || opErr.Op != "remote error" || opErr.Err == nil {
+		return false
+	}
+	message := opErr.Err.Error()
+	for _, alert := range peerRejectionAlerts {
+		if strings.Contains(message, alert) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Monitor) heartbeat(ctx context.Context, peer entities.Peer) (bool, error) {

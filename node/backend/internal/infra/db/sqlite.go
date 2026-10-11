@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
@@ -13,8 +14,9 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("not found")
-	ErrInUse    = errors.New("resource is in use")
+	ErrNotFound            = errors.New("not found")
+	ErrInUse               = errors.New("resource is in use")
+	ErrIdempotencyConflict = errors.New("idempotency key was reused with a different request")
 )
 
 type Store struct{ db *sql.DB }
@@ -68,6 +70,7 @@ CREATE TABLE IF NOT EXISTS job_items (
  job_id TEXT NOT NULL, ordinal INTEGER NOT NULL, relative_path TEXT NOT NULL,
  source_path TEXT NOT NULL, destination_path TEXT NOT NULL, type TEXT NOT NULL,
  size INTEGER NOT NULL DEFAULT 0, modified_at TEXT NOT NULL, checksum TEXT,
+ source_root INTEGER NOT NULL DEFAULT 0, source_cleanup_state TEXT NOT NULL DEFAULT '',
  action TEXT NOT NULL,
  state TEXT NOT NULL, bytes_completed INTEGER NOT NULL DEFAULT 0,
  attempt INTEGER NOT NULL DEFAULT 0, error TEXT, updated_at TEXT NOT NULL,
@@ -83,7 +86,7 @@ CREATE TABLE IF NOT EXISTS job_events (
  created_at TEXT NOT NULL, FOREIGN KEY(job_id) REFERENCES jobs(id)
 );
 CREATE TABLE IF NOT EXISTS idempotency (
- key TEXT PRIMARY KEY, job_id TEXT NOT NULL, created_at TEXT NOT NULL,
+ key TEXT PRIMARY KEY, job_id TEXT NOT NULL, request_hash TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
  FOREIGN KEY(job_id) REFERENCES jobs(id)
 );
 CREATE TABLE IF NOT EXISTS pairing_invites (
@@ -210,6 +213,22 @@ CREATE INDEX IF NOT EXISTS idx_job_items_job_state ON job_items(job_id, state, o
 		declaration string
 	}{
 		{"checksum", "TEXT"},
+		{"source_root", "INTEGER NOT NULL DEFAULT 0"},
+		{"source_cleanup_state", "TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, column := range []struct {
+		name        string
+		declaration string
+	}{{"request_hash", "TEXT NOT NULL DEFAULT ''"}} {
+		exists, err := s.columnExists("idempotency", column.name)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if _, err := s.db.Exec("ALTER TABLE idempotency ADD COLUMN " + column.name + " " + column.declaration); err != nil {
+				return err
+			}
+		}
 	}
 	for _, column := range itemColumns {
 		exists, err := s.columnExists("job_items", column.name)
@@ -450,23 +469,50 @@ func (s *Store) DeleteMount(ctx context.Context, id string) error {
 }
 
 func (s *Store) CreateJob(ctx context.Context, j entities.Job, key string) (entities.Job, bool, error) {
-	return s.createJob(ctx, j, nil, key)
+	return s.createJob(ctx, j, nil, key, "")
 }
 
 func (s *Store) CreateJobWithItems(ctx context.Context, j entities.Job, items []entities.JobItem, key string) (entities.Job, bool, error) {
-	return s.createJob(ctx, j, items, key)
+	return s.createJob(ctx, j, items, key, "")
 }
 
-func (s *Store) createJob(ctx context.Context, j entities.Job, items []entities.JobItem, key string) (entities.Job, bool, error) {
+func (s *Store) CreateJobWithItemsHashed(ctx context.Context, j entities.Job, items []entities.JobItem, key, requestHash string) (entities.Job, bool, error) {
+	return s.createJob(ctx, j, items, key, requestHash)
+}
+
+func (s *Store) FindJobByIdempotency(ctx context.Context, key string) (entities.Job, string, bool, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return entities.Job{}, "", false, nil
+	}
+	var jobID, requestHash string
+	err := s.db.QueryRowContext(ctx, `SELECT job_id,request_hash FROM idempotency WHERE key=?`, key).Scan(&jobID, &requestHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return entities.Job{}, "", false, nil
+	}
+	if err != nil {
+		return entities.Job{}, "", false, err
+	}
+	job, err := s.GetJob(ctx, jobID)
+	if errors.Is(err, ErrNotFound) {
+		return entities.Job{}, "", false, nil
+	}
+	return job, requestHash, err == nil, err
+}
+
+func (s *Store) createJob(ctx context.Context, j entities.Job, items []entities.JobItem, key, requestHash string) (entities.Job, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return j, false, err
 	}
 	defer tx.Rollback()
 	if key != "" {
-		var existing string
-		err := tx.QueryRowContext(ctx, `SELECT job_id FROM idempotency WHERE key=?`, key).Scan(&existing)
+		var existing, existingHash string
+		err := tx.QueryRowContext(ctx, `SELECT job_id,request_hash FROM idempotency WHERE key=?`, key).Scan(&existing, &existingHash)
 		if err == nil {
+			if requestHash != "" && existingHash != requestHash {
+				return j, false, ErrIdempotencyConflict
+			}
 			if err := tx.Commit(); err != nil {
 				return j, false, err
 			}
@@ -484,17 +530,17 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 	}
 	for _, item := range items {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO job_items(
-job_id,ordinal,relative_path,source_path,destination_path,type,size,modified_at,checksum,
-action,state,bytes_completed,attempt,error,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+job_id,ordinal,relative_path,source_path,destination_path,type,size,modified_at,checksum,source_root,source_cleanup_state,
+action,state,bytes_completed,attempt,error,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			j.ID, item.Ordinal, item.RelativePath, item.SourcePath, item.DestinationPath,
-			item.Type, item.Size, item.ModifiedAt.Format(time.RFC3339Nano), item.Checksum, item.Action,
+			item.Type, item.Size, item.ModifiedAt.Format(time.RFC3339Nano), item.Checksum, item.SourceRoot, item.SourceCleanupState, item.Action,
 			item.State, item.BytesCompleted, item.Attempt, item.Error,
 			item.UpdatedAt.Format(time.RFC3339Nano)); err != nil {
 			return j, false, err
 		}
 	}
 	if key != "" {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency(key,job_id,created_at) VALUES(?,?,?)`, key, j.ID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency(key,job_id,request_hash,created_at) VALUES(?,?,?,?)`, key, j.ID, requestHash, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return j, false, err
 		}
 	}
@@ -838,10 +884,10 @@ func (s *Store) ReplaceJobItems(ctx context.Context, jobID string, items []entit
 	}
 	for _, item := range items {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO job_items(
-job_id,ordinal,relative_path,source_path,destination_path,type,size,modified_at,checksum,
-action,state,bytes_completed,attempt,error,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+job_id,ordinal,relative_path,source_path,destination_path,type,size,modified_at,checksum,source_root,source_cleanup_state,
+action,state,bytes_completed,attempt,error,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			jobID, item.Ordinal, item.RelativePath, item.SourcePath, item.DestinationPath,
-			item.Type, item.Size, item.ModifiedAt.Format(time.RFC3339Nano), item.Checksum, item.Action,
+			item.Type, item.Size, item.ModifiedAt.Format(time.RFC3339Nano), item.Checksum, item.SourceRoot, item.SourceCleanupState, item.Action,
 			item.State, item.BytesCompleted, item.Attempt, item.Error,
 			item.UpdatedAt.Format(time.RFC3339Nano)); err != nil {
 			return err
@@ -852,7 +898,7 @@ action,state,bytes_completed,attempt,error,updated_at) VALUES(?,?,?,?,?,?,?,?,?,
 
 func (s *Store) ListJobItems(ctx context.Context, jobID string) ([]entities.JobItem, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT job_id,ordinal,relative_path,source_path,
-destination_path,type,size,modified_at,COALESCE(checksum,''),action,state,bytes_completed,attempt,error,updated_at
+destination_path,type,size,modified_at,COALESCE(checksum,''),source_root,source_cleanup_state,action,state,bytes_completed,attempt,error,updated_at
 FROM job_items WHERE job_id=? ORDER BY ordinal`, jobID)
 	if err != nil {
 		return nil, err
@@ -870,9 +916,9 @@ FROM job_items WHERE job_id=? ORDER BY ordinal`, jobID)
 }
 
 func (s *Store) UpdateJobItem(ctx context.Context, item entities.JobItem) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE job_items SET destination_path=?,size=?,modified_at=?,checksum=?,action=?,
+	result, err := s.db.ExecContext(ctx, `UPDATE job_items SET destination_path=?,size=?,modified_at=?,checksum=?,source_root=?,source_cleanup_state=?,action=?,
 state=?,bytes_completed=?,attempt=?,error=?,updated_at=? WHERE job_id=? AND relative_path=?`,
-		item.DestinationPath, item.Size, item.ModifiedAt.Format(time.RFC3339Nano), item.Checksum, item.Action, item.State, item.BytesCompleted, item.Attempt,
+		item.DestinationPath, item.Size, item.ModifiedAt.Format(time.RFC3339Nano), item.Checksum, item.SourceRoot, item.SourceCleanupState, item.Action, item.State, item.BytesCompleted, item.Attempt,
 		item.Error, item.UpdatedAt.Format(time.RFC3339Nano), item.JobID, item.RelativePath)
 	if err != nil {
 		return err
@@ -887,12 +933,14 @@ state=?,bytes_completed=?,attempt=?,error=?,updated_at=? WHERE job_id=? AND rela
 func scanJobItem(row scanner) (entities.JobItem, error) {
 	var item entities.JobItem
 	var modified, updated string
+	var sourceRoot int
 	err := row.Scan(&item.JobID, &item.Ordinal, &item.RelativePath, &item.SourcePath,
-		&item.DestinationPath, &item.Type, &item.Size, &modified, &item.Checksum, &item.Action,
+		&item.DestinationPath, &item.Type, &item.Size, &modified, &item.Checksum, &sourceRoot, &item.SourceCleanupState, &item.Action,
 		&item.State, &item.BytesCompleted, &item.Attempt, &item.Error, &updated)
 	if err != nil {
 		return item, err
 	}
+	item.SourceRoot = sourceRoot != 0
 	item.ModifiedAt, _ = time.Parse(time.RFC3339Nano, modified)
 	item.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
 	return item, nil
@@ -1056,7 +1104,8 @@ func (s *Store) ApprovePairingInvite(ctx context.Context, id, secretHash string,
 	if _, err := tx.ExecContext(ctx, `INSERT INTO peers(node_id,name,fingerprint,previous_fingerprint,identity_epoch,endpoint,mtls_endpoint,transfer_mode,local_role,remote_role,cluster_id,state,trusted_at,correlation_id)
 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(node_id) DO UPDATE SET name=excluded.name,fingerprint=excluded.fingerprint,previous_fingerprint='',identity_epoch=excluded.identity_epoch,
 endpoint=excluded.endpoint,mtls_endpoint=excluded.mtls_endpoint,transfer_mode=excluded.transfer_mode,local_role=excluded.local_role,
-remote_role=excluded.remote_role,cluster_id=excluded.cluster_id,state=excluded.state,trusted_at=excluded.trusted_at,correlation_id=excluded.correlation_id`,
+remote_role=excluded.remote_role,cluster_id=excluded.cluster_id,state=excluded.state,trusted_at=excluded.trusted_at,correlation_id=excluded.correlation_id,
+consecutive_failures=0,last_seen_at=NULL`,
 		peer.NodeID, peer.Name, peer.Fingerprint, "", max(peer.IdentityEpoch, 1), peer.Endpoint, peer.MTLSEndpoint, peer.TransferMode, peer.LocalRole,
 		peer.RemoteRole, peer.ClusterID, peer.State, peer.TrustedAt.Format(time.RFC3339Nano), peer.CorrelationID); err != nil {
 		return err
@@ -1087,7 +1136,8 @@ func (s *Store) ResolvePairingRequest(ctx context.Context, id, status string, pe
 		if _, err := tx.ExecContext(ctx, `INSERT INTO peers(node_id,name,fingerprint,previous_fingerprint,identity_epoch,endpoint,mtls_endpoint,transfer_mode,local_role,remote_role,cluster_id,state,trusted_at,correlation_id)
 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(node_id) DO UPDATE SET name=excluded.name,fingerprint=excluded.fingerprint,previous_fingerprint='',identity_epoch=excluded.identity_epoch,
 endpoint=excluded.endpoint,mtls_endpoint=excluded.mtls_endpoint,transfer_mode=excluded.transfer_mode,local_role=excluded.local_role,
-remote_role=excluded.remote_role,cluster_id=excluded.cluster_id,state=excluded.state,trusted_at=excluded.trusted_at,correlation_id=excluded.correlation_id`,
+remote_role=excluded.remote_role,cluster_id=excluded.cluster_id,state=excluded.state,trusted_at=excluded.trusted_at,correlation_id=excluded.correlation_id,
+consecutive_failures=0,last_seen_at=NULL`,
 			peer.NodeID, peer.Name, peer.Fingerprint, "", max(peer.IdentityEpoch, 1), peer.Endpoint, peer.MTLSEndpoint, peer.TransferMode, peer.LocalRole,
 			peer.RemoteRole, peer.ClusterID, peer.State, peer.TrustedAt.Format(time.RFC3339Nano), peer.CorrelationID); err != nil {
 			return err

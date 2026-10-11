@@ -82,7 +82,7 @@ export function AuditDialog({ open, onOpenChange }: AdminDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="sm:w-[calc(100vw-4rem)] sm:max-w-5xl">
         <DialogHeader>
           <div className="flex items-center justify-between">
             <div>
