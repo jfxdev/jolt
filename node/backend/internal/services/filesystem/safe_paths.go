@@ -178,7 +178,10 @@ func safeWalkDir(name string, visit fs.WalkDirFunc) error {
 		}
 		entries, err := safeReadDir(current)
 		if err != nil {
-			return visit(current, entry, err)
+			if err := visit(current, entry, err); err != fs.SkipDir {
+				return err
+			}
+			return nil
 		}
 		for _, child := range entries {
 			if err := walk(filepath.Join(current, child.Name()), child); err != nil {

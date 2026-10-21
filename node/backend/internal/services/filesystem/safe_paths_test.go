@@ -4,12 +4,60 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 )
+
+func TestSafeWalkDirReadErrorVisitorResult(t *testing.T) {
+	visitorError := errors.New("visitor failed")
+	for _, tc := range []struct {
+		name        string
+		visitError  error
+		wantError   error
+		wantSibling bool
+	}{
+		{"skip directory", fs.SkipDir, nil, true},
+		{"continue", nil, nil, true},
+		{"preserve error", visitorError, visitorError, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			unreadable := filepath.Join(root, "a-unreadable")
+			sibling := filepath.Join(root, "b-sibling")
+			for _, path := range []string{unreadable, sibling} {
+				if err := os.Mkdir(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var sawReadError, sawSibling bool
+			err = safeWalkDir(root, func(path string, entry fs.DirEntry, readErr error) error {
+				if path == unreadable {
+					if readErr != nil {
+						sawReadError = true
+						return tc.visitError
+					}
+					// Force ReadDir to fail after the initial visit, regardless of
+					// process privileges or permission semantics on the host.
+					return os.Remove(path)
+				}
+				if path == sibling {
+					sawSibling = true
+				}
+				return readErr
+			})
+			if !errors.Is(err, tc.wantError) || !sawReadError || sawSibling != tc.wantSibling {
+				t.Fatalf("error=%v readError=%v sibling=%v", err, sawReadError, sawSibling)
+			}
+		})
+	}
+}
 
 type beforeRead struct {
 	once   sync.Once

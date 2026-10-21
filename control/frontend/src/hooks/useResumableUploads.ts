@@ -152,6 +152,9 @@ export function useResumableUploads({ nodeId, mountId, onFinished, onError }: Op
         controller: new AbortController(),
         overwrite: overwrite ?? entry.overwrite,
       };
+      // Cancel and dismiss must reach this attempt while the old session is
+      // being removed, rather than the previous controller.
+      pending.current.set(id, resumed);
       // A session created without overwrite carries that flag on the node, so
       // replacing requires a new session rather than completing the old one.
       if (overwrite && entry.session) {
@@ -163,7 +166,15 @@ export function useResumableUploads({ nodeId, mountId, onFinished, onError }: Op
         }
         resumed.session = undefined;
       }
-      pending.current.set(id, resumed);
+      if (pending.current.get(id) !== resumed) return;
+      if (resumed.controller.signal.aborted) {
+        patch(id, {
+          status: "cancelled",
+          error: undefined,
+          resumable: resumed.session !== undefined,
+        });
+        return;
+      }
       patch(id, { status: "uploading", error: undefined, resumable: false });
       void run(id, resumed);
     },
