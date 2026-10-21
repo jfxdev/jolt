@@ -2651,6 +2651,7 @@ func fileTargetsFromRequest(r *http.Request) (fileTargets, error) {
 		Path            string `json:"path"`
 		SourcePath      string `json:"source_path"`
 		DestinationPath string `json:"destination_path"`
+		ConflictPolicy  string `json:"conflict_policy"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return targets, errors.New("invalid file operation body")
@@ -2660,6 +2661,7 @@ func fileTargetsFromRequest(r *http.Request) (fileTargets, error) {
 	}
 	targets.Source = payload.SourcePath
 	targets.Destination = payload.DestinationPath
+	targets.ConflictPolicy = strings.ToLower(strings.TrimSpace(payload.ConflictPolicy))
 	return targets, nil
 }
 
@@ -2711,6 +2713,13 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 		}
 		targets = parsed
 	}
+	resolved, handled, ok := s.uploadTargets(w, r, resource)
+	if handled || !ok {
+		return
+	}
+	if len(resolved.Paths) > 0 {
+		targets = resolved
+	}
 	// Archive and search read an entire subtree from one named root, so
 	// authorizing the root alone would let them reach descendants the subject
 	// is denied. Refuse while any deny rule applies inside the requested
@@ -2749,6 +2758,7 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 				"A transferência precisa informar peer_node_id e grants válidos.")
 			return
 		}
+		transfer.DestinationIsDirectory = strings.Contains(resource, "directory") || strings.Contains(resource, "batch")
 		mountRequirements, err := s.transferMountRequirements(r.Context(), r.PathValue("nodeID"), transfer)
 		if err != nil {
 			writeError(w, r, http.StatusBadRequest, "invalid_transfer_grants",
@@ -2758,8 +2768,10 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 		requirements = mountRequirements
 	}
 	for _, requirement := range requirements {
-		if !s.authorize(w, r, requirement.Path, requirement.Capability, "permission_denied",
-			"A policy atual não permite esta operação no node.") {
+		if !s.authorize(w, r, requirement.Path, requirement.Capability, "permission_denied", "A policy atual não permite esta operação no node.") {
+			return
+		}
+		if (treeMutationResource(resource, r.Method) || strings.HasPrefix(resource, "transfers/")) && strings.Contains(requirement.Path, "/files/mounts/") && !s.authorizeTreeContents(w, r, requirement.Path) {
 			return
 		}
 	}
@@ -2846,10 +2858,15 @@ func isInlineMediaType(contentType string) bool {
 }
 
 type transferAuthorizationInput struct {
-	PeerNodeID         string `json:"peer_node_id"`
-	SourceGrantID      string `json:"source_grant_id"`
-	DestinationGrantID string `json:"destination_grant_id"`
-	Operation          string `json:"operation"`
+	ConflictPolicy         string   `json:"conflict_policy"`
+	DestinationIsDirectory bool     `json:"-"`
+	SourcePath             string   `json:"source_path"`
+	SourcePaths            []string `json:"source_paths"`
+	DestinationPath        string   `json:"destination_path"`
+	PeerNodeID             string   `json:"peer_node_id"`
+	SourceGrantID          string   `json:"source_grant_id"`
+	DestinationGrantID     string   `json:"destination_grant_id"`
+	Operation              string   `json:"operation"`
 }
 
 type nodeTransferGrant struct {
@@ -2965,13 +2982,15 @@ func (s *Server) transferTargets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_selection", "A seleção de origem é inválida.")
 		return
 	}
-	if !s.authorize(w, r, "nodes/"+sourceNodeID+"/files/mounts/"+input.SourceMountID,
-		"read", "permission_denied", "Você não pode ler o mount de origem.") {
-		return
-	}
-	if operation == "move" && !s.authorize(w, r, "nodes/"+sourceNodeID+"/files/mounts/"+input.SourceMountID,
-		"delete", "permission_denied", "Você não pode remover itens do mount de origem.") {
-		return
+	sourceBase := "nodes/" + sourceNodeID + "/files/mounts/" + input.SourceMountID
+	for _, relative := range paths {
+		scope := fileScope(sourceBase, relative)
+		if !s.authorizeFileTree(w, r, scope, "read") {
+			return
+		}
+		if operation == "move" && !s.authorizeFileTree(w, r, scope, "delete") {
+			return
+		}
 	}
 	sourceNode, err := s.store.GetNode(r.Context(), sourceNodeID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -3038,7 +3057,7 @@ func (s *Server) transferTargets(w http.ResponseWriter, r *http.Request) {
 		destinationAllowed := false
 		for _, destinationGrant := range destinationGrants {
 			if !destinationGrantAllows(destinationGrant, sourceMetadata.NodeID) ||
-				!s.transferCapabilityAllowed(r, "nodes/"+candidate.ID+"/files/mounts/"+destinationGrant.MountID, "create") {
+				!s.transferCapabilityAllowed(r, fileScope("nodes/"+candidate.ID+"/files/mounts/"+destinationGrant.MountID, destinationGrant.Path), "create") {
 				continue
 			}
 			mount, exists := mountByID[destinationGrant.MountID]
@@ -3047,6 +3066,10 @@ func (s *Server) transferTargets(w http.ResponseWriter, r *http.Request) {
 			}
 			rootPath, rootErr := normalizeTransferPath(destinationGrant.Path, true)
 			if rootErr != nil {
+				continue
+			}
+			denied, denyErr := s.deniesWithinScope(r, fileScope("nodes/"+candidate.ID+"/files/mounts/"+destinationGrant.MountID, rootPath))
+			if denyErr != nil || denied {
 				continue
 			}
 			destinationAllowed = true
@@ -3163,15 +3186,19 @@ func (s *Server) resolveLogicalTransferRequest(w http.ResponseWriter, r *http.Re
 		writeError(w, r, http.StatusBadRequest, "invalid_selection", "A política de conflito é inválida.")
 		return resolvedLogicalTransfer{}, false
 	}
-	sourceFilePath := "nodes/" + request.Source.NodeID + "/files/mounts/" + request.Source.MountID
-	destinationFilePath := "nodes/" + destinationNodeID + "/files/mounts/" + request.Destination.MountID
-	if !s.authorize(w, r, sourceFilePath, "read", "permission_denied", "Você não pode ler o mount de origem.") ||
-		!s.authorize(w, r, destinationFilePath, "create", "permission_denied", "Você não pode gravar no mount de destino.") ||
-		!s.authorize(w, r, "nodes/"+destinationNodeID+"/transfers", transferCapability,
-			"permission_denied", "Você não pode executar transferências neste node.") {
-		return resolvedLogicalTransfer{}, false
+	sourceBase := "nodes/" + request.Source.NodeID + "/files/mounts/" + request.Source.MountID
+	destinationBase := "nodes/" + destinationNodeID + "/files/mounts/" + request.Destination.MountID
+	for _, relative := range paths {
+		scope := fileScope(sourceBase, relative)
+		if !s.authorizeFileTree(w, r, scope, "read") {
+			return resolvedLogicalTransfer{}, false
+		}
+		if operation == "move" && !s.authorizeFileTree(w, r, scope, "delete") {
+			return resolvedLogicalTransfer{}, false
+		}
 	}
-	if operation == "move" && !s.authorize(w, r, sourceFilePath, "delete", "permission_denied", "Você não pode remover itens do mount de origem.") {
+	if !s.authorizeFileTree(w, r, fileScope(destinationBase, destinationPath), "create") ||
+		!s.authorize(w, r, "nodes/"+destinationNodeID+"/transfers", transferCapability, "permission_denied", "Você não pode executar transferências neste node.") {
 		return resolvedLogicalTransfer{}, false
 	}
 	sourceNode, err := s.store.GetNode(r.Context(), request.Source.NodeID)
@@ -3465,13 +3492,38 @@ func (s *Server) transferMountRequirements(ctx context.Context, destinationNodeI
 		!destinationGrant.Permissions.Write {
 		return nil, errors.New("destination grant does not authorize this transfer")
 	}
-	requirements := []authorizationRequirement{
-		{Path: "nodes/" + input.PeerNodeID + "/files/mounts/" + sourceGrant.MountID, Capability: "read"},
-		{Path: "nodes/" + destinationNodeID + "/files/mounts/" + destinationGrant.MountID, Capability: "create"},
+	sourcePaths := input.SourcePaths
+	if len(sourcePaths) == 0 {
+		sourcePaths = []string{input.SourcePath}
 	}
-	if input.Operation == "move" {
-		requirements = append(requirements, authorizationRequirement{Path: "nodes/" + input.PeerNodeID + "/files/mounts/" + sourceGrant.MountID, Capability: "delete"})
+	requirements := make([]authorizationRequirement, 0, len(sourcePaths)*2+1)
+	for _, relative := range sourcePaths {
+		normalized, err := normalizeTransferPath(relative, true)
+		if err != nil {
+			return nil, err
+		}
+		scope := fileScope("nodes/"+input.PeerNodeID+"/files/mounts/"+sourceGrant.MountID, path.Join(sourceGrant.Path, normalized))
+		if scope == "" {
+			return nil, errors.New("invalid source path")
+		}
+		requirements = append(requirements, authorizationRequirement{Path: scope, Capability: "read"})
+		if input.Operation == "move" {
+			requirements = append(requirements, authorizationRequirement{Path: scope, Capability: "delete"})
+		}
 	}
+	normalized, err := normalizeTransferPath(input.DestinationPath, true)
+	if err != nil {
+		return nil, err
+	}
+	destinationPath := path.Join(destinationGrant.Path, normalized)
+	if input.ConflictPolicy == "rename" && !input.DestinationIsDirectory {
+		destinationPath = path.Dir(destinationPath)
+	}
+	scope := fileScope("nodes/"+destinationNodeID+"/files/mounts/"+destinationGrant.MountID, destinationPath)
+	if scope == "" {
+		return nil, errors.New("invalid destination path")
+	}
+	requirements = append(requirements, authorizationRequirement{Path: scope, Capability: "create"})
 	return requirements, nil
 }
 
@@ -3555,9 +3607,10 @@ func requirementsFor(paths []string, capability string) []authorizationRequireme
 // whole mount. Source and Destination are set for copy and move, where the two
 // sides need different capabilities.
 type fileTargets struct {
-	Paths       []string
-	Source      string
-	Destination string
+	ConflictPolicy string
+	Paths          []string
+	Source         string
+	Destination    string
 }
 
 func (t fileTargets) all() []string {
@@ -3604,8 +3657,26 @@ func nodeAuthorizationRequirements(nodeID, resource, method string, targets file
 			}
 		}
 		scopes := fileScopes(mountBase, targets.Paths)
+		if len(segments) >= 4 && segments[3] == "uploads" {
+			switch method {
+			case http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodDelete:
+				requirements := requirementsFor(scopes, "create")
+				if method == http.MethodPatch || method == http.MethodPost && len(segments) == 4 {
+					requirements = append(requirements, authorizationRequirement{Path: prefix + "/jobs", Capability: "create"})
+				}
+				return requirements
+			default:
+				return nil
+			}
+		}
 		source := fileScope(mountBase, targets.Source)
 		destination := fileScope(mountBase, targets.Destination)
+		// A rename conflict can publish a sibling of the requested name. Require
+		// authorization for that parent rather than authorizing only the old name.
+		if targets.ConflictPolicy == "rename" && len(segments) >= 4 && segments[3] == "copy" {
+			destination = fileScope(mountBase, path.Dir(targets.Destination))
+		}
+
 		switch method {
 		case http.MethodGet:
 			if len(segments) >= 4 && (segments[3] == "content" || segments[3] == "metadata" ||

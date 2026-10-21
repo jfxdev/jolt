@@ -64,8 +64,8 @@ Two products, one boundary:
 
 ### Tech stack
 
-- **Backend:** Go 1.24 (node and Control Tower), SQLite (node), SQLCipher
-  (Control Tower), Ed25519 identities, TLS 1.3 mTLS.
+- **Backend:** Go 1.26 (node and Control Tower), SQLCipher-encrypted SQLite
+  in both services, Ed25519 identities, TLS 1.3 mTLS.
 - **Frontend:** React 19 + Vite, componentes Base UI / shadcn (Vega), Tailwind
   CSS 4 e React Router.
 - **Deployment:** Docker images on Go 1.26 with LinuxServer-style
@@ -75,6 +75,7 @@ Two products, one boundary:
 
 ### Documentation
 
+- [`docs/RELEASE_0.1.0.md`](docs/RELEASE_0.1.0.md) — current release assessment, blockers, validation evidence, and delivery plan for 0.1.0.
 - [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) — product requirements.
 - [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) — implementation status.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — findings, gaps, and prioritized roadmap.

@@ -2,7 +2,7 @@ module github.com/jfxdev/jolt/control
 
 go 1.26.0
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	github.com/mutecomm/go-sqlcipher/v4 v4.4.2

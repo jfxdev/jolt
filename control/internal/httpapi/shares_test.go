@@ -301,68 +301,29 @@ func TestPublicShareEnforcesDownloadBudget(t *testing.T) {
 	}
 }
 
-func TestResumeRangeDoesNotConsumeTheDownloadBudgetButAFullFetchDoes(t *testing.T) {
-	harness := newShareHarness(t, fullAccessRules())
-	_, token := createShareFor(t, harness, map[string]any{
-		"node_id": "nod_a", "mount_id": "media", "path": "big.bin", "kind": "file",
-		"max_downloads": 1,
-	})
-	ranged := func(value string) int {
-		request := httptest.NewRequest(http.MethodGet,
-			"/api/v1/public/shares/"+token+"/content", nil)
-		if value != "" {
-			request.Header.Set("Range", value)
-		}
-		recorder := httptest.NewRecorder()
-		harness.handler.ServeHTTP(recorder, request)
-		return recorder.Code
-	}
-
-	// A genuine resume continues from a non-zero offset and must not spend the
-	// budget: one download can take several such requests.
-	for attempt := 0; attempt < 3; attempt++ {
-		if code := ranged("bytes=500-999"); code != http.StatusOK {
-			t.Fatalf("resume request %d returned %d", attempt, code)
-		}
-	}
-	share, err := harness.storage.ShareByTokenHash(context.Background(), security.Digest(token))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if share.DownloadCount != 0 {
-		t.Fatalf("resume requests consumed %d downloads", share.DownloadCount)
-	}
-
-	// "bytes=0-" fetches the whole file, so it is a download, not a resume.
-	// Treating it as a resume would make the limit trivially bypassable.
-	if code := ranged("bytes=0-"); code != http.StatusOK {
-		t.Fatalf("full ranged fetch returned %d", code)
-	}
-	if code := ranged("bytes=0-"); code != http.StatusGone {
-		t.Fatalf("a second full fetch past the budget returned %d", code)
-	}
-	if code := ranged(""); code != http.StatusGone {
-		t.Fatalf("an unranged fetch past the budget returned %d", code)
-	}
-}
-
-func TestIsResumeRangeClassifiesHeaders(t *testing.T) {
-	resumes := []string{"bytes=1-", "bytes=500-999", " bytes=42-100 "}
-	for _, value := range resumes {
-		if !isResumeRange(value) {
-			t.Fatalf("%q should count as a resume", value)
-		}
-	}
-	// Anything that can return the start of the file, or that cannot be parsed
-	// confidently, is treated as a fresh download.
-	fresh := []string{
-		"", "bytes=0-", "bytes=0-999", "bytes=-500", "bytes=abc-", "items=1-2",
-		"bytes=0-10,20-30", "bytes=5-10,20-30", "bytes",
-	}
-	for _, value := range fresh {
-		if isResumeRange(value) {
-			t.Fatalf("%q should count as a fresh download", value)
-		}
+func TestRangeRequestsCannotBypassTheDownloadBudget(t *testing.T) {
+	for _, header := range []string{"bytes=1-", "bytes=500-999", "bytes=0-", "bytes=-500", "bytes=1-4,6-8"} {
+		t.Run(header, func(t *testing.T) {
+			harness := newShareHarness(t, fullAccessRules())
+			_, token := createShareFor(t, harness, map[string]any{"node_id": "nod_a", "mount_id": "media", "path": "big.bin", "kind": "file", "max_downloads": 1})
+			for attempt := 0; attempt < 2; attempt++ {
+				request := httptest.NewRequest(http.MethodGet, "/api/v1/public/shares/"+token+"/content", nil)
+				request.Header.Set("Range", header)
+				recorder := httptest.NewRecorder()
+				harness.handler.ServeHTTP(recorder, request)
+				want := http.StatusOK
+				if attempt == 1 {
+					want = http.StatusGone
+				}
+				if recorder.Code != want {
+					t.Fatalf("attempt=%d status=%d want=%d", attempt, recorder.Code, want)
+				}
+			}
+			share, err := harness.storage.ShareByTokenHash(context.Background(), security.Digest(token))
+			if err != nil || share.DownloadCount != 1 {
+				t.Fatalf("count=%d error=%v", share.DownloadCount, err)
+			}
+		})
 	}
 }
 

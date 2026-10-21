@@ -1,5 +1,9 @@
 # Implementation status
 
+Current release assessment and remediation status:
+[`RELEASE_0.1.0.md`](RELEASE_0.1.0.md). The dated inventory below predates
+resumable uploads, subpath RBAC, public shares, metrics and the release hardening.
+
 Last updated: 2026-07-26.
 
 Status legend:

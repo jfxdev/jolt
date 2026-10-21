@@ -12,13 +12,18 @@ services:
       # Set to https://127.0.0.1:8080/health when API_TLS_* is configured.
       NODE_HEALTHCHECK_URL: ${NODE_HEALTHCHECK_URL:-http://127.0.0.1:8080/health}
       MTLS_ADDRESS: :8443
-      MTLS_PUBLIC_ENDPOINT: https://jolt-node:8443
+      MTLS_PUBLIC_ENDPOINT: ${MTLS_PUBLIC_ENDPOINT:-https://jolt-node:8443}
       CONTROL_TOWER_TOKEN: ${CONTROL_TOWER_TOKEN:?define CONTROL_TOWER_TOKEN}
       JOLT_DB_ENCRYPTION_KEY: ${JOLT_DB_ENCRYPTION_KEY:?define JOLT_DB_ENCRYPTION_KEY}
       JOLT_DATA_DIR: /var/lib/jolt
       JOLT_KEYS_DIR: /var/lib/jolt-keys
       MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-2}
       JOB_MAX_ATTEMPTS: ${JOB_MAX_ATTEMPTS:-3}
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-107374182400}
+      UPLOAD_MAX_SESSIONS: ${UPLOAD_MAX_SESSIONS:-32}
+      UPLOAD_MAX_RESERVED_BYTES: ${UPLOAD_MAX_RESERVED_BYTES:-429496729600}
+      UPLOAD_MIN_FREE_BYTES: ${UPLOAD_MIN_FREE_BYTES:-1073741824}
+      METRICS_TOKEN: ${NODE_METRICS_TOKEN:-}
       COPY_CHUNK_SIZE_BYTES: ${COPY_CHUNK_SIZE_BYTES:-16777216}
       NODE_BANDWIDTH_LIMIT_BYTES_PER_SECOND: ${NODE_BANDWIDTH_LIMIT_BYTES_PER_SECOND:-0}
       MAX_PARALLEL_FILES_PER_JOB: ${MAX_PARALLEL_FILES_PER_JOB:-2}
@@ -36,7 +41,7 @@ services:
       UMASK: ${UMASK:-002}
       # Paths in this list are reconciled to PUID:PGID before the node starts.
       # Add every host bind mount that will be registered as a Jolt mount.
-      JOLT_OWNED_PATHS: ${JOLT_OWNED_PATHS:-/mnt/files}
+      JOLT_OWNED_PATHS: ${JOLT_OWNED_PATHS-/mnt/files}
     ports:
       # The Control Tower reaches the node over the compose network, so the
       # control API stays on loopback unless NODE_API_BIND is widened. The
@@ -80,6 +85,7 @@ services:
       jolt-node:
         condition: service_healthy
     environment:
+      CONTROL_TOWER_METRICS_TOKEN: ${CONTROL_TOWER_METRICS_TOKEN:-}
       CONTROL_TOWER_ADDRESS: :8090
       CONTROL_TOWER_DATA_DIR: /var/lib/jolt-control
       CONTROL_TOWER_STATIC_DIR: /opt/jolt-control/frontend

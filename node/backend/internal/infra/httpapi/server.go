@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jfxdev/jolt/backend/internal/contracts"
@@ -30,22 +31,39 @@ import (
 )
 
 type Server struct {
-	config       config.Config
-	store        contracts.Store
-	identity     entities.Identity
-	files        *filesystem.Service
-	jobs         *jobs.Service
-	pairing      *pairing.Service
-	grants       *grants.Service
-	certificates *joltcrypto.CertificateManager
-	transfers    *transfers.Service
-	registry     *metrics.Registry
-	log          *slog.Logger
+	uploadAdmission sync.Mutex
+	config          config.Config
+	store           contracts.Store
+	identity        entities.Identity
+	files           *filesystem.Service
+	jobs            *jobs.Service
+	pairing         *pairing.Service
+	grants          *grants.Service
+	certificates    *joltcrypto.CertificateManager
+	transfers       *transfers.Service
+	registry        *metrics.Registry
+	log             *slog.Logger
 }
 
 const editorMaxBytes int64 = 512 * 1024
 
 func New(cfg config.Config, identity entities.Identity, files *filesystem.Service, jobService *jobs.Service, pairingService *pairing.Service, grantService *grants.Service, logger *slog.Logger, dependencies ...any) http.Handler {
+	if cfg.UploadMaxBytes <= 0 {
+		cfg.UploadMaxBytes = filesystem.DefaultMaxUploadBytes
+	}
+	if cfg.UploadMaxSessions <= 0 {
+		cfg.UploadMaxSessions = 32
+	}
+	if cfg.UploadMaxReservedBytes <= 0 {
+		cfg.UploadMaxReservedBytes = 400 << 30
+	}
+	if cfg.UploadSessionTTL <= 0 {
+		cfg.UploadSessionTTL = 24 * time.Hour
+	}
+	if cfg.CopyChunkSize <= 0 {
+		cfg.CopyChunkSize = 16 << 20
+	}
+	files.ConfigureUploadLimits(cfg.UploadMaxBytes, cfg.UploadMinFreeBytes)
 	s := &Server{config: cfg, identity: identity, files: files, jobs: jobService, pairing: pairingService, grants: grantService, log: logger}
 	for _, dependency := range dependencies {
 		switch value := dependency.(type) {
@@ -316,14 +334,22 @@ func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"node_id": s.identity.NodeID, "name": s.config.NodeName, "fingerprint": s.identity.Fingerprint,
 		"identity_epoch": s.identity.Epoch, "public_key": s.identity.PublicKey,
-		"mtls_endpoint": s.config.MTLSPublicEndpoint,
-		"state":         "idle", "capabilities": []string{"api_filesystem", "streaming_upload", "range_download", "durable_local_jobs", "job_controls", "job_events_sse", "job_eta", "bandwidth_limits", "waiting_mount", "waiting_validation", "directory_manifests", "directory_resume", "resumable_chunks", "conflict_policies", "manual_item_overrides", "checksum_verification", "source_change_policies", "transfer_path_grants", "cluster_grouping", "mtls_peer_listener", "mtls_certificate_rotation", "mtls_certificate_rollout_diagnostics", "mtls_certificate_revocation", "identity_handover", "mtls_peer_heartbeat", "direct_file_pull", "operational_token_rotation", "idempotency"},
+		"mtls_endpoint":             s.config.MTLSPublicEndpoint,
+		"upload_max_bytes":          s.config.UploadMaxBytes,
+		"upload_max_sessions":       s.config.UploadMaxSessions,
+		"upload_max_reserved_bytes": s.config.UploadMaxReservedBytes,
+		"upload_min_free_bytes":     s.config.UploadMinFreeBytes,
+		"state":                     "idle", "capabilities": []string{"api_filesystem", "streaming_upload", "range_download", "durable_local_jobs", "job_controls", "job_events_sse", "job_eta", "bandwidth_limits", "waiting_mount", "waiting_validation", "directory_manifests", "directory_resume", "resumable_chunks", "conflict_policies", "manual_item_overrides", "checksum_verification", "source_change_policies", "transfer_path_grants", "cluster_grouping", "mtls_peer_listener", "mtls_certificate_rotation", "mtls_certificate_rollout_diagnostics", "mtls_certificate_revocation", "identity_handover", "mtls_peer_heartbeat", "direct_file_pull", "operational_token_rotation", "idempotency"},
 	})
 }
 
 func (s *Server) effectiveConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"node_name": s.config.NodeName, "api_address": s.config.APIAddress, "mtls_address": s.config.MTLSAddress,
+		"upload_max_bytes":          s.config.UploadMaxBytes,
+		"upload_max_sessions":       s.config.UploadMaxSessions,
+		"upload_max_reserved_bytes": s.config.UploadMaxReservedBytes,
+		"upload_min_free_bytes":     s.config.UploadMinFreeBytes,
+		"node_name":                 s.config.NodeName, "api_address": s.config.APIAddress, "mtls_address": s.config.MTLSAddress,
 		"mtls_public_endpoint": s.config.MTLSPublicEndpoint,
 		"data_dir":             "[internal]", "keys_dir": "[internal]", "control_tower_token": "[redacted]",
 		"max_concurrent_jobs": s.config.MaxConcurrentJobs, "job_max_attempts": s.config.JobMaxAttempts,
@@ -1525,6 +1551,10 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.As(err, &maxBytesError):
 		status, code = http.StatusRequestEntityTooLarge, "editor_content_too_large"
+	case errors.Is(err, filesystem.ErrUploadTooLarge):
+		status, code = http.StatusRequestEntityTooLarge, "upload_too_large"
+	case errors.Is(err, filesystem.ErrInsufficientSpace):
+		status, code = http.StatusInsufficientStorage, "insufficient_storage"
 	case errors.Is(err, filesystem.ErrNotFound):
 		status, code = http.StatusNotFound, "not_found"
 	case errors.Is(err, filesystem.ErrReadOnly):
@@ -1875,6 +1905,9 @@ paths:
       responses:
         "201": {description: Created session}
         "409": {description: Another unfinished upload already targets this destination}
+        "413": {description: Declared size exceeds UPLOAD_MAX_BYTES}
+        "429": {description: UPLOAD_MAX_SESSIONS reached; Retry-After carries retry guidance}
+        "507": {description: Reservation budget or available disk safety margin exhausted}
   /api/v1/mounts/{mountID}/files/uploads/{uploadID}:
     get:
       summary: Reports the durable offset of a resumable upload
@@ -1902,6 +1935,8 @@ paths:
       responses:
         "200": {description: Session with the new offset}
         "409": {description: Offset mismatch; X-Jolt-Upload-Offset carries the stored offset}
+        "413": {description: Chunk exceeds the session chunk_size or upload limit}
+        "507": {description: Available disk safety margin exhausted}
     delete:
       summary: Aborts a resumable upload and removes its partial file
       parameters:

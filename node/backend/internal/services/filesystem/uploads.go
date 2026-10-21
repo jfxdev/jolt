@@ -48,11 +48,14 @@ var ErrOffsetMismatch = errors.New("upload offset does not match the stored part
 // missing partial file is reported as offset zero rather than an error: that is
 // exactly the state of a session whose first chunk never arrived.
 func (s *Service) UploadOffset(ctx context.Context, mountID, destination, uploadID string) (int64, error) {
+	if cleanRelative(destination) == "." {
+		return 0, ErrInvalid
+	}
 	_, dst, err := s.resolve(ctx, mountID, destination, true)
 	if err != nil {
 		return 0, err
 	}
-	info, err := os.Stat(resumablePartialPath(dst, uploadID))
+	info, err := safeStat(resumablePartialPath(dst, uploadID))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, nil
@@ -74,6 +77,9 @@ func (s *Service) AppendUpload(ctx context.Context, mountID, destination, upload
 	if err := writable(mount); err != nil {
 		return 0, err
 	}
+	if expectedSize > s.maxUploadBytes {
+		return 0, ErrUploadTooLarge
+	}
 	if offset < 0 || offset > expectedSize {
 		return 0, fmt.Errorf("%w: offset is outside the declared size", ErrInvalid)
 	}
@@ -83,7 +89,7 @@ func (s *Service) AppendUpload(ctx context.Context, mountID, destination, upload
 	}
 	defer unlock()
 	partialPath := resumablePartialPath(dst, uploadID)
-	partial, err := os.OpenFile(partialPath, os.O_CREATE|os.O_RDWR, 0o600)
+	partial, err := safeOpenFile(partialPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return 0, err
 	}
@@ -104,7 +110,7 @@ func (s *Service) AppendUpload(ctx context.Context, mountID, destination, upload
 	}
 	// LimitReader caps the chunk at the declared total so a client cannot grow
 	// the file past the size the session was authorized for.
-	written, copyErr := io.Copy(partial, io.LimitReader(source, expectedSize-offset))
+	written, copyErr := io.Copy(&uploadWriter{service: s, file: partial, limit: expectedSize - offset}, io.LimitReader(source, expectedSize-offset))
 	completed := offset + written
 	if syncErr := partial.Sync(); syncErr != nil && copyErr == nil {
 		copyErr = syncErr
@@ -146,8 +152,8 @@ func (s *Service) CompleteUpload(ctx context.Context, mountID, destination, uplo
 	// created. Materializing it here lets an empty file publish through the
 	// same verified path as any other instead of failing as "not found".
 	if expectedSize == 0 {
-		if _, statErr := os.Stat(partialPath); errors.Is(statErr, os.ErrNotExist) {
-			empty, createErr := os.OpenFile(partialPath, os.O_CREATE|os.O_WRONLY, 0o600)
+		if _, statErr := safeStat(partialPath); errors.Is(statErr, os.ErrNotExist) {
+			empty, createErr := safeOpenFile(partialPath, os.O_CREATE|os.O_WRONLY, 0o600)
 			if createErr != nil {
 				return 0, "", createErr
 			}
@@ -156,7 +162,7 @@ func (s *Service) CompleteUpload(ctx context.Context, mountID, destination, uplo
 			}
 		}
 	}
-	partial, err := os.Open(partialPath)
+	partial, err := safeOpen(partialPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, "", ErrNotFound
@@ -188,7 +194,7 @@ func (s *Service) CompleteUpload(ctx context.Context, mountID, destination, uplo
 	}
 	// The conflict check is repeated here because the destination may have
 	// appeared while the upload was in flight.
-	if existing, statErr := os.Lstat(dst); statErr == nil {
+	if existing, statErr := safeLstat(dst); statErr == nil {
 		if existing.IsDir() {
 			return info.Size(), checksum, ErrConflict
 		}
@@ -196,7 +202,7 @@ func (s *Service) CompleteUpload(ctx context.Context, mountID, destination, uplo
 			return info.Size(), checksum, ErrConflict
 		}
 	}
-	if err := os.Rename(partialPath, dst); err != nil {
+	if err := publishPath(partialPath, dst, overwrite); err != nil {
 		return info.Size(), checksum, err
 	}
 	releaseUploadLock(uploadID)
@@ -219,7 +225,7 @@ func (s *Service) AbortUpload(ctx context.Context, mountID, destination, uploadI
 		return err
 	}
 	defer unlock()
-	if err := os.Remove(resumablePartialPath(dst, uploadID)); err != nil && !os.IsNotExist(err) {
+	if err := safeRemove(resumablePartialPath(dst, uploadID)); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	releaseUploadLock(uploadID)

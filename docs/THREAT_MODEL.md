@@ -1,5 +1,13 @@
 # Modelo de ameaça
 
+> Registro histórico da análise inicial. O estado corrente e a qualificação da
+> primeira release estão em [`RELEASE_0.1.0.md`](RELEASE_0.1.0.md). O código atual
+> tem lockout de login, RBAC por subpasta, banco do node cifrado e rotas públicas
+> de compartilhamento em `/s/{token}` e `/api/v1/public/shares/{token}/*`.
+> Abaixo, afirmações de ausência desses controles descrevem a análise antiga.
+> As correções de release bloqueiam symlinks no acesso a conteúdo, validam os
+> caminhos efetivos das operações e contam toda requisição Range na cota pública.
+
 Análise da superfície de ataque para acesso ao **filesystem** do node e do
 Control Tower. Foca no atacante **remoto não autenticado** e cita agravantes de
 posição de rede e de host. Referências de achados em

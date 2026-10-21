@@ -1,5 +1,10 @@
 # Roadmap
 
+Plano corrente de release: [`RELEASE_0.1.0.md`](RELEASE_0.1.0.md), com análise de
+2026-10-21, problemas reproduzidos, critérios de aceite e sequência de entrega.
+Para decidir a publicação da 0.1.0, esse levantamento prevalece sobre as
+prioridades históricas abaixo.
+
 Última atualização: 2026-10-11.
 
 ## Resolvido em 2026-10-11

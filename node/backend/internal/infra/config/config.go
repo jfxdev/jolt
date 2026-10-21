@@ -13,6 +13,10 @@ import (
 )
 
 type Config struct {
+	UploadMaxBytes           int64
+	UploadMinFreeBytes       int64
+	UploadMaxSessions        int
+	UploadMaxReservedBytes   int64
 	NodeName                 string
 	APIAddress               string
 	APITLSCertFile           string
@@ -58,6 +62,10 @@ func (c Config) APITLSEnabled() bool {
 
 func Load() (Config, error) {
 	c := Config{
+		UploadMaxBytes:           int64Value("UPLOAD_MAX_BYTES", 100<<30, 1, 1<<50),
+		UploadMinFreeBytes:       nonNegativeInt64Value("UPLOAD_MIN_FREE_BYTES", 1<<30, 1<<50),
+		UploadMaxSessions:        intValue("UPLOAD_MAX_SESSIONS", 32, 1, 10000),
+		UploadMaxReservedBytes:   int64Value("UPLOAD_MAX_RESERVED_BYTES", 400<<30, 1, 1<<50),
 		NodeName:                 value("NODE_NAME", "jolt-node"),
 		APIAddress:               value("API_ADDRESS", ":8080"),
 		APITLSCertFile:           value("API_TLS_CERT_FILE", ""),
