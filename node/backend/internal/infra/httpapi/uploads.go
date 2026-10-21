@@ -49,6 +49,12 @@ func (s *Server) createUploadSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mountID := r.PathValue("mountID")
+	s.uploadAdmission.Lock()
+	defer s.uploadAdmission.Unlock()
+	if !s.admitUpload(w, r, mountID, request.Path, request.Size) {
+		return
+	}
+
 	// Resolving now rejects a traversing or unwritable destination before a
 	// session row exists, so an invalid upload never occupies a destination.
 	if _, err := s.files.UploadOffset(r.Context(), mountID, request.Path, "probe"); err != nil {
@@ -122,6 +128,11 @@ func (s *Server) appendUploadChunk(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if r.ContentLength > session.ChunkSize {
+		writeError(w, r, http.StatusRequestEntityTooLarge, "upload_chunk_too_large", "O chunk excede o limite da sessão.", nil)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, session.ChunkSize)
 	offset, _, err := parseContentRange(r.Header.Get("Content-Range"), session.Size)
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_content_range",
@@ -138,6 +149,11 @@ func (s *Server) appendUploadChunk(w http.ResponseWriter, r *http.Request) {
 		session.ID, offset, session.Size, r.Body, s.jobs.BandwidthLimiter(job))
 	_ = s.jobs.Complete(r.Context(), &job, written-offset, appendErr)
 	if appendErr != nil {
+		var maxError *http.MaxBytesError
+		if errors.As(appendErr, &maxError) {
+			writeError(w, r, http.StatusRequestEntityTooLarge, "upload_chunk_too_large", "O chunk excede o limite da sessão.", nil)
+			return
+		}
 		if errors.Is(appendErr, filesystem.ErrOffsetMismatch) {
 			w.Header().Set("X-Jolt-Upload-Offset", strconv.FormatInt(written, 10))
 			writeError(w, r, http.StatusConflict, "upload_offset_mismatch",

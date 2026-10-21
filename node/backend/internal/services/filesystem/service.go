@@ -32,9 +32,13 @@ var (
 )
 
 type Service struct {
-	store          contracts.Store
-	now            func() time.Time
-	forbiddenRoots []string
+	maxUploadBytes     int64
+	uploadMinFreeBytes int64
+	uploadWriteMu      sync.Mutex
+	spaceAvailable     func(*os.File) (int64, error)
+	store              contracts.Store
+	now                func() time.Time
+	forbiddenRoots     []string
 }
 
 type ByteRateLimiter interface {
@@ -70,7 +74,7 @@ func New(store contracts.Store, forbiddenRoots ...string) *Service {
 			cleaned = append(cleaned, filepath.Clean(absolute))
 		}
 	}
-	return &Service{store: store, now: func() time.Time { return time.Now().UTC() }, forbiddenRoots: cleaned}
+	return &Service{maxUploadBytes: DefaultMaxUploadBytes, uploadMinFreeBytes: DefaultUploadMinFreeBytes, spaceAvailable: freeBytes, store: store, now: func() time.Time { return time.Now().UTC() }, forbiddenRoots: cleaned}
 }
 
 func (s *Service) ListMounts(ctx context.Context) ([]entities.Mount, error) {
@@ -158,7 +162,7 @@ func (s *Service) List(ctx context.Context, mountID, relative string, limit int)
 	if !mount.Enabled {
 		return nil, ErrDisabled
 	}
-	entries, err := os.ReadDir(resolved)
+	entries, err := safeReadDir(resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +312,7 @@ func (s *Service) Metadata(ctx context.Context, mountID, relative string) (entit
 	if err != nil {
 		return entities.FileEntry{}, err
 	}
-	info, err := os.Stat(resolved)
+	info, err := safeStat(resolved)
 	if errors.Is(err, fs.ErrNotExist) {
 		return entities.FileEntry{}, ErrNotFound
 	}
@@ -327,7 +331,7 @@ func (s *Service) Manifest(ctx context.Context, mountID, relative string) ([]ent
 	if err != nil {
 		return nil, err
 	}
-	rootInfo, err := os.Stat(root)
+	rootInfo, err := safeStat(root)
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +342,7 @@ func (s *Service) Manifest(ctx context.Context, mountID, relative string) ([]ent
 		}}, nil
 	}
 	items := make([]entities.FileEntry, 0)
-	err = filepath.WalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
+	err = safeWalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -379,7 +383,7 @@ func (s *Service) ManifestPage(ctx context.Context, mountID, relative string, af
 	if err != nil {
 		return nil, 0, err
 	}
-	rootInfo, err := os.Stat(root)
+	rootInfo, err := safeStat(root)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -394,7 +398,7 @@ func (s *Service) ManifestPage(ctx context.Context, mountID, relative string, af
 	}
 	items := make([]entities.FileEntry, 0, limit)
 	total := 0
-	err = filepath.WalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
+	err = safeWalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -438,7 +442,7 @@ func (s *Service) Open(ctx context.Context, mountID, relative string) (*os.File,
 	if err != nil {
 		return nil, nil, err
 	}
-	f, err := os.Open(resolved)
+	f, err := safeOpen(resolved)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -476,28 +480,28 @@ func (s *Service) CreateDirectory(ctx context.Context, mountID, relative string)
 	if err := writable(mount); err != nil {
 		return err
 	}
-	return os.Mkdir(resolved, 0o777)
+	return safeMkdir(resolved, 0o777)
 }
 
 func (s *Service) Delete(ctx context.Context, mountID, relative string, recursive bool) error {
 	if cleanRelative(relative) == "." {
 		return fmt.Errorf("%w: mount root cannot be removed", ErrInvalid)
 	}
-	mount, resolved, err := s.resolve(ctx, mountID, relative, false)
+	mount, resolved, err := s.resolvePath(ctx, mountID, relative, false, true)
 	if err != nil {
 		return err
 	}
 	if err := writable(mount); err != nil {
 		return err
 	}
-	info, err := os.Lstat(resolved)
+	info, err := safeLstat(resolved)
 	if err != nil {
 		return err
 	}
 	if info.IsDir() && !recursive {
-		return os.Remove(resolved)
+		return safeRemove(resolved)
 	}
-	return os.RemoveAll(resolved)
+	return safeRemoveAll(resolved)
 }
 
 func (s *Service) Move(ctx context.Context, mountID, source, destination string, overwrite bool) error {
@@ -507,7 +511,7 @@ func (s *Service) Move(ctx context.Context, mountID, source, destination string,
 	if cleanRelative(source) == cleanRelative(destination) {
 		return fmt.Errorf("%w: source and destination are the same", ErrInvalid)
 	}
-	mount, src, err := s.resolve(ctx, mountID, source, false)
+	mount, src, err := s.resolvePath(ctx, mountID, source, false, true)
 	if err != nil {
 		return err
 	}
@@ -518,7 +522,7 @@ func (s *Service) Move(ctx context.Context, mountID, source, destination string,
 	if err := writable(mount); err != nil {
 		return err
 	}
-	sourceInfo, err := os.Stat(src)
+	sourceInfo, err := safeLstat(src)
 	if err != nil {
 		return err
 	}
@@ -526,44 +530,47 @@ func (s *Service) Move(ctx context.Context, mountID, source, destination string,
 		return fmt.Errorf("%w: destination cannot be inside source", ErrInvalid)
 	}
 	if !overwrite {
-		if _, err := os.Lstat(dst); err == nil {
+		if _, err := safeLstat(dst); err == nil {
 			return ErrConflict
 		}
-		return os.Rename(src, dst)
+		return publishPath(src, dst, overwrite)
 	}
 
 	// Do not delete an existing destination before the replacement is known to
 	// succeed. A temporary sibling keeps the rollback on the same filesystem.
-	if _, err := os.Lstat(dst); errors.Is(err, fs.ErrNotExist) {
-		return os.Rename(src, dst)
+	if _, err := safeLstat(dst); errors.Is(err, fs.ErrNotExist) {
+		return publishPath(src, dst, overwrite)
 	} else if err != nil {
 		return err
 	}
-	backup, err := os.CreateTemp(filepath.Dir(dst), ".jolt-move-backup-*")
+	backup, err := safeCreateTemp(filepath.Dir(dst), ".jolt-move-backup-*")
 	if err != nil {
 		return err
 	}
 	backupPath := backup.Name()
 	if err := backup.Close(); err != nil {
-		_ = os.Remove(backupPath)
+		_ = safeRemove(backupPath)
 		return err
 	}
-	if err := os.Remove(backupPath); err != nil {
+	if err := safeRemove(backupPath); err != nil {
 		return err
 	}
-	if err := os.Rename(dst, backupPath); err != nil {
+	if err := publishPath(dst, backupPath, false); err != nil {
 		return err
 	}
-	if err := os.Rename(src, dst); err != nil {
-		if restoreErr := os.Rename(backupPath, dst); restoreErr != nil {
+	if err := publishPath(src, dst, overwrite); err != nil {
+		if restoreErr := publishPath(backupPath, dst, false); restoreErr != nil {
 			return fmt.Errorf("move failed: %w (also could not restore destination: %v)", err, restoreErr)
 		}
 		return err
 	}
-	return os.RemoveAll(backupPath)
+	return safeRemoveAll(backupPath)
 }
 
 func (s *Service) Upload(ctx context.Context, mountID, relative string, body io.Reader, overwrite bool, limiters ...ByteRateLimiter) (int64, error) {
+	if cleanRelative(relative) == "." {
+		return 0, ErrInvalid
+	}
 	mount, destination, err := s.resolve(ctx, mountID, relative, true)
 	if err != nil {
 		return 0, err
@@ -572,20 +579,20 @@ func (s *Service) Upload(ctx context.Context, mountID, relative string, body io.
 		return 0, err
 	}
 	if !overwrite {
-		if _, err := os.Lstat(destination); err == nil {
+		if _, err := safeLstat(destination); err == nil {
 			return 0, ErrConflict
 		}
 	}
-	temp, err := os.CreateTemp(filepath.Dir(destination), ".jolt-*.partial")
+	temp, err := safeCreateTemp(filepath.Dir(destination), ".jolt-*.partial")
 	if err != nil {
 		return 0, err
 	}
 	tempName := temp.Name()
-	defer os.Remove(tempName)
+	defer safeRemove(tempName)
 	if len(limiters) > 0 && limiters[0] != nil {
 		body = &limitedReader{ctx: ctx, reader: body, limiter: limiters[0]}
 	}
-	written, copyErr := io.Copy(temp, &contextReader{ctx: ctx, reader: body})
+	written, copyErr := io.Copy(&uploadWriter{service: s, file: temp, limit: s.maxUploadBytes}, &contextReader{ctx: ctx, reader: body})
 	syncErr := temp.Sync()
 	closeErr := temp.Close()
 	if copyErr != nil {
@@ -597,7 +604,7 @@ func (s *Service) Upload(ctx context.Context, mountID, relative string, body io.
 	if closeErr != nil {
 		return written, closeErr
 	}
-	if err := os.Rename(tempName, destination); err != nil {
+	if err := publishPath(tempName, destination, overwrite); err != nil {
 		return written, err
 	}
 	return written, nil
@@ -619,7 +626,7 @@ func (s *Service) CopyWithProgress(ctx context.Context, mountID, source, destina
 	if err := writable(mount); err != nil {
 		return 0, err
 	}
-	info, err := os.Stat(src)
+	info, err := safeStat(src)
 	if err != nil {
 		return 0, err
 	}
@@ -629,7 +636,7 @@ func (s *Service) CopyWithProgress(ctx context.Context, mountID, source, destina
 		}
 		return s.copyDirectory(ctx, src, dst, overwrite, progress)
 	}
-	in, err := os.Open(src)
+	in, err := safeOpen(src)
 	if err != nil {
 		return 0, err
 	}
@@ -652,11 +659,11 @@ func (s *Service) CopyFileVerified(ctx context.Context, mountID, source, destina
 		return 0, "", err
 	}
 	if !overwrite {
-		if _, err := os.Lstat(dst); err == nil {
+		if _, err := safeLstat(dst); err == nil {
 			return 0, "", ErrConflict
 		}
 	}
-	input, err := os.Open(src)
+	input, err := safeOpen(src)
 	if err != nil {
 		return 0, "", err
 	}
@@ -668,12 +675,12 @@ func (s *Service) CopyFileVerified(ctx context.Context, mountID, source, destina
 	if !before.Mode().IsRegular() {
 		return 0, "", fmt.Errorf("%w: source is not a regular file", ErrInvalid)
 	}
-	temp, err := os.CreateTemp(filepath.Dir(dst), ".jolt-*.partial")
+	temp, err := safeCreateTemp(filepath.Dir(dst), ".jolt-*.partial")
 	if err != nil {
 		return 0, "", err
 	}
 	tempName := temp.Name()
-	defer os.Remove(tempName)
+	defer safeRemove(tempName)
 	hash := sha256.New()
 	reader := &progressReader{ctx: ctx, reader: input, total: before.Size(), progress: progress}
 	written, copyErr := io.Copy(io.MultiWriter(temp, hash), reader)
@@ -699,13 +706,13 @@ func (s *Service) CopyFileVerified(ctx context.Context, mountID, source, destina
 		return written, checksum, ErrSourceChanged
 	}
 	if overwrite {
-		if info, statErr := os.Lstat(dst); statErr == nil && info.IsDir() {
-			if err := os.RemoveAll(dst); err != nil {
+		if info, statErr := safeLstat(dst); statErr == nil && info.IsDir() {
+			if err := safeRemoveAll(dst); err != nil {
 				return written, checksum, err
 			}
 		}
 	}
-	if err := os.Rename(tempName, dst); err != nil {
+	if err := publishPath(tempName, dst, overwrite); err != nil {
 		return written, checksum, err
 	}
 	return written, checksum, nil
@@ -730,11 +737,11 @@ func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destin
 		chunkSize = 16 << 20
 	}
 	if !overwrite {
-		if _, err := os.Lstat(dst); err == nil {
+		if _, err := safeLstat(dst); err == nil {
 			return 0, "", ErrConflict
 		}
 	}
-	input, err := os.Open(src)
+	input, err := safeOpen(src)
 	if err != nil {
 		return 0, "", err
 	}
@@ -747,7 +754,7 @@ func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destin
 		return 0, "", fmt.Errorf("%w: source is not a regular file", ErrInvalid)
 	}
 	partialPath := resumablePartialPath(dst, resumeKey)
-	partial, err := os.OpenFile(partialPath, os.O_CREATE|os.O_RDWR, 0o600)
+	partial, err := safeOpenFile(partialPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return 0, "", err
 	}
@@ -832,13 +839,13 @@ func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destin
 		return completed, checksum, err
 	}
 	if overwrite {
-		if info, statErr := os.Lstat(dst); statErr == nil && info.IsDir() {
-			if err := os.RemoveAll(dst); err != nil {
+		if info, statErr := safeLstat(dst); statErr == nil && info.IsDir() {
+			if err := safeRemoveAll(dst); err != nil {
 				return completed, checksum, err
 			}
 		}
 	}
-	if err := os.Rename(partialPath, dst); err != nil {
+	if err := publishPath(partialPath, dst, overwrite); err != nil {
 		return completed, checksum, err
 	}
 	return completed, checksum, nil
@@ -870,11 +877,11 @@ func (s *Service) CopyFileResumableParallel(ctx context.Context, mountID, source
 		maxParallel = 16
 	}
 	if !overwrite {
-		if _, err := os.Lstat(dst); err == nil {
+		if _, err := safeLstat(dst); err == nil {
 			return 0, "", ErrConflict
 		}
 	}
-	input, err := os.Open(src)
+	input, err := safeOpen(src)
 	if err != nil {
 		return 0, "", err
 	}
@@ -887,7 +894,7 @@ func (s *Service) CopyFileResumableParallel(ctx context.Context, mountID, source
 		return 0, "", fmt.Errorf("%w: source is not a regular file", ErrInvalid)
 	}
 	partialPath := resumablePartialPath(dst, resumeKey)
-	partial, err := os.OpenFile(partialPath, os.O_CREATE|os.O_RDWR, 0o600)
+	partial, err := safeOpenFile(partialPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return 0, "", err
 	}
@@ -1023,13 +1030,13 @@ func (s *Service) CopyFileResumableParallel(ctx context.Context, mountID, source
 		return completed, checksum, err
 	}
 	if overwrite {
-		if info, statErr := os.Lstat(dst); statErr == nil && info.IsDir() {
-			if err := os.RemoveAll(dst); err != nil {
+		if info, statErr := safeLstat(dst); statErr == nil && info.IsDir() {
+			if err := safeRemoveAll(dst); err != nil {
 				return completed, checksum, err
 			}
 		}
 	}
-	if err := os.Rename(partialPath, dst); err != nil {
+	if err := publishPath(partialPath, dst, overwrite); err != nil {
 		return completed, checksum, err
 	}
 	return completed, checksum, nil
@@ -1053,12 +1060,12 @@ func (s *Service) ReceiveFileResumable(ctx context.Context, mountID, destination
 		chunkSize = 16 << 20
 	}
 	if !overwrite {
-		if _, err := os.Lstat(dst); err == nil {
+		if _, err := safeLstat(dst); err == nil {
 			return 0, "", ErrConflict
 		}
 	}
 	partialPath := resumablePartialPath(dst, resumeKey)
-	partial, err := os.OpenFile(partialPath, os.O_CREATE|os.O_RDWR, 0o600)
+	partial, err := safeOpenFile(partialPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return 0, "", err
 	}
@@ -1129,15 +1136,15 @@ func (s *Service) ReceiveFileResumable(ctx context.Context, mountID, destination
 		return completed, checksum, err
 	}
 	if overwrite {
-		if destinationInfo, statErr := os.Lstat(dst); statErr == nil {
+		if destinationInfo, statErr := safeLstat(dst); statErr == nil {
 			if destinationInfo.IsDir() {
 				return completed, checksum, ErrConflict
 			}
 		}
-	} else if _, statErr := os.Lstat(dst); statErr == nil {
+	} else if _, statErr := safeLstat(dst); statErr == nil {
 		return completed, checksum, ErrConflict
 	}
-	if err := os.Rename(partialPath, dst); err != nil {
+	if err := publishPath(partialPath, dst, overwrite); err != nil {
 		return completed, checksum, err
 	}
 	return completed, checksum, nil
@@ -1177,12 +1184,12 @@ func (s *Service) ReceiveFileResumableRanges(
 		return 0, "", fmt.Errorf("%w: remote range parallelism exceeds 16", ErrInvalid)
 	}
 	if !overwrite {
-		if _, err := os.Lstat(dst); err == nil {
+		if _, err := safeLstat(dst); err == nil {
 			return 0, "", ErrConflict
 		}
 	}
 	partialPath := resumablePartialPath(dst, resumeKey)
-	partial, err := os.OpenFile(partialPath, os.O_CREATE|os.O_RDWR, 0o600)
+	partial, err := safeOpenFile(partialPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return 0, "", err
 	}
@@ -1298,13 +1305,13 @@ func (s *Service) ReceiveFileResumableRanges(
 		return completed, checksum, err
 	}
 	if overwrite {
-		if destinationInfo, statErr := os.Lstat(dst); statErr == nil && destinationInfo.IsDir() {
+		if destinationInfo, statErr := safeLstat(dst); statErr == nil && destinationInfo.IsDir() {
 			return completed, checksum, ErrConflict
 		}
-	} else if _, statErr := os.Lstat(dst); statErr == nil {
+	} else if _, statErr := safeLstat(dst); statErr == nil {
 		return completed, checksum, ErrConflict
 	}
-	if err := os.Rename(partialPath, dst); err != nil {
+	if err := publishPath(partialPath, dst, overwrite); err != nil {
 		return completed, checksum, err
 	}
 	return completed, checksum, nil
@@ -1318,7 +1325,7 @@ func (s *Service) CleanupResumablePartial(ctx context.Context, mountID, destinat
 	if err := writable(mount); err != nil {
 		return err
 	}
-	err = os.Remove(resumablePartialPath(dst, resumeKey))
+	err = safeRemove(resumablePartialPath(dst, resumeKey))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
@@ -1361,11 +1368,11 @@ func minInt64(left, right int64) int64 {
 }
 
 func (s *Service) copyDirectory(ctx context.Context, source, destination string, overwrite bool, progress func(int64, int64)) (int64, error) {
-	if _, err := os.Lstat(destination); err == nil && !overwrite {
+	if _, err := safeLstat(destination); err == nil && !overwrite {
 		return 0, ErrConflict
 	}
 	var expected int64
-	if err := filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
+	if err := safeWalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -1384,7 +1391,7 @@ func (s *Service) copyDirectory(ctx context.Context, source, destination string,
 		progress(0, expected)
 	}
 	var completed int64
-	err := filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
+	err := safeWalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -1397,12 +1404,12 @@ func (s *Service) copyDirectory(ctx context.Context, source, destination string,
 		}
 		target := filepath.Join(destination, relative)
 		if entry.IsDir() {
-			return os.MkdirAll(target, 0o777)
+			return safeMkdirAll(target, 0o777)
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("%w: symlinks are not copied", ErrInvalid)
 		}
-		in, err := os.Open(path)
+		in, err := safeOpen(path)
 		if err != nil {
 			return err
 		}
@@ -1419,16 +1426,16 @@ func (s *Service) copyDirectory(ctx context.Context, source, destination string,
 
 func copyAtomic(ctx context.Context, source io.Reader, destination string, overwrite bool, total, offset int64, progress func(int64, int64)) (int64, error) {
 	if !overwrite {
-		if _, err := os.Lstat(destination); err == nil {
+		if _, err := safeLstat(destination); err == nil {
 			return 0, ErrConflict
 		}
 	}
-	temp, err := os.CreateTemp(filepath.Dir(destination), ".jolt-*.partial")
+	temp, err := safeCreateTemp(filepath.Dir(destination), ".jolt-*.partial")
 	if err != nil {
 		return 0, err
 	}
 	tempName := temp.Name()
-	defer os.Remove(tempName)
+	defer safeRemove(tempName)
 	reader := &progressReader{ctx: ctx, reader: source, total: total, offset: offset, progress: progress}
 	written, copyErr := io.Copy(temp, reader)
 	syncErr := temp.Sync()
@@ -1443,13 +1450,13 @@ func copyAtomic(ctx context.Context, source io.Reader, destination string, overw
 		return written, closeErr
 	}
 	if overwrite {
-		if info, statErr := os.Lstat(destination); statErr == nil && info.IsDir() {
-			if err := os.RemoveAll(destination); err != nil {
+		if info, statErr := safeLstat(destination); statErr == nil && info.IsDir() {
+			if err := safeRemoveAll(destination); err != nil {
 				return written, err
 			}
 		}
 	}
-	if err := os.Rename(tempName, destination); err != nil {
+	if err := publishPath(tempName, destination, overwrite); err != nil {
 		return written, err
 	}
 	return written, nil
@@ -1489,6 +1496,10 @@ func (r *progressReader) Read(buffer []byte) (int, error) {
 }
 
 func (s *Service) resolve(ctx context.Context, mountID, relative string, allowMissing bool) (entities.Mount, string, error) {
+	return s.resolvePath(ctx, mountID, relative, allowMissing, false)
+}
+
+func (s *Service) resolvePath(ctx context.Context, mountID, relative string, allowMissing, allowFinalLink bool) (entities.Mount, string, error) {
 	mount, err := s.GetMount(ctx, mountID)
 	if err != nil {
 		return mount, "", err
@@ -1500,30 +1511,33 @@ func (s *Service) resolve(ctx context.Context, mountID, relative string, allowMi
 	if filepath.IsAbs(relative) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return mount, "", ErrTraversal
 	}
-	if isInternalPartialName(filepath.Base(clean)) {
-		return mount, "", ErrNotFound
+	for _, part := range strings.Split(clean, string(filepath.Separator)) {
+		if isInternalPartialName(part) {
+			return mount, "", ErrNotFound
+		}
 	}
-	root, err := filepath.EvalSymlinks(mount.LocalPath)
-	if err != nil {
-		return mount, "", err
-	}
+	root := mount.LocalPath
 	candidate := filepath.Join(root, clean)
+	if !within(root, candidate) {
+		return mount, "", ErrTraversal
+	}
 	check := candidate
-	if allowMissing {
+	if allowMissing || allowFinalLink {
 		check = filepath.Dir(candidate)
 	}
-	evaluated, err := filepath.EvalSymlinks(check)
-	if err != nil {
+	if _, err := safeStat(check); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return mount, "", ErrNotFound
+			err = ErrNotFound
 		}
 		return mount, "", err
 	}
-	if !within(root, evaluated) {
-		return mount, "", ErrTraversal
-	}
-	if !allowMissing {
-		candidate = evaluated
+	if allowFinalLink {
+		if _, err := safeLstat(candidate); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				err = ErrNotFound
+			}
+			return mount, "", err
+		}
 	}
 	return mount, candidate, nil
 }
@@ -1561,7 +1575,7 @@ func writable(m entities.Mount) error {
 }
 
 func diagnose(m *entities.Mount) {
-	info, err := os.Stat(m.LocalPath)
+	info, err := safeStat(m.LocalPath)
 	if err != nil {
 		m.State, m.Readable, m.Writable = "unavailable", false, false
 		return
@@ -1571,7 +1585,7 @@ func diagnose(m *entities.Mount) {
 		m.State, m.Readable, m.Writable = "degraded", false, false
 		return
 	}
-	dir, err := os.Open(m.LocalPath)
+	dir, err := safeOpen(m.LocalPath)
 	if err == nil {
 		_, err = dir.Readdirnames(1)
 		dir.Close()
@@ -1579,11 +1593,11 @@ func diagnose(m *entities.Mount) {
 	m.Readable = err == nil || errors.Is(err, io.EOF)
 	m.Writable = false
 	if m.Mode == "read_write" {
-		f, createErr := os.CreateTemp(m.LocalPath, ".jolt-permission-check-*")
+		f, createErr := safeCreateTemp(m.LocalPath, ".jolt-permission-check-*")
 		if createErr == nil {
 			name := f.Name()
 			f.Close()
-			m.Writable = os.Remove(name) == nil
+			m.Writable = safeRemove(name) == nil
 		}
 	}
 	if !m.Readable || (m.Mode == "read_write" && !m.Writable) {

@@ -149,7 +149,7 @@ func (s *Service) archiveRoot(ctx context.Context, archive *zip.Writer, root arc
 		if err != nil {
 			return err
 		}
-		file, err := os.Open(current)
+		file, err := safeOpen(current)
 		if err != nil {
 			return err
 		}
@@ -181,7 +181,7 @@ func (s *Service) archiveRoots(ctx context.Context, mountID, relative string, na
 	if err != nil {
 		return nil, err
 	}
-	baseInfo, err := os.Stat(base)
+	baseInfo, err := safeStat(base)
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +209,7 @@ func (s *Service) archiveRoots(ctx context.Context, mountID, relative string, na
 		if err != nil {
 			return nil, err
 		}
-		info, err := os.Lstat(resolved)
+		info, err := safeLstat(resolved)
 		if err != nil {
 			return nil, err
 		}
@@ -248,7 +248,7 @@ func archiveEntryName(root archiveRoot, current string, isDir bool) (string, err
 func walkArchive(ctx context.Context, root archiveRoot,
 	visit func(string, fs.DirEntry, os.FileInfo) error, onSymlink func()) error {
 	if !root.isDir {
-		info, err := os.Lstat(root.absolute)
+		info, err := safeLstat(root.absolute)
 		if err != nil {
 			return err
 		}
@@ -258,7 +258,7 @@ func walkArchive(ctx context.Context, root archiveRoot,
 		}
 		return visit(root.absolute, fs.FileInfoToDirEntry(info), info)
 	}
-	return filepath.WalkDir(root.absolute, func(current string, entry fs.DirEntry, walkErr error) error {
+	return safeWalkDir(root.absolute, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -326,7 +326,7 @@ func (s *Service) Search(ctx context.Context, mountID, relative string, options 
 	if err != nil {
 		return SearchResult{}, err
 	}
-	info, err := os.Stat(root)
+	info, err := safeStat(root)
 	if err != nil {
 		return SearchResult{}, err
 	}
@@ -355,7 +355,7 @@ func (s *Service) Search(ctx context.Context, mountID, relative string, options 
 
 	result := SearchResult{Entries: make([]entities.FileEntry, 0, 32)}
 	stop := errors.New("stop")
-	walkErr := filepath.WalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
+	walkErr := safeWalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			// An unreadable subdirectory must not abort the whole search: a NAS
 			// mount routinely holds directories the node cannot enter.

@@ -91,7 +91,7 @@ export async function uploadResumable(
 	overwrite: boolean,
 	options: UploadOptions = {},
 ): Promise<UploadSession> {
-	const chunkSize = Math.max(1, options.chunkSize ?? DEFAULT_CHUNK_SIZE);
+	const requestedChunkSize = Math.max(1, options.chunkSize ?? DEFAULT_CHUNK_SIZE);
 	const maxAttempts = Math.max(1, options.maxAttempts ?? 5);
 	const backoff = options.backoffMs ?? defaultBackoff;
 	const sleep = options.sleep ?? defaultSleep;
@@ -105,6 +105,7 @@ export async function uploadResumable(
 	let session =
 		options.resumeFrom ??
 		(await transport.create({ path, size: total, overwrite }));
+	const chunkSize = Math.min(requestedChunkSize, Math.max(1, session.chunk_size || requestedChunkSize));
 	let offset = session.offset ?? 0;
 	options.onProgress?.({ uploaded: offset, total, attempt: 0 });
 

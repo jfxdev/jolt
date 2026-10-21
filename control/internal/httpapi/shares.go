@@ -227,32 +227,6 @@ func (s *Server) shareURL(r *http.Request, token string) string {
 	return base + "/s/" + token
 }
 
-// isResumeRange reports whether a Range header continues an earlier download
-// rather than starting a new one. Only a single range whose first byte position
-// is greater than zero qualifies; anything else, including a malformed header
-// or a multi-range request, is treated as a fresh download.
-func isResumeRange(value string) bool {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return false
-	}
-	spec, found := strings.CutPrefix(value, "bytes=")
-	if !found || strings.Contains(spec, ",") {
-		return false
-	}
-	start, _, found := strings.Cut(spec, "-")
-	if !found {
-		return false
-	}
-	start = strings.TrimSpace(start)
-	// A suffix range ("bytes=-500") has no start and is not a resume.
-	if start == "" {
-		return false
-	}
-	offset, err := strconv.ParseInt(start, 10, 64)
-	return err == nil && offset > 0
-}
-
 func normalizeSharePath(value string) string {
 	return strings.Trim(strings.ReplaceAll(strings.TrimSpace(value), "\\", "/"), "/")
 }
@@ -428,16 +402,11 @@ func (s *Server) publicShareContent(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// A genuine resume continues from a non-zero offset, so only those skip the
-	// budget. Counting every ranged request would spend the budget several
-	// times on one download, but skipping all of them would let "Range:
-	// bytes=0-" fetch the whole file unlimited times and defeat the limit
-	// entirely.
-	if !isResumeRange(r.Header.Get("Range")) {
-		if err := s.store.RegisterShareDownload(r.Context(), share.ID, time.Now().UTC()); err != nil {
-			writeError(w, r, http.StatusGone, "share_exhausted", "Este link não está mais disponível.")
-			return
-		}
+	// Every content request, including Range, consumes the atomic budget.
+	// A Range header alone is not proof of a previously counted download.
+	if err := s.store.RegisterShareDownload(r.Context(), share.ID, time.Now().UTC()); err != nil {
+		writeError(w, r, http.StatusGone, "share_exhausted", "Este link não está mais disponível.")
+		return
 	}
 	query := url.Values{}
 	query.Set("path", relative)

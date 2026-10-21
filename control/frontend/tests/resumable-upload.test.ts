@@ -253,3 +253,11 @@ test("OffsetMismatchError carries the server offset", () => {
 	assert.equal(error.offset, 42);
 	assert.equal(error.name, "OffsetMismatchError");
 });
+
+
+test("the server chunk limit overrides a larger client chunk size", async () => {
+ const {transport,state}=fakeServer();
+ await uploadResumable(transport,new Blob(["abcdefghij"]),"a.bin",false,{chunkSize:8});
+ assert.deepEqual(state.stored,["abcd","efgh","ij"]);
+ assert.equal(state.completed,true);
+});

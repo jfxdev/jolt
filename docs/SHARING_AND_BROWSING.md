@@ -107,6 +107,12 @@ whose reported size is filesystem bookkeeping rather than content.
 
 ## Resumable uploads
 
+The Control Tower resolves each upload ID to its persisted mount and destination
+before checking permission. Reading, appending, completing and aborting a session
+require `create` on that exact destination; creation and chunk writes also require
+`create` on the node's jobs resource. Session listings expose only destinations
+the caller may write. A `path` query parameter cannot change these checks.
+
 A plain `PUT …/files/content` is still a single stream. For large files over a
 flaky link, use the session API:
 
@@ -178,10 +184,9 @@ Security properties:
   An unlock mints a stateless HMAC ticket scoped to that one share, bound to the
   stored password hash, so changing the password invalidates outstanding
   tickets and a ticket for one link never opens another.
-- A ranged request consumes the budget unless it is a genuine resume, meaning a
-  single range starting past byte zero. Counting every ranged request would
-  spend the budget several times on one download; exempting all of them would
-  let `Range: bytes=0-` fetch the whole file without limit.
+- Every content/archive request consumes the atomic download budget, including
+  Range requests and resumed requests. The limit counts attempts, not verified
+  complete files. A Range header cannot prove an earlier counted download.
 - Responses are `Cache-Control: private, no-store`, because the URL is the
   credential.
 - The public surface accepts no writes under any method.
@@ -189,7 +194,45 @@ Security properties:
 Expired links stop serving immediately; their rows are kept for 30 days so the
 audit trail still explains what the link was and who created it.
 
-## Metrics
+## Filesystem containment and upload budgets
+
+Mounted file content never follows symlinks, including intermediate path
+components and links whose target is inside the mount. This keeps subpath RBAC,
+public shares and transfer grants aligned with the actual bytes. Deleting or
+moving a symlink operates on the link entry and preserves its target. ZIP/search
+continue skipping symlinks. Paths are accessed relative to open directory
+descriptors with no-follow checks at each component; swapping a symlink between
+validation and use does not redirect a read or write.
+
+Publication with `overwrite=false` uses the kernel's no-replace rename operation
+on Linux and macOS. A concurrent destination produces a conflict, without
+replacing its bytes. Filesystems that do not support the required operation fail
+closed; qualify the intended filesystem before deployment.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `UPLOAD_MAX_BYTES` | 100 GiB | Maximum size of a streaming or resumable upload |
+| `UPLOAD_MAX_SESSIONS` | 32 | Maximum unfinished, unexpired sessions on the node |
+| `UPLOAD_MAX_RESERVED_BYTES` | 400 GiB | Maximum unwritten bytes declared by active sessions |
+| `UPLOAD_MIN_FREE_BYTES` | 1 GiB | Safety margin checked at admission and on every upload write |
+
+Session admission is serialized so concurrent declarations cannot overbook the
+same budget. Disk admission conservatively includes all other sessions, even
+across mounts. Already-written bytes are excluded from the reservation. Streaming
+bodies are bounded while reading, including requests without Content-Length.
+The client respects the session's chunk-size limit. Size, space and session-limit
+failures return 413, 507 and 429 respectively; failed streaming uploads remain
+unpublished. Other processes may still consume space, so ENOSPC must be treated
+as an upload failure. These budgets apply to uploads, not a general filesystem
+quota for transfer jobs or other host processes. Effective limits are available
+from the node's metadata and effective-configuration API.
+
+The Compose example forwards these limits, separate node/control metrics tokens,
+and a configurable peer endpoint. Copy `.env.example` and fill all required
+secrets. `JOLT_OWNED_PATHS` is a recursive ownership operation; an explicitly empty
+value disables mount reconciliation when the host ownership is already prepared.
+
+## Metrics endpoints
 
 Both services expose Prometheus text format on `GET /metrics`, served only when
 a token is configured and requiring that token:

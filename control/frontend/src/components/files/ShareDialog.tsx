@@ -180,6 +180,7 @@ export function ShareDialog({ entry, mount, nodeId, onClose }: Props) {
                 value={maxDownloads}
                 onChange={(event) => setMaxDownloads(event.target.value.replace(/\D/g, ""))}
               />
+              <p className="text-xs text-muted-foreground">Cada tentativa de download conta, inclusive retomadas.</p>
             </div>
 
             {entry?.type === "directory" && (

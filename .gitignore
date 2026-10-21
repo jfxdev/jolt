@@ -1,4 +1,7 @@
 .jolt/
+.env
+.env.*
+!.env.example
 .jolt-control/
 runtime/
 coverage.out
