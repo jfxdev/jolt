@@ -378,6 +378,51 @@ test("older section retries cannot clear the latest failure", async ({ page }) =
   await expect(error).toBeVisible();
 });
 
+for (const [scenario, title] of [
+  ["newer data", "initial load cannot overwrite newer refresh data"],
+  ["newer error", "initial load cannot clear a newer refresh error"],
+  ["older error", "initial load error cannot replace a successful refresh"],
+] as const) {
+  test(title, async ({ page }) => {
+    await fixture(page, { failTrust: true });
+    let initial: Route | undefined;
+    let calls = 0;
+    const job = (id: string) => ({
+      job_id: id, type: "copy_local", state: "completed", destination_path: `${id}.txt`,
+      created_at: "2026-10-24T12:00:00Z", bytes_completed: 7, bytes_total: 7,
+    });
+    await page.route("**/api/v1/nodes/a/jobs", route => {
+      if (++calls === 1) { initial = route; return; }
+      return scenario === "newer error"
+        ? route.fulfill({ status: 503, json: { error: { message: "Falha da atualização" } } })
+        : route.fulfill({ json: { items: [job("fresh")] } });
+    });
+    // Reuse the mounted provider so the delayed request belongs to the active
+    // node load, rather than StrictMode's discarded first mount.
+    await page.goto("/nodes/b?tab=jobs");
+    await expect(page.getByText("Confiança: Não foi possível atualizar esta seção.", { exact: true })).toBeVisible();
+    await navigate(page, "/nodes/a?tab=jobs");
+    await expect.poll(() => !!initial).toBe(true);
+    await page.getByRole("button", { name: "Atualizar", exact: true }).click();
+    const error = page.getByText("Jobs: Não foi possível atualizar esta seção.", { exact: true });
+    if (scenario === "newer error") await expect(error).toBeVisible();
+    else await expect(page.getByText("fresh.txt", { exact: true })).toBeVisible();
+
+    const streaming = page.waitForRequest(request => new URL(request.url()).pathname === "/api/v1/nodes/a/jobs/events");
+    await initial!.fulfill(scenario === "older error"
+      ? { status: 503, json: { error: { message: "Falha inicial antiga" } } }
+      : { json: { items: [job("stale")] } });
+    await streaming;
+    if (scenario === "newer error") await expect(error).toBeVisible();
+    else {
+      await expect(page.getByText("fresh.txt", { exact: true })).toBeVisible();
+      await expect(error).toHaveCount(0);
+    }
+    await expect(page.getByText("stale.txt", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Confiança: Não foi possível atualizar esta seção.", { exact: true })).toBeVisible();
+  });
+}
+
 for (const operation of ["add", "remove"] as const) {
   test(`successful node ${operation} survives an inventory refresh failure`, async ({ page }, testInfo) => {
     await fixture(page);

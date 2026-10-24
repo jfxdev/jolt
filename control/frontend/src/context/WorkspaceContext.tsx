@@ -93,6 +93,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!nodeId) return;
     let active = true;
+    const request = requests.current;
+    const sections: WorkspaceSection[] = ["mounts", "jobs", "trust", "mtls"];
+    const tickets = { ...request.sequences };
+    sections.forEach(section => { tickets[section] = ++request.sequences[section]; });
+    const latest = (section: WorkspaceSection) => active && requests.current === request && request.sequences[section] === tickets[section];
     setSectionErrors({});
     setMounts([]);
     setJobs([]);
@@ -116,6 +121,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           `${base}/keys/identity`,
           `control-tower/nodes/${nodeId}/token`,
         ]);
+        if (!active || requests.current !== request) return;
         // One trust request replaces the peers/grants/invites/requests
         // fan-out: it is the only view that knows what the other side sees.
         const results =
@@ -133,17 +139,23 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
               ? api.mtlsState(nodeId)
               : Promise.resolve(null),
           ]);
-        if (!active) return;
+        if (!active || requests.current !== request) return;
         const [mountResult, jobResult, trustResult, mtlsResult] = results;
-        const loadedJobs = jobResult.status === "fulfilled" ? (jobResult.value as { items: Job[] }).items || [] : [];
-        if (mountResult.status === "fulfilled") setMounts((mountResult.value as { items: Mount[] }).items || []);
-        if (jobResult.status === "fulfilled") setJobs(loadedJobs);
-        if (trustResult.status === "fulfilled") setTrust(trustResult.value as TrustView | null);
-        if (mtlsResult.status === "fulfilled") setMtlsState(mtlsResult.value as MTLSState | null);
-        const sections: WorkspaceSection[] = ["mounts", "jobs", "trust", "mtls"];
-        const errors: Partial<Record<WorkspaceSection, string>> = {};
-        results.forEach((result, index) => { if (result.status === "rejected") errors[sections[index]] = "Não foi possível atualizar esta seção."; });
-        setSectionErrors(errors);
+        const loadedJobs = latest("jobs") && jobResult.status === "fulfilled" ? (jobResult.value as { items: Job[] }).items || [] : [];
+        if (latest("mounts") && mountResult.status === "fulfilled") setMounts((mountResult.value as { items: Mount[] }).items || []);
+        if (latest("jobs") && jobResult.status === "fulfilled") setJobs(loadedJobs);
+        if (latest("trust") && trustResult.status === "fulfilled") setTrust(trustResult.value as TrustView | null);
+        if (latest("mtls") && mtlsResult.status === "fulfilled") setMtlsState(mtlsResult.value as MTLSState | null);
+        setSectionErrors(previous => {
+          const next = { ...previous };
+          results.forEach((result, index) => {
+            const section = sections[index];
+            if (!latest(section)) return;
+            if (result.status === "rejected") next[section] = "Não foi possível atualizar esta seção.";
+            else delete next[section];
+          });
+          return next;
+        });
         const jobPaths = loadedJobs
           .slice(0, 100)
           .map((job) => `${base}/jobs/${job.job_id}`);
