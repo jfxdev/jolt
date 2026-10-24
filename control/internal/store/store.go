@@ -241,6 +241,10 @@ CREATE TABLE IF NOT EXISTS nodes (
  token_encrypted TEXT NOT NULL, state TEXT NOT NULL, last_seen_at TEXT,
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS node_token_rotations (
+ node_id TEXT PRIMARY KEY, candidate_encrypted TEXT NOT NULL, created_at TEXT NOT NULL,
+ FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS audit_events (
  id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT, action TEXT NOT NULL,
  resource TEXT NOT NULL, result TEXT NOT NULL, correlation_id TEXT NOT NULL,
@@ -2006,4 +2010,44 @@ func boolInt(value bool) int {
 
 func isUniqueConstraint(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "unique constraint")
+}
+
+// A retry always receives the same durable candidate, even after process loss.
+func (s *Store) BeginNodeTokenRotation(ctx context.Context, id, candidate string) (string, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `INSERT INTO node_token_rotations(node_id,candidate_encrypted,created_at) VALUES(?,?,?) ON CONFLICT(node_id) DO NOTHING`, id, candidate, time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return "", false, err
+	}
+	inserted, _ := result.RowsAffected()
+	if err = tx.QueryRowContext(ctx, `SELECT candidate_encrypted FROM node_token_rotations WHERE node_id=?`, id).Scan(&candidate); err != nil {
+		return "", false, err
+	}
+	return candidate, inserted == 0, tx.Commit()
+}
+
+func (s *Store) FinishNodeTokenRotation(ctx context.Context, id, candidate string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var stored string
+	if err = tx.QueryRowContext(ctx, `SELECT candidate_encrypted FROM node_token_rotations WHERE node_id=?`, id).Scan(&stored); err != nil {
+		return err
+	}
+	if stored != candidate {
+		return ErrConflict
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE nodes SET token_encrypted=?,updated_at=? WHERE id=?`, candidate, time.Now().UTC().Format(time.RFC3339Nano), id); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM node_token_rotations WHERE node_id=? AND candidate_encrypted=?`, id, candidate); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

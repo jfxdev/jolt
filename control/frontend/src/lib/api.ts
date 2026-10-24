@@ -325,7 +325,7 @@ export const api = {
       `/api/v1/control-tower/audit?${query}`,
     );
   },
-  nodes: () => request<ListResponse<NodeInfo>>("/api/v1/control-tower/nodes"),
+  nodes: () => request<ListResponse<NodeInfo>>("/api/v1/control-tower/nodes", { signal: AbortSignal.timeout(30_000) }),
   addNode: (node: object) =>
     request<NodeInfo>("/api/v1/control-tower/nodes", {
       method: "POST",
@@ -344,9 +344,9 @@ export const api = {
         body: JSON.stringify({}),
       },
     ),
-  mounts: (nodeId: string) =>
+  mounts: (nodeId: string, signal?: AbortSignal) =>
     request<ListResponse<Mount>>(
-      `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts`,
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts`, { signal }
     ),
   createMount: (nodeId: string, mount: object) =>
     request<Mount>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts`, {
@@ -358,9 +358,9 @@ export const api = {
     request<import("./types").BrowseResult>(
       `/api/v1/nodes/${encodeURIComponent(nodeId)}/fs/browse?path=${encodeURIComponent(path)}`,
     ),
-  files: (nodeId: string, mountId: string, path: string) =>
-    request<ListResponse<import("./types").FileEntry>>(
-      `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/files?path=${encodeURIComponent(path)}`,
+  files: (nodeId: string, mountId: string, path: string, after = "") =>
+    request<import("./types").FilePage>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/files?path=${encodeURIComponent(path)}&after=${encodeURIComponent(after)}`,
     ),
   transferTargets: (
     sourceNodeId: string,
@@ -391,6 +391,7 @@ export const api = {
         body: JSON.stringify(transfer),
       },
     ),
+  jobSummary: (nodeId: string, signal?: AbortSignal) => request<import("./types").JobSummary>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/jobs/summary`, { signal }),
   jobs: (nodeId: string) =>
     request<ListResponse<Job>>(
       `/api/v1/nodes/${encodeURIComponent(nodeId)}/jobs`,
@@ -540,9 +541,9 @@ export const api = {
         body: JSON.stringify({}),
       },
     ),
-  mtlsState: (nodeId: string) =>
+  mtlsState: (nodeId: string, signal?: AbortSignal) =>
     request<MTLSState>(
-      `/api/v1/nodes/${encodeURIComponent(nodeId)}/crypto/mtls`,
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/crypto/mtls`, { signal }
     ),
   prepareMTLSRotation: (nodeId: string, validityDays: number) =>
     request<unknown>(
@@ -624,9 +625,9 @@ export const api = {
       },
     ),
   /** Single source of truth for a node's trust: both sides, resolved server-side. */
-  nodeTrust: (nodeId: string) =>
+  nodeTrust: (nodeId: string, signal?: AbortSignal) =>
     request<TrustView>(
-      `/api/v1/control-tower/nodes/${encodeURIComponent(nodeId)}/trust`,
+      `/api/v1/control-tower/nodes/${encodeURIComponent(nodeId)}/trust`, { signal }
     ),
   connections: () =>
     request<ListResponse<Connection>>("/api/v1/control-tower/connections"),
@@ -721,6 +722,8 @@ export const api = {
     request<import("./types").UploadSession>(
       `${mountFilesPath(nodeId, mountId)}/uploads/${encodeURIComponent(uploadId)}`,
     ),
+  uploadVerification: (nodeId: string, mountId: string, uploadId: string, after = 0, signal?: AbortSignal) =>
+    request<import("./types").UploadVerification>(`${mountFilesPath(nodeId, mountId)}/uploads/${encodeURIComponent(uploadId)}/verification?after=${after}`, { signal }),
   appendUploadChunk: (
     nodeId: string,
     mountId: string,
@@ -728,6 +731,7 @@ export const api = {
     chunk: Blob,
     offset: number,
     total: number,
+    signal?: AbortSignal,
   ) =>
     request<import("./types").UploadSession>(
       `${mountFilesPath(nodeId, mountId)}/uploads/${encodeURIComponent(uploadId)}`,
@@ -740,6 +744,7 @@ export const api = {
           "Content-Range": `bytes ${offset}-${offset + chunk.size - 1}/${total}`,
         },
         body: chunk,
+        signal,
       },
     ),
   completeUpload: (nodeId: string, mountId: string, uploadId: string) =>
@@ -779,9 +784,9 @@ export const api = {
       `/api/v1/public/shares/${encodeURIComponent(token)}/unlock`,
       { method: "POST", body: JSON.stringify({ password }) },
     ),
-  publicShareList: (token: string, path: string) =>
-    request<ListResponse<import("./types").FileEntry>>(
-      `/api/v1/public/shares/${encodeURIComponent(token)}/list?path=${encodeURIComponent(path)}`,
+  publicShareList: (token: string, path: string, after = "") =>
+    request<import("./types").FilePage>(
+      `/api/v1/public/shares/${encodeURIComponent(token)}/list?path=${encodeURIComponent(path)}&after=${encodeURIComponent(after)}`,
     ),
   publicShareContentUrl: (token: string, path: string) =>
     `/api/v1/public/shares/${encodeURIComponent(token)}/content?path=${encodeURIComponent(path)}`,

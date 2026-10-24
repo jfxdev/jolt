@@ -106,7 +106,9 @@ export async function uploadResumable(
 		options.resumeFrom ??
 		(await transport.create({ path, size: total, overwrite }));
 	const chunkSize = Math.min(requestedChunkSize, Math.max(1, session.chunk_size || requestedChunkSize));
-	let offset = session.offset ?? 0;
+	if (options.resumeFrom && transport.session) session = await transport.session(session.upload_id);
+ if (session.state === "completed") return session;
+ let offset = session.offset ?? 0;
 	options.onProgress?.({ uploaded: offset, total, attempt: 0 });
 
 	while (offset < total) {
@@ -148,7 +150,14 @@ export async function uploadResumable(
 	}
 
 	throwIfAborted();
-	await transport.complete(session.upload_id);
+	for (let attempt = 1;; attempt++) {
+  throwIfAborted();
+  try { await transport.complete(session.upload_id); break; }
+  catch (error) {
+   if (attempt >= maxAttempts || !isRetryable(error)) throw error;
+   await sleep(backoff(attempt));
+  }
+ }
 	return { ...session, offset: total };
 }
 

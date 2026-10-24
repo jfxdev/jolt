@@ -238,17 +238,43 @@ type TransferPathGrant struct {
 // disk is the source of truth for how many bytes arrived; this row records
 // what the upload is for so it survives a node restart and can be resumed or
 // swept.
+type FilePage struct {
+	Items     []FileEntry `json:"items"`
+	NextAfter string      `json:"next_after,omitempty"`
+	HasMore   bool        `json:"has_more"`
+}
+
+type JobSummary struct {
+	Counts     map[string]int `json:"counts"`
+	ObservedAt time.Time      `json:"observed_at"`
+}
+
+type UploadBlock struct {
+	Offset int64  `json:"offset"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+}
+
+type UploadVerification struct {
+	Offset    int64         `json:"offset"`
+	Blocks    []UploadBlock `json:"blocks"`
+	NextAfter int64         `json:"next_after"`
+}
+
 type UploadSession struct {
-	ID            string    `json:"upload_id" yaml:"upload_id"`
-	MountID       string    `json:"mount_id" yaml:"mount_id"`
-	Destination   string    `json:"destination_path" yaml:"destination_path"`
-	Size          int64     `json:"size" yaml:"size"`
-	Offset        int64     `json:"offset" yaml:"offset"`
-	Overwrite     bool      `json:"overwrite" yaml:"overwrite"`
-	Checksum      string    `json:"checksum,omitempty" yaml:"checksum"`
-	ChunkSize     int64     `json:"chunk_size" yaml:"chunk_size"`
-	CorrelationID string    `json:"correlation_id,omitempty" yaml:"correlation_id"`
-	CreatedAt     time.Time `json:"created_at" yaml:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at" yaml:"updated_at"`
-	ExpiresAt     time.Time `json:"expires_at" yaml:"expires_at"`
+	State           string     `json:"state" yaml:"state"`
+	CompletedAt     *time.Time `json:"completed_at,omitempty" yaml:"completed_at,omitempty"`
+	PublishChecksum string     `json:"-" yaml:"publish_checksum,omitempty"`
+	ID              string     `json:"upload_id" yaml:"upload_id"`
+	MountID         string     `json:"mount_id" yaml:"mount_id"`
+	Destination     string     `json:"destination_path" yaml:"destination_path"`
+	Size            int64      `json:"size" yaml:"size"`
+	Offset          int64      `json:"offset" yaml:"offset"`
+	Overwrite       bool       `json:"overwrite" yaml:"overwrite"`
+	Checksum        string     `json:"checksum,omitempty" yaml:"checksum"`
+	ChunkSize       int64      `json:"chunk_size" yaml:"chunk_size"`
+	CorrelationID   string     `json:"correlation_id,omitempty" yaml:"correlation_id"`
+	CreatedAt       time.Time  `json:"created_at" yaml:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at" yaml:"updated_at"`
+	ExpiresAt       time.Time  `json:"expires_at" yaml:"expires_at"`
 }

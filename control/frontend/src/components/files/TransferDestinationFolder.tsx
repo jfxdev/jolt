@@ -1,7 +1,8 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useState, useRef } from "react";
 import { ArrowUp, Folder } from "lucide-react";
 import { FileEntryIcon } from "@/components/files/FileEntryIcon";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput, InputGroupText } from "@/components/ui/input-group";
+import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useApiError } from "@/hooks/useApiError";
 import { api } from "@/lib/api";
@@ -20,6 +21,8 @@ export function TransferDestinationFolder({ nodeId, mount, value, onChange, disa
   const id = useId();
   const handleError = useApiError();
   const [directories, setDirectories] = useState<FileEntry[]>([]);
+  const [nextAfter, setNextAfter] = useState("");
+  const current = useRef(""); current.current = `${nodeId}:${mount.mount_id}:${value}`;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const folder = transferDestinationFolder(value);
@@ -30,6 +33,7 @@ export function TransferDestinationFolder({ nodeId, mount, value, onChange, disa
 
   useEffect(() => {
     setDirectories([]);
+    setNextAfter("");
     setError("");
     if (!mount.can_browse || !withinRoot) {
       setLoading(false);
@@ -39,7 +43,7 @@ export function TransferDestinationFolder({ nodeId, mount, value, onChange, disa
     setLoading(true);
     const timer = setTimeout(() => {
       void api.files(nodeId, mount.mount_id, folder!).then((response) => {
-        if (active) setDirectories((response.items || []).filter((entry) => entry.type === "directory"));
+        if (active) { setDirectories((response.items || []).filter((entry) => entry.type === "directory")); setNextAfter(response.next_after || ""); }
       }).catch((failure: unknown) => {
         if (!active) return;
         const apiError = failure as ApiError;
@@ -49,6 +53,17 @@ export function TransferDestinationFolder({ nodeId, mount, value, onChange, disa
     }, 250);
     return () => { active = false; clearTimeout(timer); };
   }, [nodeId, mount.mount_id, mount.can_browse, folder, withinRoot, handleError]);
+
+  async function loadMore() {
+    const target = current.current; setLoading(true);
+    try {
+      const response = await api.files(nodeId, mount.mount_id, folder!, nextAfter);
+      if (current.current !== target) return;
+      setDirectories(previous => [...previous, ...(response.items || []).filter(entry => entry.type === "directory")]);
+      setNextAfter(response.next_after || "");
+    } catch { if (current.current === target) setError("Não foi possível carregar mais subpastas."); }
+    finally { if (current.current === target) setLoading(false); }
+  }
 
   return <div className="grid gap-2">
     <Label htmlFor={id}>Pasta de destino</Label>
@@ -62,6 +77,7 @@ export function TransferDestinationFolder({ nodeId, mount, value, onChange, disa
         {loading ? <p role="status" className="px-3 py-2 text-xs text-muted-foreground">Buscando subpastas…</p> : error ? <p role="status" className="px-3 py-2 text-xs text-muted-foreground">{error}</p> : directories.length ? directories.map((entry) => <button key={entry.path} type="button" disabled={disabled} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent disabled:opacity-50" onClick={() => onChange(entry.path)}><FileEntryIcon entry={entry} />{entry.name}</button>) : <p className="px-3 py-2 text-xs text-muted-foreground">Nenhuma subpasta.</p>}
       </div>}
     </div>
+    {nextAfter && <Button size="sm" variant="outline" disabled={disabled || loading} onClick={() => void loadMore()}>Carregar mais subpastas</Button>}
     {!withinRoot && <p role="alert" className="text-xs text-destructive">Informe uma pasta relativa dentro de /{root}.</p>}
     {!mount.can_browse && <p className="text-xs text-muted-foreground">Informe uma pasta relativa sob a raiz autorizada.</p>}
   </div>;

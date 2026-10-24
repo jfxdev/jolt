@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -9,6 +10,8 @@ import {
 } from "react";
 import { api } from "@/lib/api";
 import type { Capability } from "@/lib/types";
+
+import { useAuth } from "@/context/AuthContext";
 
 type PermissionMap = Record<string, Capability[]>;
 
@@ -37,6 +40,8 @@ interface PermissionsContextValue {
 const PermissionsContext = createContext<PermissionsContextValue | null>(null);
 
 export function PermissionsProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
+  const actor = useRef(user?.user_id); actor.current = user?.user_id;
   const [map, setMap] = useState<PermissionMap>({});
   // A ref mirror lets hasPermission read fresh values right after a load
   // without waiting for a re-render.
@@ -44,7 +49,9 @@ export function PermissionsProvider({ children }: { children: ReactNode }) {
 
   const loadPermissions = useCallback(async (paths: string[]) => {
     if (!paths.length) return;
+    const requestedActor = actor.current;
     const result = await api.permissions(paths);
+    if (requestedActor !== actor.current) return;
     mapRef.current = { ...mapRef.current, ...(result.paths || {}) };
     setMap(mapRef.current);
   }, []);
@@ -64,6 +71,8 @@ export function PermissionsProvider({ children }: { children: ReactNode }) {
     mapRef.current = {};
     setMap({});
   }, []);
+
+  useEffect(() => { reset(); }, [user, reset]);
 
   const value = useMemo(
     () => ({ loadPermissions, hasPermission, hasPermissionNow, reset }),

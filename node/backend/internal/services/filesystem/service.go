@@ -159,55 +159,8 @@ func (s *Service) DeleteMount(ctx context.Context, id string) error {
 }
 
 func (s *Service) List(ctx context.Context, mountID, relative string, limit int) ([]entities.FileEntry, error) {
-	mount, resolved, err := s.resolve(ctx, mountID, relative, false)
-	if err != nil {
-		return nil, err
-	}
-	if !mount.Enabled {
-		return nil, ErrDisabled
-	}
-	entries, err := safeReadDir(resolved)
-	if err != nil {
-		return nil, err
-	}
-	visible := entries[:0]
-	for _, entry := range entries {
-		if !isInternalPartialName(entry.Name()) {
-			visible = append(visible, entry)
-		}
-	}
-	entries = visible
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].IsDir() != entries[j].IsDir() {
-			return entries[i].IsDir()
-		}
-		return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
-	})
-	if limit <= 0 || limit > 1000 {
-		limit = 200
-	}
-	if len(entries) > limit {
-		entries = entries[:limit]
-	}
-	out := make([]entities.FileEntry, 0, len(entries))
-	base := cleanRelative(relative)
-	for _, entry := range entries {
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		kind := "file"
-		if entry.IsDir() {
-			kind = "directory"
-		} else if info.Mode()&os.ModeSymlink != 0 {
-			kind = "symlink"
-		}
-		out = append(out, entities.FileEntry{
-			Name: entry.Name(), Path: filepath.ToSlash(filepath.Join(base, entry.Name())),
-			Type: kind, Size: info.Size(), ModifiedAt: info.ModTime().UTC(),
-		})
-	}
-	return out, nil
+	page, err := s.ListPage(ctx, mountID, relative, limit, "")
+	return page.Items, err
 }
 
 // BrowsePath lists a directory on the node's raw filesystem, starting from

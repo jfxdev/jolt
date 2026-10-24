@@ -260,3 +260,43 @@ func (s *Store) ListJobEvents(ctx context.Context, after int64, id string, limit
 	})
 	return
 }
+
+// ListJobItemsPage decodes only the requested page, using the ordered index.
+func (s *Store) ListJobItemsPage(ctx context.Context, id string, after, limit int) (out []entities.JobItem, next int, err error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	out = []entities.JobItem{}
+	err = s.view(ctx, func() error {
+		if _, ok := s.index["jobs"][id]; !ok {
+			return ErrNotFound
+		}
+		ids := keys(s, "items", id)
+		start := sort.Search(len(ids), func(i int) bool { return s.index["items"][ids[i]].Order >= fmt.Sprintf("%012d", max(after, 0)) })
+		for _, key := range ids[start:] {
+			if len(out) == limit {
+				_, e := fmt.Sscanf(s.index["items"][key].Order, "%d", &next)
+				return e
+			}
+			v, e := get[entities.JobItem](s, "items", key)
+			if e != nil {
+				return e
+			}
+			out = append(out, v)
+		}
+		return nil
+	})
+	return
+}
+
+func (s *Store) JobSummary(ctx context.Context) (summary entities.JobSummary, err error) {
+	summary.Counts = map[string]int{}
+	err = s.view(ctx, func() error {
+		for _, ref := range s.index["jobs"] {
+			summary.Counts[ref.State]++
+		}
+		summary.ObservedAt = time.Now().UTC()
+		return nil
+	})
+	return
+}

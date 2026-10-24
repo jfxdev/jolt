@@ -68,7 +68,7 @@ func (s *Server) createUploadSession(w http.ResponseWriter, r *http.Request) {
 		chunkSize = s.config.CopyChunkSize
 	}
 	session := entities.UploadSession{
-		ID: newUploadID(), MountID: mountID, Destination: request.Path,
+		State: "open", ID: newUploadID(), MountID: mountID, Destination: request.Path,
 		Size: request.Size, Overwrite: request.Overwrite, Checksum: request.Checksum,
 		ChunkSize: chunkSize, CorrelationID: r.Header.Get("X-Correlation-ID"),
 		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(s.config.UploadSessionTTL),
@@ -83,7 +83,6 @@ func (s *Server) createUploadSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.registry.Inc("jolt_uploads_started_total")
-	s.registry.AddGauge("jolt_uploads_active", 1)
 	writeJSON(w, http.StatusCreated, session)
 }
 
@@ -95,6 +94,10 @@ func (s *Server) getUploadSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	offset, err := s.files.UploadOffset(r.Context(), session.MountID, session.Destination, session.ID)
+	if session.State == "completed" || session.State == "publishing" {
+		offset = session.Size
+		err = nil
+	}
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -110,6 +113,10 @@ func (s *Server) listUploadSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for index := range sessions {
+		if sessions[index].State == "publishing" {
+			sessions[index].Offset = sessions[index].Size
+			continue
+		}
 		offset, offsetErr := s.files.UploadOffset(r.Context(), sessions[index].MountID,
 			sessions[index].Destination, sessions[index].ID)
 		if offsetErr == nil {
@@ -127,6 +134,10 @@ var contentRangePattern = regexp.MustCompile(`^bytes (\d+)-(\d+)/(\d+|\*)$`)
 func (s *Server) appendUploadChunk(w http.ResponseWriter, r *http.Request) {
 	session, ok := s.loadUploadSession(w, r)
 	if !ok {
+		return
+	}
+	if session.State == "completed" || session.State == "publishing" {
+		writeError(w, r, http.StatusConflict, "upload_publishing", "O upload já está em conclusão.", nil)
 		return
 	}
 	if r.ContentLength > session.ChunkSize {
@@ -182,31 +193,56 @@ func (s *Server) completeUploadSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	size, checksum, err := s.files.CompleteUpload(r.Context(), session.MountID, session.Destination,
-		session.ID, session.Size, session.Checksum, session.Overwrite)
+	if session.State == "completed" {
+		writeUploadReceipt(w, session)
+		return
+	}
+	if session.State != "publishing" {
+		digest, err := s.files.PrepareUpload(r.Context(), session)
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		if session.Checksum != "" && digest != session.Checksum {
+			s.fail(w, r, filesystem.ErrInvalid)
+			return
+		}
+		session.State, session.PublishChecksum = "publishing", digest
+		session.UpdatedAt = time.Now().UTC()
+		session.ExpiresAt = session.UpdatedAt.Add(s.config.UploadSessionTTL)
+		if err := s.store.UpdateUploadSession(r.Context(), session); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+	}
+	published, err := s.files.PublishedUpload(r.Context(), session)
+	if err == nil && !published {
+		_, _, err = s.files.CompleteUpload(r.Context(), session.MountID, session.Destination, session.ID, session.Size, session.PublishChecksum, session.Overwrite)
+	}
 	if err != nil {
 		s.registry.Inc("jolt_uploads_failed_total")
 		s.fail(w, r, err)
 		return
 	}
-	// The session row goes away only after the rename succeeded, so a failure
-	// anywhere above leaves the upload resumable.
-	if err := s.store.DeleteUploadSession(r.Context(), session.ID); err != nil {
+	now := time.Now().UTC()
+	session.State, session.CompletedAt, session.UpdatedAt, session.Offset, session.Checksum = "completed", &now, now, session.Size, session.PublishChecksum
+	session.ExpiresAt = now.Add(s.config.UploadSessionTTL)
+	if err := s.store.UpdateUploadSession(r.Context(), session); err != nil {
 		s.fail(w, r, err)
 		return
 	}
 	s.registry.Inc("jolt_uploads_completed_total")
-	s.registry.AddGauge("jolt_uploads_active", -1)
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"upload_id": session.ID, "destination_path": session.Destination,
-		"size": size, "checksum": checksum,
-	})
+	writeUploadReceipt(w, session)
 }
 
 // abortUploadSession discards a resumable upload and its partial file.
 func (s *Server) abortUploadSession(w http.ResponseWriter, r *http.Request) {
 	session, ok := s.loadUploadSession(w, r)
 	if !ok {
+		return
+	}
+	if session.State == "completed" {
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if err := s.files.AbortUpload(r.Context(), session.MountID, session.Destination, session.ID); err != nil {
@@ -218,7 +254,6 @@ func (s *Server) abortUploadSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.registry.Inc("jolt_uploads_aborted_total")
-	s.registry.AddGauge("jolt_uploads_active", -1)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -305,4 +340,45 @@ func isHexSHA256(value string) bool {
 		}
 	}
 	return true
+}
+
+func writeUploadReceipt(w http.ResponseWriter, session entities.UploadSession) {
+	writeJSON(w, http.StatusCreated, map[string]any{"upload_id": session.ID, "destination_path": session.Destination, "size": session.Size, "checksum": session.Checksum, "state": session.State, "completed_at": session.CompletedAt})
+}
+
+func (s *Server) uploadLocked(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		unlock, err := filesystem.LockUploadSession(r.Context(), r.PathValue("uploadID"))
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		defer unlock()
+		next(w, r)
+	}
+}
+
+func (s *Server) verifyUploadSession(w http.ResponseWriter, r *http.Request) {
+	session, ok := s.loadUploadSession(w, r)
+	if !ok {
+		return
+	}
+	if session.State == "completed" {
+		writeError(w, r, http.StatusConflict, "upload_completed", "O upload já foi concluído.", nil)
+		return
+	}
+	after, err := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+	if r.URL.Query().Get("after") == "" {
+		after, err = 0, nil
+	}
+	if err != nil {
+		s.fail(w, r, filesystem.ErrInvalid)
+		return
+	}
+	blocks, err := s.files.UploadBlocks(r.Context(), session, after, 16)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, blocks)
 }

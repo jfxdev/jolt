@@ -42,6 +42,8 @@ type JobStore interface {
 	ListJobEvents(context.Context, int64, string, int) ([]entities.JobEvent, error)
 	ReplaceJobItems(context.Context, string, []entities.JobItem) error
 	ListJobItems(context.Context, string) ([]entities.JobItem, error)
+	ListJobItemsPage(context.Context, string, int, int) ([]entities.JobItem, int, error)
+	JobSummary(context.Context) (entities.JobSummary, error)
 	UpdateJobItem(context.Context, entities.JobItem) error
 }
 
@@ -74,6 +76,7 @@ type GrantWriter interface {
 type UploadStore interface {
 	CreateUploadSession(context.Context, entities.UploadSession) error
 	GetUploadSession(context.Context, string) (entities.UploadSession, error)
+	UpdateUploadSession(context.Context, entities.UploadSession) error
 	ListUploadSessions(context.Context, string) ([]entities.UploadSession, error)
 	TouchUploadSession(context.Context, string, time.Time, time.Time) error
 	DeleteUploadSession(context.Context, string) error

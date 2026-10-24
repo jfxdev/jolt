@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { useParams } from "react-router-dom";
 import { Download, FolderArchive, FolderOpen, Lock } from "lucide-react";
 import { api } from "@/lib/api";
@@ -38,6 +38,9 @@ export default function PublicSharePage() {
   const [unlocking, setUnlocking] = useState(false);
   const [path, setPath] = useState("");
   const [entries, setEntries] = useState<FileEntry[]>([]);
+  const [nextAfter, setNextAfter] = useState("");
+  const sequence = useRef(0);
+  const tokenRef = useRef(token); tokenRef.current = token;
   const [listing, setListing] = useState(false);
 
   const load = useCallback(async () => {
@@ -59,18 +62,22 @@ export default function PublicSharePage() {
   }, [load]);
 
   const listPath = useCallback(
-    async (next: string) => {
+    async (next: string, after = "") => {
+      const current = ++sequence.current;
       setListing(true);
       try {
-        const response = await api.publicShareList(token, next);
-        setEntries(response.items || []);
+        const response = await api.publicShareList(token, next, after);
+        if (current !== sequence.current || tokenRef.current !== token) return;
+        setEntries(previous => after ? [...previous, ...(response.items || [])] : response.items || []);
+        setNextAfter(response.next_after || "");
         setPath(next);
       } catch (error) {
+        if (current !== sequence.current || tokenRef.current !== token) return;
         setMessage(
           (error as ApiError)?.message || "Não foi possível abrir esta pasta.",
         );
       } finally {
-        setListing(false);
+        if (current === sequence.current && tokenRef.current === token) setListing(false);
       }
     },
     [token],
@@ -262,6 +269,7 @@ export default function PublicSharePage() {
                 )}
               </TableBody>
             </Table>
+            {nextAfter && <Button className="mt-3" variant="outline" disabled={listing} onClick={() => void listPath(path, nextAfter)}>Carregar mais</Button>}
             {message && <p className="mt-2 text-sm text-destructive">{message}</p>}
           </CardContent>
         </Card>

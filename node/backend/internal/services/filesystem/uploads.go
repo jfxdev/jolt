@@ -8,34 +8,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sync"
 )
 
-// uploadLocks serializes the writes of one upload session. The unique index on
-// the session table stops two sessions targeting one destination, but it does
-// not stop a client (or a retry racing its own original request) from issuing
-// two appends for the same session at once. Both would pass the offset check
-// and write at the same position, interleaving their bytes into the partial
-// file and publishing corrupted content.
-var uploadLocks sync.Map
-
-// lockUpload blocks until this session's writer slot is free. The context is
-// honoured so a client that hangs up does not keep a worker parked.
+// Filesystem writers use a separate scope from the HTTP/state lifecycle lock.
+// Both retain queued waiters until the last owner releases the gate.
 func lockUpload(ctx context.Context, uploadID string) (func(), error) {
-	value, _ := uploadLocks.LoadOrStore(uploadID, make(chan struct{}, 1))
-	gate := value.(chan struct{})
-	select {
-	case gate <- struct{}{}:
-		return func() { <-gate }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-// releaseUploadLock drops the lock entry once a session is finished, so a
-// long-lived node does not accumulate one channel per completed upload.
-func releaseUploadLock(uploadID string) {
-	uploadLocks.Delete(uploadID)
+	return LockUploadSession(ctx, "file:"+uploadID)
 }
 
 // ErrOffsetMismatch reports that the client tried to append at an offset other
@@ -205,8 +183,7 @@ func (s *Service) CompleteUpload(ctx context.Context, mountID, destination, uplo
 	if err := publishPath(partialPath, dst, overwrite); err != nil {
 		return info.Size(), checksum, err
 	}
-	releaseUploadLock(uploadID)
-	return info.Size(), checksum, nil
+	return info.Size(), checksum, syncUploadDirectory(dst)
 }
 
 // AbortUpload removes the partial file for a session. A missing partial is not
@@ -228,6 +205,5 @@ func (s *Service) AbortUpload(ctx context.Context, mountID, destination, uploadI
 	if err := safeRemove(resumablePartialPath(dst, uploadID)); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	releaseUploadLock(uploadID)
 	return nil
 }

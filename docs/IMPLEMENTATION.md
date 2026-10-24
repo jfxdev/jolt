@@ -462,7 +462,7 @@ Status legend:
 - Upload bodies are streamed, written to temporary files, atomically published,
   and represented in durable history.
 - The incoming request body is not persisted as resumable chunks.
-- An interrupted upload must currently be restarted from the beginning.
+- The streaming PUT endpoint restarts from the beginning; the separate resumable-session API supports verified source re-selection after reopening the interface and durable completion receipts. See `SHARING_AND_BROWSING.md`.
 
 ### Direct remote transfer UX and protocol
 

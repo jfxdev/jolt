@@ -16,7 +16,7 @@ func (s *Store) CreateUploadSession(ctx context.Context, v entities.UploadSessio
 			if err != nil {
 				return err
 			}
-			if other.Destination == v.Destination {
+			if other.Destination == v.Destination && other.State != "completed" {
 				return ErrUploadSessionExists
 			}
 		}
@@ -36,7 +36,9 @@ func (s *Store) ListUploadSessions(ctx context.Context, mount string) (out []ent
 			if e != nil {
 				return e
 			}
-			out = append(out, v)
+			if v.State != "completed" {
+				out = append(out, v)
+			}
 		}
 		return nil
 	})
@@ -69,4 +71,17 @@ func (s *Store) ExpiredUploadSessions(ctx context.Context, before time.Time) (ou
 		return nil
 	})
 	return
+}
+
+func (s *Store) UpdateUploadSession(ctx context.Context, v entities.UploadSession) error {
+	return s.update(ctx, func(tx *transaction) error {
+		old, err := get[entities.UploadSession](s, "uploads", v.ID)
+		if err != nil {
+			return err
+		}
+		if old.MountID != v.MountID || old.Destination != v.Destination || old.Size != v.Size {
+			return ErrInUse
+		}
+		return tx.put("uploads", v.ID, v.MountID, order(v.CreatedAt), v)
+	})
 }

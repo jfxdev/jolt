@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jfxdev/jolt/control/internal/config"
@@ -42,11 +43,12 @@ const (
 )
 
 type Server struct {
-	config   config.Config
-	store    *store.Store
-	client   *http.Client
-	registry *metrics.Registry
-	log      *slog.Logger
+	rotations sync.Map
+	config    config.Config
+	store     *store.Store
+	client    *http.Client
+	registry  *metrics.Registry
+	log       *slog.Logger
 }
 
 // New builds the Control Tower handler. It fails when the configured node TLS
@@ -1803,9 +1805,24 @@ func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
 		if !decision.Allowed {
 			continue
 		}
-		s.refreshNodeState(r.Context(), &nodes[i])
 		allowedNodes = append(allowedNodes, nodes[i])
 	}
+	queue := make(chan int, len(allowedNodes))
+	for i := range allowedNodes {
+		queue <- i
+	}
+	close(queue)
+	var workers sync.WaitGroup
+	for range min(4, len(allowedNodes)) {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for i := range queue {
+				s.refreshNodeState(r.Context(), &allowedNodes[i])
+			}
+		}()
+	}
+	workers.Wait()
 	writeJSON(w, http.StatusOK, map[string]any{"items": allowedNodes})
 }
 
@@ -1882,35 +1899,63 @@ func (s *Server) rotateNodeToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "node_not_found", "Node não encontrado.")
 		return
 	}
+	value, _ := s.rotations.LoadOrStore(nodeID, &sync.Mutex{})
+	lock := value.(*sync.Mutex)
+	if !lock.TryLock() {
+		writeError(w, r, http.StatusConflict, "token_rotation_in_progress", "Uma rotação já está em andamento.")
+		return
+	}
+	defer lock.Unlock()
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	newToken := "jolt_node_" + hex.EncodeToString(raw)
-	correlationID := r.Header.Get("X-Correlation-ID")
-	if err := s.callNodeJSON(r.Context(), node, http.MethodPost,
-		"/api/v1/crypto/operational-token/prepare", map[string]string{"new_token": newToken},
-		nil, correlationID); err != nil {
-		writeError(w, r, http.StatusBadGateway, "token_rotation_prepare_failed",
-			"O node não conseguiu preparar a nova credencial.")
-		return
-	}
-	encrypted, err := security.Encrypt(s.config.EncryptionKey, newToken)
+	encrypted, err := security.Encrypt(s.config.EncryptionKey, "jolt_node_"+hex.EncodeToString(raw))
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	now := time.Now().UTC()
-	if err := s.store.UpdateNodeToken(r.Context(), nodeID, encrypted, now); err != nil {
+	encrypted, reused, err := s.store.BeginNodeTokenRotation(r.Context(), nodeID, encrypted)
+	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	node.TokenEncrypted, node.UpdatedAt = encrypted, now
-	if err := s.callNodeJSON(r.Context(), node, http.MethodPost,
-		"/api/v1/crypto/operational-token/commit", map[string]any{}, nil, correlationID); err != nil {
-		writeError(w, r, http.StatusBadGateway, "token_rotation_commit_pending",
-			"A nova credencial já está válida, mas a invalidação da anterior precisa ser tentada novamente.")
+	newToken, err := security.Decrypt(s.config.EncryptionKey, encrypted)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	correlationID := r.Header.Get("X-Correlation-ID")
+	candidate := node
+	candidate.TokenEncrypted = encrypted
+	// Commit first reconciles an already prepared/committed operation after a
+	// lost response. Only authentication/not-prepared responses start prepare.
+	if reused {
+		err = s.callNodeJSON(r.Context(), candidate, http.MethodPost, "/api/v1/crypto/operational-token/commit", map[string]any{}, nil, correlationID)
+	}
+	if !reused || err != nil {
+		var apiErr *nodeAPIError
+		if reused && (!errors.As(err, &apiErr) || (apiErr.StatusCode != http.StatusUnauthorized && apiErr.StatusCode != http.StatusConflict)) {
+			writeError(w, r, http.StatusBadGateway, "token_rotation_commit_pending", "A rotação permanece pendente. Tente novamente para reconciliar a mesma credencial.")
+			return
+		}
+		node, err = s.store.GetNode(r.Context(), nodeID)
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		if err := s.callNodeJSON(r.Context(), node, http.MethodPost, "/api/v1/crypto/operational-token/prepare", map[string]string{"new_token": newToken}, nil, correlationID); err != nil {
+			writeError(w, r, http.StatusBadGateway, "token_rotation_prepare_failed", "O node não conseguiu preparar a credencial pendente.")
+			return
+		}
+		if err := s.callNodeJSON(r.Context(), candidate, http.MethodPost, "/api/v1/crypto/operational-token/commit", map[string]any{}, nil, correlationID); err != nil {
+			writeError(w, r, http.StatusBadGateway, "token_rotation_commit_pending", "A rotação permanece pendente. Tente novamente para reconciliar a mesma credencial.")
+			return
+		}
+	}
+	if err := s.store.FinishNodeTokenRotation(r.Context(), nodeID, encrypted); err != nil {
+		s.fail(w, r, err)
 		return
 	}
 	s.audit(r, "rotate", "control-tower/nodes/"+nodeID+"/token", "allowed")
@@ -2804,7 +2849,7 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 	request.Header.Set("Content-Type", r.Header.Get("Content-Type"))
 	for _, header := range []string{"Range", "If-Range", "If-Modified-Since", "If-None-Match",
 		// Content-Range carries the offset of a resumable upload chunk.
-		"Content-Range"} {
+		"Content-Range", "Last-Event-ID"} {
 		if value := r.Header.Get(header); value != "" {
 			request.Header.Set(header, value)
 		}
@@ -3721,7 +3766,7 @@ func nodeAuthorizationRequirements(nodeID, resource, method string, targets file
 		}
 	case "jobs":
 		if method == http.MethodGet {
-			if len(segments) == 1 || (len(segments) == 2 && segments[1] == "events") {
+			if len(segments) == 1 || (len(segments) == 2 && (segments[1] == "events" || segments[1] == "summary")) {
 				return []authorizationRequirement{{Path: prefix + "/jobs", Capability: "list"}}
 			}
 			return []authorizationRequirement{{Path: prefix + "/jobs/" + segments[1], Capability: "read"}}
