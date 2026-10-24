@@ -51,7 +51,7 @@ func TestDurabilityBoundaries(t *testing.T) {
 				t.Fatal("poisoned store continued")
 			}
 			s.Close()
-			s, err = OpenExisting(dir, testKey)
+			s, err = Open(dir, testKey)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -240,7 +240,7 @@ func TestConfigurationBindingsAndRevocationSurviveRepair(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Close()
-	s, err = OpenExisting(dir, testKey)
+	s, err = Open(dir, testKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +398,7 @@ func TestConcurrentInviteConsumptionAndRemovedGrantRevocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Close()
-	s, err = OpenExisting(dir, testKey)
+	s, err = Open(dir, testKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -489,7 +489,7 @@ func TestUnpublishedTemporaryFilesAreIgnored(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "journal", ".tmp-unpublished"), []byte("incomplete"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err = OpenExisting(dir, testKey)
+	s, err = Open(dir, testKey)
 	if err != nil {
 		t.Fatal(err)
 	}

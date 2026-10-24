@@ -66,7 +66,11 @@ write stops the node; it must reopen and authenticate persisted state.
 
 After 1,024 transactions or 64 MiB the writer consolidates the current records
 into encrypted pages and commits a new authenticated manifest before deleting
-superseded journal files. It preserves audit, job events and idempotency.
+superseded journal files. Audit and job events use immutable snapshot segments
+listed in the manifest: later compactions reuse those files and only encrypt
+new history. No history is purged; idempotency is preserved. Each compaction
+logs its duration and outcome. Ordered indexes by bucket, group and job state
+avoid scanning lifetime history for event cursors and queued-job claims.
 Payload caching is bounded to 16 MiB; indexes keep record locations, not the full
 history. History and events are read in pages. Smaller copy chunks cause more
 durable writes; the default remains 16 MiB.
@@ -90,6 +94,9 @@ key separate. The contents of mounts still require their own backups.
 
 Restore the data and keys directories and provision the saved public YAML;
 `--data-dir`/`--keys-dir` overrides support inspecting a restored location.
+Diagnostics open state read-only without creating directories or lock files,
+changing permissions, or repairing the committed head. A directory lock excludes
+concurrent runtime access even when a restored copy has no `.state.lock`.
 Diagnostics authenticate every committed envelope, inspect mounts, peers, grants,
 jobs and partials, and report unsafe conditions. Interrupted jobs require explicit
 validation before resuming. The Control Tower credential must also be updated

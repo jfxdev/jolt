@@ -319,14 +319,14 @@ Os itens abaixo nao sao obrigatorios no MVP, mas podem ser considerados em verso
 - RF-195: O sistema deve persistir mounts configurados.
 - RF-196: O sistema deve persistir jobs e itens de transferencia.
 - RF-197: O sistema deve persistir estado necessario para retomar jobs apos reinicio.
-- RF-198: O sistema deve manter metadados em banco local, preferencialmente SQLite.
-- RF-281: O node deve carregar configuracao a partir de valores padrao, variaveis de ambiente, arquivo de configuracao e banco local persistido, com precedencia documentada.
-- RF-282: Configuracoes operacionais mutaveis devem ser lidas e alteradas por API autenticada, Swagger/OpenAPI ou Control Tower.
-- RF-283: Configuracoes imutaveis em runtime, como portas, paths internos de dados e token operacional recebido por ambiente, devem exigir reinicio do processo para mudanca.
-- RF-284: O sistema deve distinguir configuracao desejada, configuracao efetiva e estado observado.
+- RF-198: O node deve manter estado operacional em YAML cifrado; o banco local da Control Tower permanece separado. Ver [NODE_YAML.md](NODE_YAML.md).
+- RF-281: O node deve carregar defaults e o arquivo obrigatorio `node.yaml`; ambiente fornece somente os paths de bootstrap e segredos documentados, sem camadas de configuracao em banco local.
+- RF-282: Configuracoes, mounts e grants devem ser consultados por API autenticada, Swagger/OpenAPI ou Control Tower, com alteracao somente pelo arquivo.
+- RF-283: Mudancas no `node.yaml` e nos segredos de bootstrap devem exigir reinicio do processo.
+- RF-284: O sistema deve distinguir configuracao declarada no arquivo, configuracao efetivamente aplicada e estado observado.
 - RF-285: A API deve expor endpoint para leitura da configuracao efetiva sem revelar segredos.
-- RF-286: A API deve expor endpoint para atualizar configuracoes mutaveis com validacao, auditoria, idempotencia e mascaramento de segredos.
-- RF-287: Alteracoes de configuracao devem ser persistidas atomicamente ou rejeitadas sem deixar estado parcial.
+- RF-286: Endpoints de mutacao de configuracao, mounts e grants devem rejeitar alteracoes com `409 configuration_managed_by_file`.
+- RF-287: O arquivo completo deve ser validado antes da aplicacao atomica no boot; configuracao invalida deve impedir a inicializacao sem deixar estado parcial.
 - RF-288: Segredos como `CONTROL_TOWER_TOKEN`, chaves privadas e tokens de peers nao devem ser retornados em claro por API, Swagger, logs ou exportacoes de diagnostico.
 
 ### 5.16 Logs e Auditoria
@@ -2694,15 +2694,15 @@ O MVP deve incluir:
 - Nodes sem interface web propria.
 - Nodes expondo apenas porta HTTP da API/Swagger e porta mTLS de transferencia.
 - Token da Control Tower recebido pelo node por variavel de ambiente.
-- Diretorio de keys dedicado, configuravel por `JOLT_KEYS_DIR`.
+- Diretorio de keys dedicado, configuravel por `keys_dir` no `node.yaml`.
 - Volume Docker separado para keys, distinto do volume de dados e dos mounts de transferencia.
 - Validacao de permissoes do diretorio de keys no boot.
 - Rotacao mTLS planejada com estados `active`, `next` e `previous`.
 - Revogacao emergencial de certificado mTLS comprometido.
 - Modelo de configuracao do node: defaults, YAML obrigatorio, segredos externos e estado observado.
 - Endpoint de leitura de configuracao efetiva sem segredos.
-- Endpoint de alteracao de configuracoes mutaveis por API autenticada.
-- Campos estruturais e secretos definidos por ambiente tratados como locked no MVP.
+- Configuracoes, mounts e grants somente para leitura por API; alteracoes pelo `node.yaml` aplicadas apos reinicio.
+- Campos estruturais definidos no YAML e segredos externos aplicados somente no boot.
 - Lista de nodes conhecidos na Control Tower.
 - Visualizacao de estado, capacidades e diagnosticos resumidos por node.
 - Operacoes da Control Tower executadas pelas mesmas APIs dos nodes.
@@ -2929,7 +2929,7 @@ Itens candidatos para evolucao:
 - Definir formato de exportacao/importacao de configuracao e diagnostico de DR.
 - Definir politica de retencao de backups recomendada.
 - Definir como armazenar tokens da Control Tower em backup: segredo direto, referencia externa ou integracao futura com secret manager.
-- Definir formato oficial do arquivo de configuracao: YAML, TOML ou JSON.
+- Formato oficial do arquivo de configuracao do node definido: `node.yaml` (ver [NODE_YAML.md](NODE_YAML.md)).
 - Definir quais campos poderao usar reload sem restart apos o MVP.
 - Definir duracao padrao da grace period para certificado mTLS anterior.
 - Definir formato exato dos metadados de keys e lista de revogacao.

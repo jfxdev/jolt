@@ -28,7 +28,8 @@ var ErrInstanceActive = errors.New("jolt node is running")
 const lockName = ".jolt-node.lock"
 
 type Lock struct {
-	file *os.File
+	file      *os.File
+	directory *os.File
 }
 
 type FileManifest struct {
@@ -59,6 +60,20 @@ func AcquireLock(dataDir string) (*Lock, error) {
 	if !info.IsDir() {
 		return nil, errors.New("state directory must not be a symlink")
 	}
+	directory, err := os.OpenFile(dataDir, os.O_RDONLY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err := unix.Flock(int(directory.Fd()), unix.LOCK_SH|unix.LOCK_NB); err != nil {
+		directory.Close()
+		return nil, ErrInstanceActive
+	}
+	success := false
+	defer func() {
+		if !success {
+			directory.Close()
+		}
+	}()
 	file, err := os.OpenFile(filepath.Join(dataDir, lockName), os.O_CREATE|os.O_RDWR|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, err
@@ -70,11 +85,35 @@ func AcquireLock(dataDir string) (*Lock, error) {
 		}
 		return nil, err
 	}
+	success = true
+	return &Lock{file: file, directory: directory}, nil
+}
+
+// acquireReadOnlyLock never creates a missing runtime lock. OpenExisting's
+// exclusive directory lock also excludes a runtime starting without this file.
+func acquireReadOnlyLock(dataDir string) (*Lock, error) {
+	file, err := os.OpenFile(filepath.Join(dataDir, lockName), os.O_RDONLY|unix.O_NOFOLLOW, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return &Lock{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		file.Close()
+		return nil, ErrInstanceActive
+	}
 	return &Lock{file: file}, nil
 }
 
 func (l *Lock) Close() error {
-	if l == nil || l.file == nil {
+	if l == nil {
+		return nil
+	}
+	if l.directory != nil {
+		defer l.directory.Close()
+	}
+	if l.file == nil {
 		return nil
 	}
 	unlockErr := unix.Flock(int(l.file.Fd()), unix.LOCK_UN)
@@ -104,7 +143,7 @@ func CreateSnapshot(ctx context.Context, dataDir, keysDir, output string, key []
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Manifest{}, err
 	}
-	lock, err := AcquireLock(dataDir)
+	lock, err := acquireReadOnlyLock(dataDir)
 	if err != nil {
 		return Manifest{}, err
 	}

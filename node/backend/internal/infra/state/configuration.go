@@ -198,71 +198,87 @@ func (s *Store) DeleteMount(ctx context.Context, id string) error {
 		return nil
 	})
 }
-func (s *Store) effectiveGrant(g entities.TransferPathGrant) (entities.TransferPathGrant, error) {
+
+type grantCheck struct {
+	grant     entities.TransferPathGrant
+	mount     entities.Mount
+	checkPath bool
+}
+
+// prepareGrant reads only persisted records while the store lock is held.
+func (s *Store) prepareGrant(g entities.TransferPathGrant) (grantCheck, error) {
 	g.ConfiguredEnabled = g.Enabled
 	if !g.Enabled {
 		g.InactiveReason = "disabled"
-		return g, nil
+		return grantCheck{grant: g}, nil
 	}
 	if _, blocked := s.index["revoked_grants"][g.ID]; blocked {
 		g.Enabled = false
 		g.InactiveReason = "revoked"
-		return g, nil
+		return grantCheck{grant: g}, nil
 	}
 	if !s.managed {
-		return g, nil
+		return grantCheck{grant: g}, nil
 	}
 	peer, e := get[entities.Peer](s, "peers", g.PeerNodeID)
 	if e != nil && !errors.Is(e, ErrNotFound) {
-		return g, e
+		return grantCheck{}, e
 	}
 	if e != nil || !entities.TrustedPeerState(peer.State) {
 		g.Enabled = false
 		g.InactiveReason = "peer_untrusted"
-		return g, nil
+		return grantCheck{grant: g}, nil
 	}
 	m, e := get[entities.Mount](s, "mounts", g.MountID)
 	if e != nil && !errors.Is(e, ErrNotFound) {
-		return g, e
+		return grantCheck{}, e
 	}
 	if e != nil || !m.Enabled {
 		g.Enabled = false
 		g.InactiveReason = "mount_unavailable"
-		return g, nil
+		return grantCheck{grant: g}, nil
 	}
 	if (g.Permissions.Write || g.Permissions.Delete || g.Permissions.Rename || g.Direction != "send") && m.Mode != "read_write" {
 		g.Enabled = false
 		g.InactiveReason = "mount_read_only"
-		return g, nil
+		return grantCheck{grant: g}, nil
 	}
 	if peer.TransferMode == "one_sided" && ((peer.LocalRole == "sender" && g.Direction != "send") || (peer.LocalRole == "receiver" && g.Direction != "receive")) {
 		g.Enabled = false
 		g.InactiveReason = "peer_role_incompatible"
-		return g, nil
+		return grantCheck{grant: g}, nil
+	}
+	return grantCheck{grant: g, mount: m, checkPath: true}, nil
+}
+
+func (check grantCheck) effective() entities.TransferPathGrant {
+	g, m := check.grant, check.mount
+	if !check.checkPath {
+		return g
 	}
 	root, e := filepath.EvalSymlinks(m.LocalPath)
 	if e != nil || root != m.LocalPath {
 		g.Enabled = false
 		g.InactiveReason = "mount_unavailable"
-		return g, nil
+		return g
 	}
 	target, e := filepath.EvalSymlinks(filepath.Join(root, filepath.FromSlash(g.Path)))
 	if e != nil {
 		g.Enabled = false
 		g.InactiveReason = "path_unavailable"
-		return g, nil
+		return g
 	}
 	relative, e := filepath.Rel(root, target)
 	if e != nil || relative == ".." || !filepath.IsLocal(relative) {
 		g.Enabled = false
 		g.InactiveReason = "path_unavailable"
-		return g, nil
+		return g
 	}
 	info, e := os.Stat(target)
 	if e != nil {
 		g.Enabled = false
 		g.InactiveReason = "path_unavailable"
-		return g, nil
+		return g
 	}
 	var access uint32
 	if g.Permissions.Read {
@@ -278,36 +294,48 @@ func (s *Store) effectiveGrant(g entities.TransferPathGrant) (entities.TransferP
 		g.Enabled = false
 		g.InactiveReason = "path_unavailable"
 	}
-	return g, nil
+	return g
 }
-func (s *Store) GetTransferGrant(ctx context.Context, id string) (v entities.TransferPathGrant, err error) {
-	err = s.view(ctx, func() error {
-		var e error
-		v, e = get[entities.TransferPathGrant](s, "grants", id)
-		if e == nil {
-			v, e = s.effectiveGrant(v)
+func (s *Store) GetTransferGrant(ctx context.Context, id string) (entities.TransferPathGrant, error) {
+	var check grantCheck
+	err := s.view(ctx, func() error {
+		g, err := get[entities.TransferPathGrant](s, "grants", id)
+		if err != nil {
+			return err
 		}
-		return e
+		check, err = s.prepareGrant(g)
+		return err
 	})
-	return
+	if err != nil {
+		return entities.TransferPathGrant{}, err
+	}
+	return check.effective(), nil
 }
-func (s *Store) ListTransferGrants(ctx context.Context) (out []entities.TransferPathGrant, err error) {
-	err = s.view(ctx, func() error {
+func (s *Store) ListTransferGrants(ctx context.Context) ([]entities.TransferPathGrant, error) {
+	var checks []grantCheck
+	err := s.view(ctx, func() error {
 		ids := keys(s, "grants", "")
 		for i := len(ids) - 1; i >= 0; i-- {
-			v, e := get[entities.TransferPathGrant](s, "grants", ids[i])
-			if e != nil {
-				return e
+			g, err := get[entities.TransferPathGrant](s, "grants", ids[i])
+			if err != nil {
+				return err
 			}
-			v, e = s.effectiveGrant(v)
-			if e != nil {
-				return e
+			check, err := s.prepareGrant(g)
+			if err != nil {
+				return err
 			}
-			out = append(out, v)
+			checks = append(checks, check)
 		}
 		return nil
 	})
-	return
+	if err != nil {
+		return nil, err
+	}
+	var out []entities.TransferPathGrant
+	for _, check := range checks {
+		out = append(out, check.effective())
+	}
+	return out, nil
 }
 func (s *Store) saveGrant(ctx context.Context, g entities.TransferPathGrant, create bool) error {
 	return s.update(ctx, func(tx *transaction) error {

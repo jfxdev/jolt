@@ -137,7 +137,7 @@ export function RelationshipAccessPanel({ node, otherName, peer, canListGrants, 
             <div className="flex flex-wrap items-center gap-1">
               <TransferDirectionBadge direction={grant.direction} />
               <GrantPermissionBadges value={grant.permissions} />
-              {grant.inactive_reason && <span className="text-xs text-muted-foreground">{grant.inactive_reason === "revoked" ? "Revogada. Uma nova autorização no arquivo é necessária." : grant.inactive_reason === "peer_untrusted" ? "Aguardando relação de confiança." : grant.inactive_reason === "disabled" ? "Desabilitada no arquivo." : "Indisponível: verifique o volume, a pasta e as permissões."}</span>}
+              {grant.inactive_reason && <span className="text-xs text-muted-foreground">{grant.inactive_reason === "revoked" ? "Revogada. Uma nova autorização no arquivo é necessária." : grant.inactive_reason === "peer_untrusted" ? "Aguardando relação de confiança." : grant.inactive_reason === "disabled" ? "Desabilitada no arquivo." : grant.inactive_reason === "peer_role_incompatible" ? "Papéis incompatíveis: verifique os papéis do peer e a direção da autorização." : "Indisponível: verifique o volume, a pasta e as permissões."}</span>}
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-3">
               {!managed && <Switch checked={grant.enabled} disabled={!canUpdate || busy || !!form} aria-label={`Ativar autorização: ${label}`} title={grant.enabled ? "Autorização ativa" : "Autorização desabilitada"} onCheckedChange={(enabled) => void run(() => api.updateGrant(node.node_id, grant.grant_id, { ...grantValue(grant), enabled }), "Autorização atualizada.")} />}

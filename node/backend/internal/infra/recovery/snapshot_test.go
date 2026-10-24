@@ -223,7 +223,7 @@ func TestSnapshotRestoresConfigurationTrustJobsUploadsAndIdentity(t *testing.T) 
 	if err != nil || restoredIdentity.NodeID != identity.NodeID || restoredIdentity.Fingerprint != identity.Fingerprint {
 		t.Fatalf("identity: %+v %v", restoredIdentity, err)
 	}
-	restoredStore, err := db.OpenExisting(filepath.Join(restored, "data"), make([]byte, 32))
+	restoredStore, err := db.Open(filepath.Join(restored, "data"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}

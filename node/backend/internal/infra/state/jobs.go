@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/jfxdev/jolt/backend/internal/entities"
+	"sort"
 	"time"
 )
 
@@ -121,10 +122,7 @@ func (s *Store) ListJobsByPeer(ctx context.Context, peer string) (out []entities
 }
 func (s *Store) ClaimNextJob(ctx context.Context, now time.Time) (job entities.Job, err error) {
 	err = s.update(ctx, func(tx *transaction) error {
-		for _, id := range keys(s, "jobs", "") {
-			if s.index["jobs"][id].State != "queued" {
-				continue
-			}
+		for _, id := range s.ordered[indexSelection{"jobs", "state", "queued"}] {
 			j, e := get[entities.Job](s, "jobs", id)
 			if e != nil {
 				return e
@@ -246,10 +244,9 @@ func (s *Store) ListJobEvents(ctx context.Context, after int64, id string, limit
 	}
 	err = s.view(ctx, func() error {
 		afterKey := fmt.Sprintf("%020d", after)
-		for _, key := range keys(s, "events", id) {
-			if key <= afterKey {
-				continue
-			}
+		ids := keys(s, "events", id)
+		start := sort.Search(len(ids), func(i int) bool { return ids[i] > afterKey })
+		for _, key := range ids[start:] {
 			v, e := get[entities.JobEvent](s, "events", key)
 			if e != nil {
 				return e

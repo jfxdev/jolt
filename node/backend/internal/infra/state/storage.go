@@ -12,12 +12,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/entities"
@@ -59,7 +61,8 @@ type document struct {
 	Records []record `yaml:"records"`
 }
 type manifest struct {
-	Pages []string `yaml:"pages"`
+	Pages        []string `yaml:"pages"`
+	HistoryPages []string `yaml:"history_pages,omitempty"`
 }
 type reference struct {
 	File         string
@@ -76,12 +79,19 @@ type transaction struct {
 	records []record
 }
 
+type indexSelection struct{ bucket, kind, value string }
+
 type Store struct {
 	failure                   chan struct{}
 	mu                        sync.Mutex
 	dir, id                   string
 	aead                      cipher.AEAD
 	lock                      *os.File
+	fileLock                  *os.File
+	readOnly                  bool
+	ordered                   map[indexSelection][]string
+	historyPages              []string
+	pendingHistory            map[string]map[string]bool
 	sequence                  uint64
 	snapshotSequence          uint64
 	journalCount              int
@@ -106,11 +116,18 @@ func RejectLegacy(dir string) error {
 	return nil
 }
 
-func Open(dir string, key []byte) (*Store, error) { return open(dir, key, false) }
+func Open(dir string, key []byte) (*Store, error) { return open(dir, key, false, false) }
 
-// OpenExisting never initializes missing state. It is used by offline recovery.
-func OpenExisting(dir string, key []byte) (*Store, error) { return open(dir, key, true) }
-func open(dir string, key []byte, existing bool) (*Store, error) {
+// OpenExisting reads offline state without creating files or repairing its head.
+// Mutations are rejected; runtime callers must use Open.
+func OpenExisting(dir string, key []byte) (*Store, error) { return open(dir, key, true, true) }
+
+// OpenExistingForUpdate requires existing state and permits explicit offline recovery writes.
+func OpenExistingForUpdate(dir string, key []byte) (*Store, error) {
+	return open(dir, key, true, false)
+}
+
+func open(dir string, key []byte, existing, readOnly bool) (*Store, error) {
 	if len(key) != 32 {
 		return nil, errors.New("state encryption key must contain exactly 32 bytes")
 	}
@@ -122,8 +139,10 @@ func open(dir string, key []byte, existing bool) (*Store, error) {
 			return nil, err
 		}
 	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, err
+	if !existing {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return nil, err
+		}
 	}
 	info, err := os.Lstat(dir)
 	if err != nil {
@@ -132,20 +151,45 @@ func open(dir string, key []byte, existing bool) (*Store, error) {
 	if !info.IsDir() {
 		return nil, errors.New("state directory must not be a symlink")
 	}
-	if err := os.Chmod(dir, 0700); err != nil {
-		return nil, err
-	}
-	lock, err := os.OpenFile(filepath.Join(dir, ".state.lock"), os.O_CREATE|os.O_RDWR|unix.O_NOFOLLOW, 0600)
+	// Lock the directory itself so offline readers need no writable lock file.
+	lock, err := os.OpenFile(dir, os.O_RDONLY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, err
 	}
-	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	directoryMode := unix.LOCK_SH
+	if readOnly {
+		directoryMode = unix.LOCK_EX
+	}
+	if err := unix.Flock(int(lock.Fd()), directoryMode|unix.LOCK_NB); err != nil {
 		lock.Close()
 		return nil, errors.New("node state is already open")
 	}
+	if !readOnly {
+		if err := os.Chmod(dir, 0700); err != nil {
+			lock.Close()
+			return nil, err
+		}
+	}
+	var fileLock *os.File
+	flags := os.O_RDONLY | unix.O_NOFOLLOW
+	if !readOnly {
+		flags = os.O_CREATE | os.O_RDWR | unix.O_NOFOLLOW
+	}
+	fileLock, err = os.OpenFile(filepath.Join(dir, ".state.lock"), flags, 0600)
+	if err != nil && !(readOnly && errors.Is(err, os.ErrNotExist)) {
+		lock.Close()
+		return nil, err
+	}
+	if fileLock != nil {
+		if err := unix.Flock(int(fileLock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+			fileLock.Close()
+			lock.Close()
+			return nil, errors.New("node state is already open")
+		}
+	}
 	block, _ := aes.NewCipher(key)
 	aead, _ := cipher.NewGCM(block)
-	s := &Store{failure: make(chan struct{}), dir: dir, aead: aead, lock: lock, index: map[string]map[string]reference{}, cache: map[string]cacheEntry{}}
+	s := &Store{failure: make(chan struct{}), dir: dir, aead: aead, lock: lock, fileLock: fileLock, readOnly: readOnly, ordered: map[indexSelection][]string{}, pendingHistory: map[string]map[string]bool{}, index: map[string]map[string]reference{}, cache: map[string]cacheEntry{}}
 	success := false
 	defer func() {
 		if !success {
@@ -154,6 +198,9 @@ func open(dir string, key []byte, existing bool) (*Store, error) {
 	}()
 	header := filepath.Join(dir, "store.yaml")
 	if _, err := os.Lstat(header); errors.Is(err, os.ErrNotExist) {
+		if existing {
+			return nil, err
+		}
 		entries, e := os.ReadDir(dir)
 		if e != nil {
 			return nil, e
@@ -200,8 +247,10 @@ func open(dir string, key []byte, existing bool) (*Store, error) {
 		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
-		if err := os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
-			return nil, err
+		if !existing {
+			if err := os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if _, err := os.Lstat(filepath.Join(dir, "manifest.yaml")); err == nil {
@@ -211,6 +260,27 @@ func open(dir string, key []byte, existing bool) (*Store, error) {
 			return nil, err
 		}
 		s.sequence, s.snapshotSequence = seq, seq
+		seen := map[string]bool{}
+		for _, name := range m.HistoryPages {
+			pageSeq, _, err := historyPageIdentity(name)
+			if err != nil || pageSeq > seq || seen[name] {
+				return nil, errors.New("invalid history page reference")
+			}
+			seen[name] = true
+			var doc document
+			if _, err := s.read(name, "snapshot", pageSeq, &doc); err != nil {
+				return nil, err
+			}
+			for _, r := range doc.Records {
+				if !historyBucket(r.Bucket) || r.Delete {
+					return nil, errors.New("invalid immutable history record")
+				}
+			}
+			if err := s.apply(doc, name, true); err != nil {
+				return nil, err
+			}
+		}
+		s.historyPages = m.HistoryPages
 		for i, name := range m.Pages {
 			expected := fmt.Sprintf("snapshots/%020d-%06d.yaml", seq, i)
 			if name != expected {
@@ -266,14 +336,16 @@ func open(dir string, key []byte, existing bool) (*Store, error) {
 	}
 	// A transaction published immediately before a crash can precede its head
 	// update. Accept it atomically and durably protect it before exposing reads.
-	if s.sequence > committed {
+	if s.sequence > committed && !readOnly {
 		if _, err := s.write("head.yaml", "head", s.sequence, struct{}{}); err != nil {
 			return nil, err
 		}
 	}
 	s.managed = len(s.index["configuration"]) > 0
-	if err := syncDir(dir); err != nil {
-		return nil, err
+	if !existing {
+		if err := syncDir(dir); err != nil {
+			return nil, err
+		}
 	}
 	success = true
 	return s, nil
@@ -286,6 +358,10 @@ func (s *Store) Close() error {
 		return nil
 	}
 	s.closed = true
+	if s.fileLock != nil {
+		_ = unix.Flock(int(s.fileLock.Fd()), unix.LOCK_UN)
+		_ = s.fileLock.Close()
+	}
 	if s.lock != nil {
 		_ = unix.Flock(int(s.lock.Fd()), unix.LOCK_UN)
 		return s.lock.Close()
@@ -315,6 +391,9 @@ func (s *Store) update(ctx context.Context, fn func(*transaction) error) error {
 	if err := s.available(ctx); err != nil {
 		return err
 	}
+	if s.readOnly {
+		return errors.New("state is open read-only")
+	}
 	tx := &transaction{store: s}
 	if err := fn(tx); err != nil {
 		return err
@@ -322,6 +401,20 @@ func (s *Store) update(ctx context.Context, fn func(*transaction) error) error {
 	if len(tx.records) == 0 {
 		return nil
 	}
+	seenHistory := map[string]bool{}
+	for _, r := range tx.records {
+		if r.Bucket == "" || r.Key == "" {
+			return errors.New("empty state record identity")
+		}
+		if historyBucket(r.Bucket) {
+			identity := r.Bucket + "\x00" + r.Key
+			if _, exists := s.index[r.Bucket][r.Key]; exists || r.Delete || seenHistory[identity] {
+				return errors.New("history records are append-only")
+			}
+			seenHistory[identity] = true
+		}
+	}
+
 	seq := s.sequence + 1
 	name := fmt.Sprintf("journal/%020d.yaml", seq)
 	doc := document{Records: tx.records}
@@ -385,21 +478,57 @@ func get[T any](s *Store, bucket, key string) (T, error) {
 	}
 	return value, err
 }
+
+// keys returns a borrowed ordered index, valid while the store lock is held.
 func keys(s *Store, bucket, group string) []string {
-	out := []string{}
-	for key, r := range s.index[bucket] {
-		if group == "" || r.Group == group {
-			out = append(out, key)
+	kind := "group"
+	if group == "" {
+		kind = "all"
+	}
+	return s.ordered[indexSelection{bucket, kind, group}]
+}
+func selections(bucket string, r reference) []indexSelection {
+	return []indexSelection{{bucket, "all", ""}, {bucket, "group", r.Group}, {bucket, "state", r.State}}
+}
+func (s *Store) indexPosition(ids []string, bucket, key, order string) int {
+	return sort.Search(len(ids), func(i int) bool {
+		other := s.index[bucket][ids[i]].Order
+		return other > order || (other == order && ids[i] >= key)
+	})
+}
+func (s *Store) removeOrdered(bucket, key string, r reference) {
+	for _, selection := range selections(bucket, r) {
+		ids := s.ordered[selection]
+		i := s.indexPosition(ids, bucket, key, r.Order)
+		if i < len(ids) && ids[i] == key {
+			ids = append(ids[:i], ids[i+1:]...)
+		}
+		if len(ids) == 0 {
+			delete(s.ordered, selection)
+		} else {
+			s.ordered[selection] = ids
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		a, b := s.index[bucket][out[i]], s.index[bucket][out[j]]
-		if a.Order == b.Order {
-			return out[i] < out[j]
-		}
-		return a.Order < b.Order
-	})
-	return out
+}
+func (s *Store) insertOrdered(bucket, key string, r reference) {
+	for _, selection := range selections(bucket, r) {
+		ids := s.ordered[selection]
+		i := s.indexPosition(ids, bucket, key, r.Order)
+		ids = append(ids, "")
+		copy(ids[i+1:], ids[i:])
+		ids[i] = key
+		s.ordered[selection] = ids
+	}
+}
+func historyBucket(bucket string) bool { return bucket == "events" || bucket == "audit" }
+func historyPageIdentity(name string) (uint64, int, error) {
+	var seq uint64
+	var page int
+	_, err := fmt.Sscanf(name, "snapshots/%020d-history-%06d.yaml", &seq, &page)
+	if err != nil || name != fmt.Sprintf("snapshots/%020d-history-%06d.yaml", seq, page) {
+		return 0, 0, errors.New("invalid history page reference")
+	}
+	return seq, page, nil
 }
 func (s *Store) load(name string) (document, error) {
 	if cached, ok := s.cache[name]; ok {
@@ -456,21 +585,52 @@ func (s *Store) apply(doc document, name string, snapshot bool) error {
 				return errors.New("duplicate snapshot record")
 			}
 		}
+		old, exists := s.index[r.Bucket][r.Key]
+		next := reference{name, i, r.Group, r.Order, r.State}
+		changed := !exists || old.Group != next.Group || old.Order != next.Order || old.State != next.State
+		if exists && (r.Delete || changed) {
+			s.removeOrdered(r.Bucket, r.Key, old)
+		}
 		if r.Delete {
 			delete(s.index[r.Bucket], r.Key)
 		} else {
-			s.index[r.Bucket][r.Key] = reference{name, i, r.Group, r.Order, r.State}
+			s.index[r.Bucket][r.Key] = next
+			if changed {
+				s.insertOrdered(r.Bucket, r.Key, next)
+			}
+		}
+		if historyBucket(r.Bucket) {
+			if s.pendingHistory[r.Bucket] == nil {
+				s.pendingHistory[r.Bucket] = map[string]bool{}
+			}
+			if r.Delete || strings.Contains(name, "-history-") {
+				delete(s.pendingHistory[r.Bucket], r.Key)
+			} else {
+				s.pendingHistory[r.Bucket][r.Key] = true
+			}
 		}
 	}
 	return nil
 }
-func (s *Store) compact() error {
+func (s *Store) compact() (err error) {
+	started := time.Now()
+	defer func() { slog.Info("state compaction", "duration", time.Since(started), "error", err) }()
+	if s.readOnly {
+		return errors.New("state is open read-only")
+	}
+	if s.sequence == s.snapshotSequence {
+		return nil
+	}
+
 	names := []string{}
 	for bucket := range s.index {
 		names = append(names, bucket)
 	}
 	sort.Strings(names)
 	var pages []string
+	historyPages := append([]string(nil), s.historyPages...)
+	var newPages []string
+	history := false
 	doc := document{}
 	size := 0
 	flush := func() error {
@@ -478,16 +638,36 @@ func (s *Store) compact() error {
 			return nil
 		}
 		name := fmt.Sprintf("snapshots/%020d-%06d.yaml", s.sequence, len(pages))
+		if history {
+			name = fmt.Sprintf("snapshots/%020d-history-%06d.yaml", s.sequence, len(newPages))
+		}
 		if _, err := s.write(name, "snapshot", s.sequence, doc); err != nil {
 			return err
 		}
-		pages = append(pages, name)
+		if history {
+			historyPages = append(historyPages, name)
+		} else {
+			pages = append(pages, name)
+		}
+		newPages = append(newPages, name)
 		doc = document{}
 		size = 0
 		return nil
 	}
 	for _, bucket := range names {
-		for _, key := range keys(s, bucket, "") {
+		if err := flush(); err != nil {
+			return err
+		}
+		history = historyBucket(bucket)
+		ids := keys(s, bucket, "")
+		if history {
+			ids = make([]string, 0, len(s.pendingHistory[bucket]))
+			for key := range s.pendingHistory[bucket] {
+				ids = append(ids, key)
+			}
+			sort.Strings(ids)
+		}
+		for _, key := range ids {
 			ref := s.index[bucket][key]
 			source, err := s.load(ref.File)
 			if err != nil {
@@ -506,19 +686,19 @@ func (s *Store) compact() error {
 	if err := flush(); err != nil {
 		return err
 	}
-	if _, err := s.write("manifest.yaml", "manifest", s.sequence, manifest{Pages: pages}); err != nil {
+	if _, err := s.write("manifest.yaml", "manifest", s.sequence, manifest{Pages: pages, HistoryPages: historyPages}); err != nil {
 		return err
 	}
-	s.index = map[string]map[string]reference{}
 	s.cache = map[string]cacheEntry{}
 	s.cacheOrder = nil
 	s.cacheBytes = 0
-	for _, name := range pages {
+	s.historyPages = historyPages
+	for _, name := range newPages {
 		var doc document
 		if _, err := s.read(name, "snapshot", s.sequence, &doc); err != nil {
 			return err
 		}
-		if err := s.apply(doc, name, true); err != nil {
+		if err := s.apply(doc, name, false); err != nil {
 			return err
 		}
 	}
@@ -529,7 +709,7 @@ func (s *Store) compact() error {
 			return err
 		}
 		live := map[string]bool{}
-		for _, name := range pages {
+		for _, name := range append(pages, historyPages...) {
 			live[filepath.Base(name)] = true
 		}
 		for _, entry := range entries {

@@ -451,7 +451,7 @@ func runRecoverOperationalToken(arguments []string) error {
 		return err
 	}
 	defer instanceLock.Close()
-	storage, err := db.OpenExisting(absoluteData, encryptionKey)
+	storage, err := db.OpenExistingForUpdate(absoluteData, encryptionKey)
 	if err != nil {
 		return err
 	}

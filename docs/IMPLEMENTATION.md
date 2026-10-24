@@ -284,7 +284,7 @@ Status legend:
 ### Durable asynchronous jobs
 
 - Persistent encrypted YAML queue with atomic claims and bounded node concurrency
-  configured by `MAX_CONCURRENT_JOBS`.
+  configured by `max_concurrent_jobs` in `node.yaml`.
 - Durable jobs for mkdir, local copy, move, delete, and direct remote file pull.
 - Recovery converts jobs left in executing/requested states to
   `waiting_validation`; explicit validation/resume is required.
@@ -331,7 +331,7 @@ Status legend:
   500-item response cap.
 - Paginated per-item results at `GET /api/v1/jobs/{jobID}/items`.
 - Directory resume at file granularity; completed and skipped items are preserved.
-- Configurable local chunks through `COPY_CHUNK_SIZE_BYTES`, defaulting to 16 MiB.
+- Configurable local chunks through `copy_chunk_size_bytes` in `node.yaml`, defaulting to 16 MiB.
 - Every fully synced chunk advances a durable checkpoint.
 - Retry truncates bytes written beyond the last persisted checkpoint.
 - Local resumed partials are validated against the source prefix.
@@ -481,9 +481,10 @@ Status legend:
 ### Configuration and observability
 
 - Effective immutable configuration can be read without exposing secrets.
-- Environment variables configure the current runtime.
-- Mutable configuration update APIs, persisted desired/effective/observed layers,
-  and file-based configuration precedence are not complete.
+- Mandatory `node.yaml` provides runtime settings, mounts, and grants over defaults;
+  environment variables supply only the documented bootstrap paths and secrets.
+- Configuration APIs are read-only. File changes apply after restart; applied
+  configuration and observed resource status remain distinct. See [NODE_YAML.md](NODE_YAML.md).
 - Health, job events, peer state, mount diagnostics, and structured request logs
   exist.
 - A recent-log query API and richer Control Tower diagnostics are pending.

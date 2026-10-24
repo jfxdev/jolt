@@ -1,6 +1,9 @@
 package httpapi
 
 import (
+	"encoding/json"
+	"github.com/jfxdev/jolt/backend/internal/entities"
+	"go.yaml.in/yaml/v3"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,8 +13,8 @@ import (
 	"testing"
 )
 
-// TestOpenAPIDocumentsEveryFileRoute keeps the published spec honest. The node
-// has no YAML dependency, so this checks the property that actually regresses:
+// TestOpenAPIDocumentsEveryFileRoute keeps the published spec honest. It
+// checks the property that actually regresses:
 // a route is added to the mux and the spec is forgotten.
 func TestOpenAPIDocumentsEveryFileRoute(t *testing.T) {
 	routes := []string{
@@ -101,5 +104,72 @@ func TestRecoverStillHandlesOrdinaryPanics(t *testing.T) {
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("ordinary panic produced %d", recorder.Code)
+	}
+}
+
+// The list schema must describe the authorization as well as its effective state.
+func TestOpenAPIGrantListIncludesIdentityPermissionsAndStatus(t *testing.T) {
+	var spec struct {
+		Components struct {
+			Schemas map[string]struct {
+				Properties map[string]any `yaml:"properties"`
+				AllOf      []struct {
+					Ref        string         `yaml:"$ref"`
+					Properties map[string]any `yaml:"properties"`
+				} `yaml:"allOf"`
+			} `yaml:"schemas"`
+		} `yaml:"components"`
+		Paths map[string]struct {
+			Get struct {
+				Responses map[string]struct {
+					Content map[string]struct {
+						Schema struct {
+							Properties map[string]struct {
+								Items struct {
+									Ref string `yaml:"$ref"`
+								} `yaml:"items"`
+							} `yaml:"properties"`
+						} `yaml:"schema"`
+					} `yaml:"content"`
+				} `yaml:"responses"`
+			} `yaml:"get"`
+		} `yaml:"paths"`
+	}
+	if err := yaml.Unmarshal([]byte(openAPISpec), &spec); err != nil {
+		t.Fatal(err)
+	}
+	ref := spec.Paths["/api/v1/grants"].Get.Responses["200"].Content["application/json"].Schema.Properties["items"].Items.Ref
+	if ref != "#/components/schemas/Grant" {
+		t.Fatalf("list item schema: %s", ref)
+	}
+	properties := map[string]any{}
+	for _, part := range spec.Components.Schemas["Grant"].AllOf {
+		for key, value := range part.Properties {
+			properties[key] = value
+		}
+		if part.Ref != "" {
+			for key, value := range spec.Components.Schemas[strings.TrimPrefix(part.Ref, "#/components/schemas/")].Properties {
+				properties[key] = value
+			}
+		}
+	}
+	raw, err := json.Marshal(entities.TransferPathGrant{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	response["inactive_reason"] = "peer_role_incompatible"
+	for key := range response {
+		if _, ok := properties[key]; !ok {
+			t.Errorf("grant response field %q absent from schema", key)
+		}
+	}
+	for _, key := range []string{"read", "write", "delete", "rename"} {
+		if _, ok := spec.Components.Schemas["GrantPermissions"].Properties[key]; !ok {
+			t.Errorf("missing permission %s", key)
+		}
 	}
 }

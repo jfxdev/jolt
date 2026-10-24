@@ -8,6 +8,7 @@ services:
       CONTROL_TOWER_TOKEN: ${CONTROL_TOWER_TOKEN:?define CONTROL_TOWER_TOKEN}
       JOLT_STATE_ENCRYPTION_KEY: ${JOLT_STATE_ENCRYPTION_KEY:?define JOLT_STATE_ENCRYPTION_KEY}
       METRICS_TOKEN: ${NODE_METRICS_TOKEN:-}
+      # With api_tls_cert_file and api_tls_key_file, set NODE_HEALTHCHECK_URL=https://127.0.0.1:8080/health.
       NODE_HEALTHCHECK_URL: ${NODE_HEALTHCHECK_URL:-http://127.0.0.1:8080/health}
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
@@ -43,8 +44,8 @@ services:
         limits:
           memory: ${JOLT_MEMORY_LIMIT:-1g}
     healthcheck:
-      # --no-check-certificate keeps the probe working when api_tls_* is set in node.yaml
-      # with a private CA: this probe only checks liveness over loopback.
+      # When API TLS is enabled, NODE_HEALTHCHECK_URL must use https://.
+      # --no-check-certificate allows a private CA for this loopback liveness probe.
       test: ["CMD-SHELL", "wget --no-check-certificate -qO- \"$${NODE_HEALTHCHECK_URL:-http://127.0.0.1:8080/health}\" >/dev/null"]
       interval: 30s
       timeout: 5s

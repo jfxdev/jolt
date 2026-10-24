@@ -85,11 +85,20 @@ func DiagnoseRestore(ctx context.Context, dataDir, keysDir, expectedNodeID,
 		Status: "ok", Mounts: []MountDiagnostic{}, Partials: []PartialDiagnostic{},
 		Issues: []DiagnosticIssue{},
 	}
-	lock, err := AcquireLock(dataDir)
+	lock, err := acquireReadOnlyLock(dataDir)
 	if err != nil {
 		return report, err
 	}
 	defer lock.Close()
+
+	database, err := state.OpenExisting(dataDir, encryptionKey)
+	if err != nil {
+		report.add("error", "state_unavailable", "state", "store.yaml", err.Error())
+		report.finalize()
+		return report, nil
+	}
+	defer database.Close()
+	report.StateIntegrity = "ok"
 
 	identity, identityErr := joltcrypto.LoadExisting(keysDir)
 	if identityErr != nil {
@@ -106,15 +115,6 @@ func DiagnoseRestore(ctx context.Context, dataDir, keysDir, expectedNodeID,
 				"restored fingerprint does not match the expected fingerprint")
 		}
 	}
-
-	database, err := state.OpenExisting(dataDir, encryptionKey)
-	if err != nil {
-		report.add("error", "state_unavailable", "state", "store.yaml", err.Error())
-		report.finalize()
-		return report, nil
-	}
-	defer database.Close()
-	report.StateIntegrity = "ok"
 
 	mounts, err := loadDiagnosticMounts(ctx, database)
 	if err != nil {

@@ -198,26 +198,26 @@ The implementation under [`node/`](node/) provides:
   and resumable partial files;
 - separate data and key volumes, `PUID`, `PGID`, and `UMASK`.
 
-Long-running transfer safeguards can be tuned with
-`TRANSFER_CONNECT_TIMEOUT`, `TRANSFER_IDLE_READ_TIMEOUT`,
-`TRANSFER_CHUNK_TIMEOUT`, `JOB_VALIDATION_TIMEOUT`, and
-`JOB_NO_PROGRESS_TIMEOUT`. Their defaults are `10s`, `60s`, `5m`, `2m`, and
+Long-running transfer safeguards can be tuned in `node.yaml` with
+`transfer_connect_timeout`, `transfer_idle_read_timeout`,
+`transfer_chunk_timeout`, `job_validation_timeout`, and
+`job_no_progress_timeout`. Their defaults are `10s`, `60s`, `5m`, `2m`, and
 `10m`, respectively. A job has no global duration limit by default; only a
 stalled phase or chunk is canceled and retried according to the job policy.
 
-Set `NODE_BANDWIDTH_LIMIT_BYTES_PER_SECOND` to cap aggregate incoming copy and
+Set `node_bandwidth_limit_bytes_per_second` in `node.yaml` to cap aggregate incoming copy and
 upload traffic across concurrent jobs (`0` disables the node-wide cap). Copy
 and transfer request payloads may additionally set
 `bandwidth_limit_bytes_per_second`; streaming uploads accept the same value as
 a query parameter. When both limits are present, both are enforced.
 
-`MAX_PARALLEL_FILES_PER_JOB` sets the default number of files copied
+`max_parallel_files_per_job` sets the default number of files copied
 concurrently inside each directory job (default `2`, maximum `32`). Local-copy
 and remote-pull request payloads can override it with `max_parallel_files`.
 The selected value is persisted with the job and reused after retries or
 restarts.
 
-`MAX_PARALLEL_CHUNKS_PER_FILE` controls concurrent local or direct-remote
+`max_parallel_chunks_per_file` controls concurrent local or direct-remote
 ranges within each file (default `1`, maximum `16`). Copy and remote-pull
 requests may override it with `max_parallel_chunks`. Parallel chunks are
 executed in bounded batches; the partial file is synced and its durable
@@ -251,10 +251,10 @@ with sufficient time and disk space. They perform 5 GiB/50 GiB and
 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) for profiles, overrides, and the fault
 matrix.
 
-For multi-node operation, set `MTLS_PUBLIC_ENDPOINT` to the HTTPS endpoint peers
+For multi-node operation, set `mtls_public_endpoint` in `node.yaml` to the HTTPS endpoint peers
 can reach, for example `https://nas-home.example.test:8443`. Heartbeat behavior
-can be tuned with `PEER_HEARTBEAT_INTERVAL`, `PEER_HEARTBEAT_TIMEOUT`, and
-`PEER_FAILURE_THRESHOLD`.
+can be tuned with `peer_heartbeat_interval`, `peer_heartbeat_timeout`, and
+`peer_failure_threshold`.
 
 ## Control Tower
 

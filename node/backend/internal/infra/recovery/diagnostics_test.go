@@ -81,6 +81,15 @@ func TestNodeRestoreDiagnosticsValidateIdentityMountGrantJobAndPartial(t *testin
 		t.Fatal(err)
 	}
 
+	// Restored state may be mounted read-only and omit the runtime lock file.
+	if err := os.Remove(filepath.Join(dataDir, ".state.lock")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dataDir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dataDir, 0700) })
+
 	report, err := recovery.DiagnoseRestore(context.Background(), dataDir, keysDir,
 		identity.NodeID, identity.Fingerprint, make([]byte, 32))
 	if err != nil {
@@ -91,6 +100,13 @@ func TestNodeRestoreDiagnosticsValidateIdentityMountGrantJobAndPartial(t *testin
 		len(report.Partials) != 1 || report.Partials[0].State != "valid" {
 		t.Fatalf("unexpected restore report: %+v", report)
 	}
+	if info, err := os.Stat(dataDir); err != nil || info.Mode().Perm() != 0500 {
+		t.Fatalf("diagnostics changed directory permissions: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, ".state.lock")); !os.IsNotExist(err) {
+		t.Fatalf("diagnostics created a lock file: %v", err)
+	}
+
 }
 
 func TestNodeRestoreDiagnosticsReportBlockingDivergence(t *testing.T) {

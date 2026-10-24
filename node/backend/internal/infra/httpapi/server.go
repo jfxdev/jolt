@@ -1645,6 +1645,33 @@ components:
         inactive_reason:
           type: string
           enum: [disabled, revoked, peer_untrusted, mount_unavailable, mount_read_only, peer_role_incompatible, path_unavailable]
+    GrantPermissions:
+      type: object
+      required: [read, write, delete, rename]
+      properties:
+        read: {type: boolean}
+        write: {type: boolean}
+        delete: {type: boolean}
+        rename: {type: boolean}
+    Grant:
+      allOf:
+        - $ref: '#/components/schemas/GrantStatus'
+        - type: object
+          required: [grant_id, peer_node_id, mount_id, path, direction, permissions, conflict_policies, visible_to_peer, correlation_id, created_at, updated_at]
+          properties:
+            grant_id: {type: string}
+            peer_node_id: {type: string}
+            mount_id: {type: string}
+            path: {type: string, description: Relative path inside the mount}
+            direction: {type: string, enum: [send, receive, send_receive]}
+            permissions: {$ref: '#/components/schemas/GrantPermissions'}
+            conflict_policies:
+              type: [array, 'null']
+              items: {type: string}
+            visible_to_peer: {type: boolean}
+            correlation_id: {type: string}
+            created_at: {type: string, format: date-time}
+            updated_at: {type: string, format: date-time}
     Error:
       type: object
       properties:
@@ -2308,7 +2335,7 @@ paths:
                 properties:
                   items:
                     type: array
-                    items: {$ref: '#/components/schemas/GrantStatus'}
+                    items: {$ref: '#/components/schemas/Grant'}
     post:
       requestBody:
         required: true
