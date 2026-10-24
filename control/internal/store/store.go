@@ -82,15 +82,22 @@ type Role struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+type NodeConfiguration struct {
+	Source        string `json:"source"`
+	ApplyMode     string `json:"apply_mode"`
+	MountsMutable bool   `json:"mounts_mutable"`
+	GrantsMutable bool   `json:"grants_mutable"`
+}
 type Node struct {
-	ID             string     `json:"node_id"`
-	Name           string     `json:"name"`
-	Endpoint       string     `json:"endpoint"`
-	TokenEncrypted string     `json:"-"`
-	State          string     `json:"state"`
-	LastSeenAt     *time.Time `json:"last_seen_at,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	Configuration  *NodeConfiguration `json:"configuration,omitempty"`
+	ID             string             `json:"node_id"`
+	Name           string             `json:"name"`
+	Endpoint       string             `json:"endpoint"`
+	TokenEncrypted string             `json:"-"`
+	State          string             `json:"state"`
+	LastSeenAt     *time.Time         `json:"last_seen_at,omitempty"`
+	CreatedAt      time.Time          `json:"created_at"`
+	UpdatedAt      time.Time          `json:"updated_at"`
 }
 
 type Connection struct {

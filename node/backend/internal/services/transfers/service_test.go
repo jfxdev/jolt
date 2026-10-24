@@ -19,8 +19,8 @@ import (
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
 	joltcrypto "github.com/jfxdev/jolt/backend/internal/infra/crypto"
-	"github.com/jfxdev/jolt/backend/internal/infra/db"
 	"github.com/jfxdev/jolt/backend/internal/infra/mtlsapi"
+	db "github.com/jfxdev/jolt/backend/internal/infra/state"
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
 	"github.com/jfxdev/jolt/backend/internal/services/grants"
 	"github.com/jfxdev/jolt/backend/internal/services/jobs"
@@ -83,7 +83,7 @@ func newTransferTestNode(t *testing.T, name string) *testNode {
 			t.Fatal(err)
 		}
 	}
-	store, err := db.Open(filepath.Join(dataDir, "jolt.db"), make([]byte, 32))
+	store, err := db.Open(filepath.Join(dataDir, "state"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}

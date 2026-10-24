@@ -71,7 +71,7 @@ type Step = 1 | 2 | 3;
 const stepTitles: Record<Step, string> = {
   1: "Nodes e modo",
   2: "Confirmar identidades",
-  3: "Primeiro grant",
+  3: "Acesso a arquivos",
 };
 
 /**
@@ -102,6 +102,7 @@ export function ConnectDialog({
   const [awaitingPeer, setAwaitingPeer] = useState(false);
 
   const sourceNode = nodes.find((node) => node.node_id === form.issuer_node_id);
+  const managedGrants = sourceNode?.configuration?.grants_mutable === false;
   const targetNode = nodes.find((node) => node.node_id === form.target_node_id);
   const targets = useMemo(
     () =>
@@ -207,6 +208,7 @@ export function ConnectDialog({
 
   async function createGrant(event: FormEvent) {
     event.preventDefault();
+    if (managedGrants) return;
     setBusy(true);
     try {
       const trust = await api.nodeTrust(form.issuer_node_id);
@@ -492,7 +494,13 @@ export function ConnectDialog({
           </form>
         )}
 
-        {step === 3 && (
+        {step === 3 && managedGrants && (
+          <div className="grid gap-4">
+            <p className="text-sm text-muted-foreground">Gerenciado por arquivo. A conexão foi estabelecida. Os arquivos disponíveis dependem das autorizações definidas no node.yaml de cada node. Alterações exigem reinício.</p>
+            <Button type="button" onClick={() => onOpenChange(false)}>Concluir <Check /></Button>
+          </div>
+        )}
+        {step === 3 && !managedGrants && (
           <form className="grid gap-4" onSubmit={createGrant}>
             <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-muted-foreground">
               A conexão está estabelecida, mas sem grant ela não transfere

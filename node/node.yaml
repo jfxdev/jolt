@@ -1,0 +1,9 @@
+# Local development. Paths are relative to the process working directory.
+version: 1
+node_name: jolt-node
+api_address: ":8080"
+mtls_address: ":8443"
+data_dir: ./.jolt/data
+keys_dir: ./.jolt/keys
+mounts: []
+transfer_grants: []

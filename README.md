@@ -9,7 +9,7 @@ docs/       product requirements and operational documentation
 ```
 
 The node owns mounts, files, jobs, identity, and operational state. The Control
-Tower never reads a node database or host filesystem; it only calls the node's
+Tower never reads node state or the host filesystem; it only calls the node's
 authenticated API.
 
 ## Overview
@@ -38,7 +38,7 @@ Two products, one boundary:
   atomic streaming uploads, resumable chunked uploads, streaming ZIP downloads
   of a folder or a selection, bounded subtree search, mkdir, copy, move/rename,
   delete, with read-only enforcement and mount diagnostics.
-- **Durable jobs** — a persistent SQLite queue with atomic claims, resumable
+- **Durable jobs** — an encrypted YAML transaction journal with atomic claims, resumable
   16 MiB checkpoints, pause/resume/cancel/retry with backoff, per-file and
   per-chunk parallelism, node- and job-level bandwidth limits, and live SSE
   progress with ETA.
@@ -64,7 +64,7 @@ Two products, one boundary:
 
 ### Tech stack
 
-- **Backend:** Go 1.26 (node and Control Tower), SQLCipher-encrypted SQLite
+- **Backend:** Go 1.26 (node and Control Tower), encrypted YAML state on nodes and SQLCipher-encrypted SQLite on the Control Tower
   in both services, Ed25519 identities, TLS 1.3 mTLS.
 - **Frontend:** React 19 + Vite, componentes Base UI / shadcn (Vega), Tailwind
   CSS 4 e React Router.
@@ -97,21 +97,19 @@ Create a `.env` file or export four secrets:
 export CONTROL_TOWER_TOKEN='replace-with-a-long-random-node-token'
 export CONTROL_TOWER_ADMIN_PASSWORD='replace-with-a-long-admin-password'
 export CONTROL_TOWER_DB_ENCRYPTION_KEY='replace-with-at-least-32-random-characters'
-export JOLT_DB_ENCRYPTION_KEY='replace-with-at-least-32-random-characters'
+export JOLT_STATE_ENCRYPTION_KEY="$(openssl rand -base64 32)"
 # Optional: direct roots accepted in one cross-node transfer (default: 1000).
 export TRANSFER_MAX_SOURCE_PATHS=1000
 docker compose up --build
 ```
 
-`JOLT_DB_ENCRYPTION_KEY` encrypts the node's own SQLite database at rest
-(SQLCipher) and is required — the node refuses to start without it. Accepts
-either a base64-encoded 32-byte key or a passphrase of at least 32
-characters. For an existing plaintext `jolt.db`, stop the stack (`docker
-compose stop jolt-node`) and migrate it offline first with:
-
-```sh
-docker compose run --rm jolt-node encrypt-database --data-dir /var/lib/jolt
-```
+The node reads `node/node.docker.yaml`, mounted read-only at `/etc/jolt/node.yaml`.
+Edit that file to configure ports, limits, mounts and transfer grants, then restart
+the node. `JOLT_STATE_ENCRYPTION_KEY` is a Base64-encoded random 32-byte key;
+`JOLT_STATE_ENCRYPTION_KEY_FILE` is available for secret-file deployments.
+State remains persistent and encrypted, without SQLite or SQLCipher in the node.
+Existing database directories are rejected; use a new data directory for this release.
+See [node configuration and state](docs/NODE_YAML.md) for the full operational contract.
 
 Open `http://localhost:8090`, sign in as `admin`, and connect the example node:
 
@@ -166,12 +164,12 @@ The implementation under [`node/`](node/) provides:
 
 - stable Ed25519 identity and fingerprint;
 - token-authenticated HTTP API;
-- SQLite persistence for mounts, jobs, and idempotency;
+- declarative YAML mounts/grants and encrypted YAML transactions for jobs and idempotency;
 - traversal- and symlink-safe API filesystem;
 - range downloads and atomic streaming uploads;
 - mkdir, local copy, move, rename, and delete as persistent jobs;
 - resumable local copies with durable 16 MiB chunk checkpoints, configurable
-  through `COPY_CHUNK_SIZE_BYTES`;
+  through `copy_chunk_size_bytes` in `node.yaml`;
 - separate connection, idle-read, chunk, and validation deadlines, plus
   no-progress detection without a global timeout for long-running jobs;
 - shared node-wide and persisted per-job bandwidth limits for uploads, local
@@ -194,32 +192,32 @@ The implementation under [`node/`](node/) provides:
 - conflict previews, checksum decisions, and manual per-item overrides for
   copy jobs that require operator input;
 - mount permission diagnostics and read-only enforcement;
-- offline, lock-protected consistent snapshots with SQLite integrity checks,
+- offline, lock-protected consistent snapshots with authenticated state validation,
   atomic archives, and SHA-256 manifests;
 - read-only post-restore diagnostics for identity, mounts, grants, peers, jobs,
   and resumable partial files;
 - separate data and key volumes, `PUID`, `PGID`, and `UMASK`.
 
-Long-running transfer safeguards can be tuned with
-`TRANSFER_CONNECT_TIMEOUT`, `TRANSFER_IDLE_READ_TIMEOUT`,
-`TRANSFER_CHUNK_TIMEOUT`, `JOB_VALIDATION_TIMEOUT`, and
-`JOB_NO_PROGRESS_TIMEOUT`. Their defaults are `10s`, `60s`, `5m`, `2m`, and
+Long-running transfer safeguards can be tuned in `node.yaml` with
+`transfer_connect_timeout`, `transfer_idle_read_timeout`,
+`transfer_chunk_timeout`, `job_validation_timeout`, and
+`job_no_progress_timeout`. Their defaults are `10s`, `60s`, `5m`, `2m`, and
 `10m`, respectively. A job has no global duration limit by default; only a
 stalled phase or chunk is canceled and retried according to the job policy.
 
-Set `NODE_BANDWIDTH_LIMIT_BYTES_PER_SECOND` to cap aggregate incoming copy and
+Set `node_bandwidth_limit_bytes_per_second` in `node.yaml` to cap aggregate incoming copy and
 upload traffic across concurrent jobs (`0` disables the node-wide cap). Copy
 and transfer request payloads may additionally set
 `bandwidth_limit_bytes_per_second`; streaming uploads accept the same value as
 a query parameter. When both limits are present, both are enforced.
 
-`MAX_PARALLEL_FILES_PER_JOB` sets the default number of files copied
+`max_parallel_files_per_job` sets the default number of files copied
 concurrently inside each directory job (default `2`, maximum `32`). Local-copy
 and remote-pull request payloads can override it with `max_parallel_files`.
 The selected value is persisted with the job and reused after retries or
 restarts.
 
-`MAX_PARALLEL_CHUNKS_PER_FILE` controls concurrent local or direct-remote
+`max_parallel_chunks_per_file` controls concurrent local or direct-remote
 ranges within each file (default `1`, maximum `16`). Copy and remote-pull
 requests may override it with `max_parallel_chunks`. Parallel chunks are
 executed in bounded batches; the partial file is synced and its durable
@@ -231,20 +229,15 @@ Run it without Docker:
 
 ```sh
 cd node
-CGO_ENABLED=1 \
+CGO_ENABLED=0 \
 CONTROL_TOWER_TOKEN=development-token \
-JOLT_DB_ENCRYPTION_KEY=development-node-encryption-key-32char \
-go run ./backend/cmd/jolt-node
+JOLT_STATE_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+go run ./backend/cmd/jolt-node --config node.yaml
 ```
 
-Legacy plaintext node databases must be migrated offline before boot
-(instance must be stopped) with:
-
-```sh
-cd node
-JOLT_DB_ENCRYPTION_KEY=development-node-encryption-key-32char \
-go run ./backend/cmd/jolt-node encrypt-database --data-dir <dir>
-```
+Keep the generated state key outside the configuration and reuse it across restarts.
+The included local configuration starts with no mounts. Configure absolute mount
+paths before use. New installation is required; there is no node database converter.
 
 Run the opt-in load and fault-injection acceptance profile:
 
@@ -258,10 +251,10 @@ with sufficient time and disk space. They perform 5 GiB/50 GiB and
 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) for profiles, overrides, and the fault
 matrix.
 
-For multi-node operation, set `MTLS_PUBLIC_ENDPOINT` to the HTTPS endpoint peers
+For multi-node operation, set `mtls_public_endpoint` in `node.yaml` to the HTTPS endpoint peers
 can reach, for example `https://nas-home.example.test:8443`. Heartbeat behavior
-can be tuned with `PEER_HEARTBEAT_INTERVAL`, `PEER_HEARTBEAT_TIMEOUT`, and
-`PEER_FAILURE_THRESHOLD`.
+can be tuned with `peer_heartbeat_interval`, `peer_heartbeat_timeout`, and
+`peer_failure_threshold`.
 
 ## Control Tower
 
@@ -385,15 +378,15 @@ transfer grants before forwarding a request to either node.
 - The keys directory cannot overlap a configured filesystem mount.
 - The peer port is a separate TLS 1.3 listener and requires an mTLS certificate
   cryptographically bound to an exact trusted node identity.
-- Rotating mTLS material is stored under `JOLT_KEYS_DIR/mtls` with
+- Rotating mTLS material is stored under `keys_dir/mtls` with
   `active`/`next`/`previous` metadata and persistent serial revocation. Safe
   lifecycle metadata and rotate/promote/rollback/revoke operations are exposed
   through the authenticated node API.
 - Browser mutations use strict same-site cookies and origin validation.
-- The node control API can serve TLS directly: set `API_TLS_CERT_FILE` and
-  `API_TLS_KEY_FILE`. The certificate is reloaded on every handshake, so a
+- The node control API can serve TLS directly: set `api_tls_cert_file` and
+  `api_tls_key_file` in `node.yaml`. The certificate is reloaded on every handshake, so a
   renewal needs no restart and interrupts no transfer. Setting
-  `API_TLS_CLIENT_CA_FILE` additionally requires a verified client certificate,
+  `api_tls_client_ca_file` additionally requires a verified client certificate,
   which makes the operational token a second factor rather than the only one.
   Point the Control Tower at a private CA with `CONTROL_TOWER_NODE_CA_FILE`, and
   present a client certificate with `CONTROL_TOWER_NODE_CLIENT_CERT_FILE` and

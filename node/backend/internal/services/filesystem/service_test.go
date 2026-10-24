@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
-	"github.com/jfxdev/jolt/backend/internal/infra/db"
+	db "github.com/jfxdev/jolt/backend/internal/infra/state"
 )
 
 type parallelProbeLimiter struct {
@@ -45,7 +45,7 @@ func (l *parallelProbeLimiter) Wait(ctx context.Context, _ int64) error {
 func newTestService(t *testing.T, mode string) (*Service, string, string) {
 	t.Helper()
 	root := t.TempDir()
-	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"), make([]byte, 32))
+	store, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +410,7 @@ func TestProtectedInternalDirectoryCannotBecomeMount(t *testing.T) {
 	if err := os.Mkdir(keys, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"), make([]byte, 32))
+	store, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -158,58 +158,13 @@ usuário e um segundo passo no login. Fora do escopo deste patch.
 
 ---
 
-## <a id="p03"></a>P0.3 — Criptografia do banco do node
+## <a id="p03"></a>P0.3 — Concluído: estado YAML cifrado no node
 
-**Objetivo.** Cifrar o banco do node em repouso, com paridade ao Control Tower.
-
-**Mudança.** Trocar o driver do node de `modernc.org/sqlite` (Go puro, sem
-cipher) para o toolchain SQLCipher usado no control
-(`github.com/mutecomm/go-sqlcipher/v4`), reusando `database.Open` já validado.
-
-`node/backend/internal/infra/db/sqlite.go`:
-
-```go
-import (
-	// remove: _ "modernc.org/sqlite"
-	"github.com/jfxdev/jolt/... /database" // pacote compartilhado de abertura cifrada
-)
-
-func Open(path string, key []byte) (*Store, error) {
-	db, err := database.Open(path, key, false) // aplica PRAGMA key + verifyCipher
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;`); err != nil {
-		return nil, err
-	}
-	// journal_mode=WAL é aplicado normalmente; ver nota SQLCipher+WAL abaixo.
-	return &Store{db: db}, nil
-}
-```
-
-Config (`node/backend/internal/infra/config/config.go`): adicionar
-`JOLT_DB_ENCRYPTION_KEY` com a mesma validação de `ParseEncryptionKey` (32 bytes
-base64 ou passphrase — ver [C1](#c1)). Fail-closed sem chave.
-
-Migração offline de bancos plaintext existentes: reusar o padrão
-`MigratePlaintext` do control (`sqlcipher_export`), exposto como subcomando
-`jolt-node encrypt-database`.
-
-**Risco/migração.** Médio. Exige CGO (a imagem já compila SQLCipher no control —
-replicar toolchain no `node/Dockerfile`). Bancos existentes precisam de migração
-offline única. Notas:
-
-- Extrair `database.Open`/`MigratePlaintext` para um pacote compartilhado entre
-  node e control para não duplicar.
-- SQLCipher + WAL exige que o arquivo `-wal`/`-shm` também sejam cifrados; o
-  driver cuida disso, mas valide `PRAGMA integrity_check` pós-migração.
-
-**Validar.** Boot cria banco cifrado; `IsPlaintext` rejeita legado; testes de
-integridade pós-migração; `hexdump` do `.db` não deve conter cabeçalho
-`SQLite format 3`.
-
----
+A proposta de SQLCipher no node foi substituída pelo armazenamento transacional
+YAML com AES-256-GCM, configuração obrigatória e somente leitura pela API.
+Consulte [NODE_YAML.md](NODE_YAML.md) para implantação, chave externa e recuperação.
+O node não aceita os diretórios de bancos antigos; a entrega exige instalação nova.
+As orientações SQLCipher abaixo aplicam-se apenas ao Control Tower.
 
 ## <a id="c1"></a>C1 — KDF forte para a passphrase do SQLCipher
 
@@ -496,7 +451,7 @@ func secretValue(key string) string {
 ```
 
 Aplicar a `CONTROL_TOWER_TOKEN`, `CONTROL_TOWER_ADMIN_PASSWORD`,
-`CONTROL_TOWER_DB_ENCRYPTION_KEY` e ao novo `JOLT_DB_ENCRYPTION_KEY`. No Compose:
+`CONTROL_TOWER_DB_ENCRYPTION_KEY` e a `JOLT_STATE_ENCRYPTION_KEY` (32 bytes aleatórios em Base64). No Compose:
 
 ```yaml
 secrets:

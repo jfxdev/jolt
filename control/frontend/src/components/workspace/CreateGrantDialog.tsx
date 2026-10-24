@@ -25,7 +25,8 @@ interface Props {
 }
 
 export function CreateGrantDialog({ open, onOpenChange }: Props) {
-  const { nodeId, mounts, trustPeers, refreshTrust } = useWorkspace();
+  const { nodeId, node, mounts, trustPeers, refreshTrust } = useWorkspace();
+  const managed = node?.configuration?.grants_mutable === false;
   const handleError = useApiError();
   const trusted = activePeers(trustPeers.filter((peer) => peer.registered));
   const [form, setForm] = useState<GrantFormValue>(defaultGrantForm());
@@ -43,6 +44,7 @@ export function CreateGrantDialog({ open, onOpenChange }: Props) {
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
+    if (managed) return;
     setSaving(true);
     try {
       await api.createGrant(nodeId, form);
@@ -69,7 +71,7 @@ export function CreateGrantDialog({ open, onOpenChange }: Props) {
             mount.
           </DialogDescription>
         </DialogHeader>
-        <form className="grid gap-4" onSubmit={handleSubmit}>
+        {managed ? <p className="text-sm text-muted-foreground">Gerenciado por arquivo. Edite as autorizações no node.yaml e reinicie o node.</p> : <form className="grid gap-4" onSubmit={handleSubmit}>
           <GrantFormFields
             value={form}
             onChange={setForm}
@@ -79,7 +81,7 @@ export function CreateGrantDialog({ open, onOpenChange }: Props) {
           <Button type="submit" disabled={saving}>
             Criar grant <ArrowRight />
           </Button>
-        </form>
+        </form>}
       </DialogContent>
     </Dialog>
   );

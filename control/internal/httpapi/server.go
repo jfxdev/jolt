@@ -2220,11 +2220,12 @@ type connectionRequest struct {
 }
 
 type nodeMetadata struct {
-	NodeID        string `json:"node_id"`
-	Name          string `json:"name"`
-	Fingerprint   string `json:"fingerprint"`
-	IdentityEpoch int    `json:"identity_epoch"`
-	MTLSEndpoint  string `json:"mtls_endpoint"`
+	Configuration *store.NodeConfiguration `json:"configuration,omitempty"`
+	NodeID        string                   `json:"node_id"`
+	Name          string                   `json:"name"`
+	Fingerprint   string                   `json:"fingerprint"`
+	IdentityEpoch int                      `json:"identity_epoch"`
+	MTLSEndpoint  string                   `json:"mtls_endpoint"`
 }
 
 type pairingInviteResult struct {
@@ -2870,17 +2871,20 @@ type transferAuthorizationInput struct {
 }
 
 type nodeTransferGrant struct {
-	ID               string   `json:"grant_id"`
-	PeerNodeID       string   `json:"peer_node_id"`
-	MountID          string   `json:"mount_id"`
-	Path             string   `json:"path"`
-	Direction        string   `json:"direction"`
-	Enabled          bool     `json:"enabled"`
-	ConflictPolicies []string `json:"conflict_policies"`
-	Permissions      struct {
+	ConfiguredEnabled bool     `json:"configured_enabled"`
+	InactiveReason    string   `json:"inactive_reason,omitempty"`
+	ID                string   `json:"grant_id"`
+	PeerNodeID        string   `json:"peer_node_id"`
+	MountID           string   `json:"mount_id"`
+	Path              string   `json:"path"`
+	Direction         string   `json:"direction"`
+	Enabled           bool     `json:"enabled"`
+	ConflictPolicies  []string `json:"conflict_policies"`
+	Permissions       struct {
 		Read   bool `json:"read"`
 		Write  bool `json:"write"`
 		Delete bool `json:"delete"`
+		Rename bool `json:"rename"`
 	} `json:"permissions"`
 }
 
@@ -3931,8 +3935,12 @@ func (s *Server) refreshNodeState(ctx context.Context, node *store.Node) {
 		_ = s.store.UpdateNodeState(ctx, node.ID, node.State, node.LastSeenAt)
 		return
 	}
-	response.Body.Close()
+	defer response.Body.Close()
 	if response.StatusCode == http.StatusOK {
+		var metadata nodeMetadata
+		if json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&metadata) == nil {
+			node.Configuration = metadata.Configuration
+		}
 		now := time.Now().UTC()
 		node.State, node.LastSeenAt = "online", &now
 	} else if response.StatusCode == http.StatusUnauthorized {

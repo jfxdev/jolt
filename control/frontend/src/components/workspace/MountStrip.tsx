@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 
 export function MountStrip() {
-  const { nodeId, mounts } = useWorkspace();
+  const { nodeId, node, mounts } = useWorkspace();
   const { mountId } = useParams();
   const navigate = useNavigate();
 
@@ -17,6 +17,7 @@ export function MountStrip() {
           Volumes
         </p>
         <h2 className="text-lg font-semibold">Arquivos deste node</h2>
+        {node?.configuration?.source === "yaml" && <p className="text-sm text-muted-foreground">Gerenciado por arquivo. Alterações nos volumes e permissões são aplicadas após reiniciar o node.</p>}
         <p className="text-sm text-muted-foreground">
           Selecione um volume para abrir seu explorador de arquivos.
         </p>
@@ -42,8 +43,8 @@ export function MountStrip() {
                   <span className="grid h-10 w-10 place-content-center rounded-lg bg-muted text-muted-foreground group-hover:bg-primary group-hover:text-primary-foreground">
                     <HardDrive className="h-5 w-5" />
                   </span>
-                  <Badge variant={mount.enabled === false ? "destructive" : "secondary"}>
-                    {mount.enabled === false ? "indisponível" : "ativo"}
+                  <Badge variant={mount.enabled === false || mount.state === "unavailable" || mount.state === "degraded" ? "destructive" : "secondary"}>
+                    {mount.enabled === false || mount.state === "unavailable" ? "indisponível" : mount.state === "degraded" ? "acesso limitado" : "ativo"}
                   </Badge>
                 </div>
                 <div className="min-w-0">

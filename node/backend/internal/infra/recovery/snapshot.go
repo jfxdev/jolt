@@ -17,8 +17,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jfxdev/jolt/backend/internal/infra/config"
 	joltcrypto "github.com/jfxdev/jolt/backend/internal/infra/crypto"
-	"github.com/jfxdev/jolt/backend/internal/infra/database"
+	"github.com/jfxdev/jolt/backend/internal/infra/state"
 	"golang.org/x/sys/unix"
 )
 
@@ -27,7 +28,8 @@ var ErrInstanceActive = errors.New("jolt node is running")
 const lockName = ".jolt-node.lock"
 
 type Lock struct {
-	file *os.File
+	file      *os.File
+	directory *os.File
 }
 
 type FileManifest struct {
@@ -38,20 +40,41 @@ type FileManifest struct {
 }
 
 type Manifest struct {
-	Version           int            `json:"version"`
-	Kind              string         `json:"kind"`
-	CreatedAt         time.Time      `json:"created_at"`
-	DatabaseIntegrity string         `json:"database_integrity"`
-	NodeID            string         `json:"node_id"`
-	Fingerprint       string         `json:"fingerprint"`
-	Files             []FileManifest `json:"files"`
+	Version        int            `json:"version"`
+	Kind           string         `json:"kind"`
+	CreatedAt      time.Time      `json:"created_at"`
+	StateIntegrity string         `json:"state_integrity"`
+	NodeID         string         `json:"node_id"`
+	Fingerprint    string         `json:"fingerprint"`
+	Files          []FileManifest `json:"files"`
 }
 
 func AcquireLock(dataDir string) (*Lock, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(filepath.Join(dataDir, lockName), os.O_CREATE|os.O_RDWR, 0o600)
+	info, err := os.Lstat(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, errors.New("state directory must not be a symlink")
+	}
+	directory, err := os.OpenFile(dataDir, os.O_RDONLY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err := unix.Flock(int(directory.Fd()), unix.LOCK_SH|unix.LOCK_NB); err != nil {
+		directory.Close()
+		return nil, ErrInstanceActive
+	}
+	success := false
+	defer func() {
+		if !success {
+			directory.Close()
+		}
+	}()
+	file, err := os.OpenFile(filepath.Join(dataDir, lockName), os.O_CREATE|os.O_RDWR|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -62,11 +85,35 @@ func AcquireLock(dataDir string) (*Lock, error) {
 		}
 		return nil, err
 	}
+	success = true
+	return &Lock{file: file, directory: directory}, nil
+}
+
+// acquireReadOnlyLock never creates a missing runtime lock. OpenExisting's
+// exclusive directory lock also excludes a runtime starting without this file.
+func acquireReadOnlyLock(dataDir string) (*Lock, error) {
+	file, err := os.OpenFile(filepath.Join(dataDir, lockName), os.O_RDONLY|unix.O_NOFOLLOW, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return &Lock{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		file.Close()
+		return nil, ErrInstanceActive
+	}
 	return &Lock{file: file}, nil
 }
 
 func (l *Lock) Close() error {
-	if l == nil || l.file == nil {
+	if l == nil {
+		return nil
+	}
+	if l.directory != nil {
+		defer l.directory.Close()
+	}
+	if l.file == nil {
 		return nil
 	}
 	unlockErr := unix.Flock(int(l.file.Fd()), unix.LOCK_UN)
@@ -77,8 +124,11 @@ func (l *Lock) Close() error {
 	return closeErr
 }
 
-func CreateSnapshot(ctx context.Context, dataDir, keysDir, output string, key []byte) (Manifest, error) {
+func CreateSnapshot(ctx context.Context, dataDir, keysDir, output string, key []byte, configuration ...string) (Manifest, error) {
 	dataDir, keysDir, output = filepath.Clean(dataDir), filepath.Clean(keysDir), filepath.Clean(output)
+	if err := config.ValidateEncryptionKeyLocation(dataDir, keysDir); err != nil {
+		return Manifest{}, err
+	}
 	if dataDir == keysDir || inside(dataDir, keysDir) || inside(keysDir, dataDir) {
 		return Manifest{}, errors.New("data and keys directories must not overlap")
 	}
@@ -93,7 +143,7 @@ func CreateSnapshot(ctx context.Context, dataDir, keysDir, output string, key []
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Manifest{}, err
 	}
-	lock, err := AcquireLock(dataDir)
+	lock, err := acquireReadOnlyLock(dataDir)
 	if err != nil {
 		return Manifest{}, err
 	}
@@ -111,19 +161,40 @@ func CreateSnapshot(ctx context.Context, dataDir, keysDir, output string, key []
 	if err := os.MkdirAll(stageData, 0o700); err != nil {
 		return Manifest{}, err
 	}
-	integrity, err := snapshotSQLite(ctx, filepath.Join(dataDir, "jolt.db"), filepath.Join(stageData, "jolt.db"), key)
+	storage, err := state.OpenExisting(dataDir, key)
 	if err != nil {
 		return Manifest{}, err
 	}
-	if err := copyTree(dataDir, stageData, map[string]bool{
-		"jolt.db": true, "jolt.db-wal": true, "jolt.db-shm": true, lockName: true,
-	}); err != nil {
-		return Manifest{}, fmt.Errorf("stage node data: %w", err)
+	defer storage.Close()
+	excluded := map[string]bool{lockName: true, ".state.lock": true}
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		return Manifest{}, err
 	}
+	for _, entry := range entries {
+		switch entry.Name() {
+		case "store.yaml", "head.yaml", "manifest.yaml", "journal", "snapshots":
+		default:
+			excluded[entry.Name()] = true
+		}
+	}
+	if err := copyTree(dataDir, stageData, excluded); err != nil {
+		return Manifest{}, err
+	}
+	if len(configuration) > 0 && configuration[0] != "" {
+		raw, err := os.ReadFile(configuration[0])
+		if err != nil {
+			return Manifest{}, err
+		}
+		if err = os.WriteFile(filepath.Join(stage, "node.yaml"), raw, 0600); err != nil {
+			return Manifest{}, err
+		}
+	}
+
 	if err := copyTree(keysDir, stageKeys, nil); err != nil {
 		return Manifest{}, fmt.Errorf("stage node keys: %w", err)
 	}
-	identity, err := joltcrypto.LoadOrCreate(stageKeys)
+	identity, err := joltcrypto.LoadExisting(stageKeys)
 	if err != nil {
 		return Manifest{}, fmt.Errorf("validate snapshot identity: %w", err)
 	}
@@ -132,47 +203,14 @@ func CreateSnapshot(ctx context.Context, dataDir, keysDir, output string, key []
 		return Manifest{}, err
 	}
 	manifest := Manifest{
-		Version: 1, Kind: "jolt_node", CreatedAt: time.Now().UTC(),
-		DatabaseIntegrity: integrity, NodeID: identity.NodeID,
+		Version: 2, Kind: "jolt_node", CreatedAt: time.Now().UTC(),
+		StateIntegrity: "ok", NodeID: identity.NodeID,
 		Fingerprint: identity.Fingerprint, Files: files,
 	}
 	if err := writeArchiveAtomic(stage, output, manifest); err != nil {
 		return Manifest{}, err
 	}
 	return manifest, nil
-}
-
-// snapshotSQLite copies the encrypted node database into an independently
-// encrypted snapshot file. It uses sqlcipher_export rather than VACUUM INTO
-// so the copy stays cipher-protected instead of leaking a plaintext database
-// inside the snapshot archive.
-func snapshotSQLite(ctx context.Context, source, destination string, key []byte) (string, error) {
-	info, err := os.Lstat(source)
-	if err != nil {
-		return "", fmt.Errorf("open database: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return "", errors.New("database is not a regular file")
-	}
-	sourceDB, err := database.Open(source, key, true)
-	if err != nil {
-		return "", err
-	}
-	defer sourceDB.Close()
-	var integrity string
-	if err := sourceDB.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&integrity); err != nil {
-		return "", fmt.Errorf("check database integrity: %w", err)
-	}
-	if integrity != "ok" {
-		return "", fmt.Errorf("database integrity check failed: %s", integrity)
-	}
-	if err := database.ExportEncryptedCopy(ctx, sourceDB, destination, key); err != nil {
-		return "", fmt.Errorf("create consistent database copy: %w", err)
-	}
-	if err := os.Chmod(destination, 0o600); err != nil {
-		return "", err
-	}
-	return integrity, nil
 }
 
 func copyTree(source, destination string, excluded map[string]bool) error {
@@ -192,7 +230,7 @@ func copyTree(source, destination string, excluded map[string]bool) error {
 			return err
 		}
 		relative = filepath.ToSlash(relative)
-		if excluded != nil && excluded[relative] {
+		if strings.HasPrefix(entry.Name(), ".tmp-") || (excluded != nil && excluded[relative]) {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}

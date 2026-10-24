@@ -1680,3 +1680,39 @@ func TestArchiveSelectionsAreAuthorizedIndividually(t *testing.T) {
 		}
 	}
 }
+
+func TestNodeInventoryPreservesFileManagementMetadata(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/api/v1/node" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"node_id":"node-1","configuration":{"source":"yaml","apply_mode":"restart","mounts_mutable":false,"grants_mutable":false}}`))}, nil
+	})}
+	handler, storage, session := testUserHandlerWithClient(t, store.User{ID: "admin", Username: "admin", Role: "admin", Enabled: true}, client)
+	encrypted, err := security.Encrypt(make([]byte, 32), "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := storage.SaveNode(context.Background(), store.Node{ID: "node-1", Name: "Files", Endpoint: "http://node.test", TokenEncrypted: encrypted, State: "online", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, authenticatedRequest(http.MethodGet, "/api/v1/control-tower/nodes", session, nil))
+	var result struct {
+		Items []store.Node `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != 200 || len(result.Items) != 1 {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	management := result.Items[0].Configuration
+	if management == nil || management.Source != "yaml" || management.ApplyMode != "restart" || management.MountsMutable || management.GrantsMutable {
+		t.Fatalf("management metadata lost: %+v", management)
+	}
+	if strings.Contains(response.Body.String(), encrypted) {
+		t.Fatal("credentials leaked")
+	}
+}

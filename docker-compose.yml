@@ -4,38 +4,12 @@ services:
       context: ./node
     restart: unless-stopped
     environment:
-      NODE_NAME: nas-home
-      API_ADDRESS: :8080
-      API_TLS_CERT_FILE: ${API_TLS_CERT_FILE:-}
-      API_TLS_KEY_FILE: ${API_TLS_KEY_FILE:-}
-      API_TLS_CLIENT_CA_FILE: ${API_TLS_CLIENT_CA_FILE:-}
-      # Set to https://127.0.0.1:8080/health when API_TLS_* is configured.
-      NODE_HEALTHCHECK_URL: ${NODE_HEALTHCHECK_URL:-http://127.0.0.1:8080/health}
-      MTLS_ADDRESS: :8443
-      MTLS_PUBLIC_ENDPOINT: ${MTLS_PUBLIC_ENDPOINT:-https://jolt-node:8443}
+      JOLT_CONFIG_FILE: /etc/jolt/node.yaml
       CONTROL_TOWER_TOKEN: ${CONTROL_TOWER_TOKEN:?define CONTROL_TOWER_TOKEN}
-      JOLT_DB_ENCRYPTION_KEY: ${JOLT_DB_ENCRYPTION_KEY:?define JOLT_DB_ENCRYPTION_KEY}
-      JOLT_DATA_DIR: /var/lib/jolt
-      JOLT_KEYS_DIR: /var/lib/jolt-keys
-      MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-2}
-      JOB_MAX_ATTEMPTS: ${JOB_MAX_ATTEMPTS:-3}
-      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-107374182400}
-      UPLOAD_MAX_SESSIONS: ${UPLOAD_MAX_SESSIONS:-32}
-      UPLOAD_MAX_RESERVED_BYTES: ${UPLOAD_MAX_RESERVED_BYTES:-429496729600}
-      UPLOAD_MIN_FREE_BYTES: ${UPLOAD_MIN_FREE_BYTES:-1073741824}
+      JOLT_STATE_ENCRYPTION_KEY: ${JOLT_STATE_ENCRYPTION_KEY:?define JOLT_STATE_ENCRYPTION_KEY}
       METRICS_TOKEN: ${NODE_METRICS_TOKEN:-}
-      COPY_CHUNK_SIZE_BYTES: ${COPY_CHUNK_SIZE_BYTES:-16777216}
-      NODE_BANDWIDTH_LIMIT_BYTES_PER_SECOND: ${NODE_BANDWIDTH_LIMIT_BYTES_PER_SECOND:-0}
-      MAX_PARALLEL_FILES_PER_JOB: ${MAX_PARALLEL_FILES_PER_JOB:-2}
-      MAX_PARALLEL_CHUNKS_PER_FILE: ${MAX_PARALLEL_CHUNKS_PER_FILE:-1}
-      TRANSFER_CONNECT_TIMEOUT: ${TRANSFER_CONNECT_TIMEOUT:-10s}
-      TRANSFER_IDLE_READ_TIMEOUT: ${TRANSFER_IDLE_READ_TIMEOUT:-60s}
-      TRANSFER_CHUNK_TIMEOUT: ${TRANSFER_CHUNK_TIMEOUT:-5m}
-      JOB_VALIDATION_TIMEOUT: ${JOB_VALIDATION_TIMEOUT:-2m}
-      JOB_NO_PROGRESS_TIMEOUT: ${JOB_NO_PROGRESS_TIMEOUT:-10m}
-      PEER_HEARTBEAT_INTERVAL: ${PEER_HEARTBEAT_INTERVAL:-15s}
-      PEER_HEARTBEAT_TIMEOUT: ${PEER_HEARTBEAT_TIMEOUT:-5s}
-      PEER_FAILURE_THRESHOLD: ${PEER_FAILURE_THRESHOLD:-3}
+      # With api_tls_cert_file and api_tls_key_file, set NODE_HEALTHCHECK_URL=https://127.0.0.1:8080/health.
+      NODE_HEALTHCHECK_URL: ${NODE_HEALTHCHECK_URL:-http://127.0.0.1:8080/health}
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
       UMASK: ${UMASK:-002}
@@ -49,6 +23,7 @@ services:
       - "${NODE_API_BIND:-127.0.0.1}:8080:8080"
       - "${NODE_PEER_BIND:-0.0.0.0}:8443:8443"
     volumes:
+      - ./node/node.docker.yaml:/etc/jolt/node.yaml:ro
       - ./runtime/node/data:/var/lib/jolt
       - ./runtime/node/keys:/var/lib/jolt-keys
       - ${JOLT_MOUNT_PATH:-./runtime/files}:/mnt/files:rw
@@ -69,8 +44,8 @@ services:
         limits:
           memory: ${JOLT_MEMORY_LIMIT:-1g}
     healthcheck:
-      # --no-check-certificate keeps the probe working when API_TLS_* is set
-      # with a private CA: this probe only checks liveness over loopback.
+      # When API TLS is enabled, NODE_HEALTHCHECK_URL must use https://.
+      # --no-check-certificate allows a private CA for this loopback liveness probe.
       test: ["CMD-SHELL", "wget --no-check-certificate -qO- \"$${NODE_HEALTHCHECK_URL:-http://127.0.0.1:8080/health}\" >/dev/null"]
       interval: 30s
       timeout: 5s

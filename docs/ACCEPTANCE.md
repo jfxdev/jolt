@@ -42,6 +42,7 @@ The `half` profile covers:
 | --- | --- | --- | --- | --- |
 | 2026-07-26 | `quick` | Passed | 14.837 s | Local APFS development host |
 | 2026-07-26 | `half` | Passed | 559.746 s | Local APFS development host; temporary data cleaned and free space restored |
+| 2026-10-22 | `quick` (YAML) | Passed | 230.657 s | Local APFS; concurrent race-test and image-build workload |
 | — | `full` | Pending | — | Must run on representative target infrastructure |
 
 Run the production-scale profile only on a disposable host with sufficient
@@ -100,8 +101,26 @@ The always-on automated suite complements the opt-in load profiles:
 | Cancel with a persisted partial | Partial is removed and item progress is reset |
 | Mount disappears | Job waits without spending retry budget and wakes after validation |
 | Peer becomes unavailable | Job waits without spending retry budget and wakes after authenticated heartbeat |
-| Restored database contains active jobs/partials | Diagnostics report them and restored jobs require explicit validation |
+| Restored state contains active jobs/partials | Diagnostics report them and restored jobs require explicit validation |
 
 The `quick` profile is suitable for continuous integration. A release that
 claims the 10 GiB/100 GiB limits should also record a successful
 `make acceptance-full` run on the target filesystem and deployment class.
+
+## Encrypted YAML persistence profile
+
+`make acceptance` also measures state checkpoint latency, opening time and
+retained heap with 4,096 historical events containing 32 MiB of payload.
+The 2026-10-22 run measured 52.4 ms per durable checkpoint, 1.224 s to reopen,
+1,055,480 bytes of retained heap for indexes, and a 1,076,017-byte payload cache
+when fetching 17 events. This run shared the host with race tests and image
+builds; these measurements are not a production throughput guarantee.
+The active journal held 101 transactions after consolidation. Normal state tests
+exercise the automatic 1,024-transaction boundary and verify history pagination,
+idempotency, authenticated sequence continuity and crash boundaries for journal,
+head, snapshot pages and manifest publication. Payload cache is capped at 16 MiB.
+
+The container smoke test verifies immutable YAML resources, identity and partial
+upload recovery after a container restart, no node database files, and existing
+RBAC protections. The node production build uses `CGO_ENABLED=0`; CI rejects SQL
+runtime dependencies. The Control Tower retains its SQLCipher build.

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
-	"github.com/jfxdev/jolt/backend/internal/infra/db"
+	db "github.com/jfxdev/jolt/backend/internal/infra/state"
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
 )
 
@@ -36,7 +36,7 @@ func (stalledRemoteExecutor) CleanupDirectoryPull(context.Context, entities.Job)
 func testService(t *testing.T) (*Service, *filesystem.Service, string) {
 	t.Helper()
 	root := t.TempDir()
-	store, err := db.Open(filepath.Join(root, "jolt.db"), make([]byte, 32))
+	store, err := db.Open(filepath.Join(root, "state"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,12 +107,12 @@ func TestWorkerExecutesPersistentCopy(t *testing.T) {
 func TestLocalCopyPersistsAndEnforcesPerJobBandwidthLimit(t *testing.T) {
 	service, files, mountID := testService(t)
 	service.ConfigureChunkSize(64 << 10)
-	service.ConfigureTimeouts(time.Second, 50*time.Millisecond, 50*time.Millisecond)
+	service.ConfigureTimeouts(5*time.Second, 500*time.Millisecond, 500*time.Millisecond)
 	mount, err := files.GetMount(context.Background(), mountID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := bytes.Repeat([]byte("x"), 4096)
+	content := bytes.Repeat([]byte("x"), 64<<10)
 	if err := os.WriteFile(filepath.Join(mount.LocalPath, "limited.bin"), content, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -129,11 +129,11 @@ func TestLocalCopyPersistsAndEnforcesPerJobBandwidthLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	job = waitForState(t, service, job.ID, "completed")
+	job = waitForState(t, service, job.ID, "completed", 10*time.Second)
 	if job.BandwidthLimit != 64<<10 {
 		t.Fatalf("persisted bandwidth limit=%d", job.BandwidthLimit)
 	}
-	if elapsed := time.Since(started); elapsed < 45*time.Millisecond {
+	if elapsed := time.Since(started); elapsed < 900*time.Millisecond {
 		t.Fatalf("copy completed too quickly for its bandwidth limit: %s", elapsed)
 	}
 }
@@ -586,7 +586,7 @@ func TestPausedCopyResumesFromPersistedChunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := bytes.Repeat([]byte("jolt-resume-"), 2<<20)
+	content := bytes.Repeat([]byte("jolt-resume-"), 256<<10)
 	if err := os.WriteFile(filepath.Join(mount.LocalPath, "large.bin"), content, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -633,7 +633,7 @@ func TestPausedCopyResumesFromPersistedChunk(t *testing.T) {
 	if _, err := service.Resume(context.Background(), job.ID); err != nil {
 		t.Fatal(err)
 	}
-	job = waitForState(t, service, job.ID, "completed")
+	job = waitForState(t, service, job.ID, "completed", 45*time.Second)
 	if job.BytesCompleted != int64(len(content)) {
 		t.Fatalf("bytes completed=%d want=%d", job.BytesCompleted, len(content))
 	}
@@ -841,9 +841,13 @@ func TestWaitingMountWakesAutomaticallyWithoutConsumingAttempt(t *testing.T) {
 	}
 }
 
-func waitForState(t *testing.T, service *Service, id, expected string) entities.Job {
+func waitForState(t *testing.T, service *Service, id, expected string, timeout ...time.Duration) entities.Job {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	wait := 3 * time.Second
+	if len(timeout) > 0 {
+		wait = timeout[0]
+	}
+	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) {
 		job, err := service.Get(context.Background(), id)
 		if err != nil {

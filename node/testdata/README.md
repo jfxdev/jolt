@@ -21,12 +21,11 @@ Ports and tokens can be overridden:
 make nodes NODE_A_API_PORT=19081 NODE_A_TOKEN=another-token
 ```
 
-When creating mounts through the Control Tower, use the absolute path shown by:
-
-```sh
-pwd
-```
-
-followed by `/node/testdata/nodeA/files`, `/node/testdata/nodeB/files`, or
-`/node/testdata/nodeC/files`. Each node's SQLite database and identity keys
-stay in its own `data` and `keys` directories.
+The launcher creates an editable `node.yaml` on first use, including the `files`
+mount. Subsequent starts preserve the file. Edit ports, limits and grants there;
+Make port overrides only affect initial creation. Changes apply on restart.
+Each node keeps its local configuration in `node/testdata/node*/node.yaml`,
+encrypted state in `node/testdata/node*/state/`, and identity keys in
+`node/testdata/node*/keys/`. All three paths are ignored by Git. Existing legacy
+`data` directories are not migrated. The development key is public fixture
+material and must never be used for a deployment.

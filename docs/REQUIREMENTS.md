@@ -319,14 +319,14 @@ Os itens abaixo nao sao obrigatorios no MVP, mas podem ser considerados em verso
 - RF-195: O sistema deve persistir mounts configurados.
 - RF-196: O sistema deve persistir jobs e itens de transferencia.
 - RF-197: O sistema deve persistir estado necessario para retomar jobs apos reinicio.
-- RF-198: O sistema deve manter metadados em banco local, preferencialmente SQLite.
-- RF-281: O node deve carregar configuracao a partir de valores padrao, variaveis de ambiente, arquivo de configuracao e banco local persistido, com precedencia documentada.
-- RF-282: Configuracoes operacionais mutaveis devem ser lidas e alteradas por API autenticada, Swagger/OpenAPI ou Control Tower.
-- RF-283: Configuracoes imutaveis em runtime, como portas, paths internos de dados e token operacional recebido por ambiente, devem exigir reinicio do processo para mudanca.
-- RF-284: O sistema deve distinguir configuracao desejada, configuracao efetiva e estado observado.
+- RF-198: O node deve manter estado operacional em YAML cifrado; o banco local da Control Tower permanece separado. Ver [NODE_YAML.md](NODE_YAML.md).
+- RF-281: O node deve carregar defaults e o arquivo obrigatorio `node.yaml`; ambiente fornece somente os paths de bootstrap e segredos documentados, sem camadas de configuracao em banco local.
+- RF-282: Configuracoes, mounts e grants devem ser consultados por API autenticada, Swagger/OpenAPI ou Control Tower, com alteracao somente pelo arquivo.
+- RF-283: Mudancas no `node.yaml` e nos segredos de bootstrap devem exigir reinicio do processo.
+- RF-284: O sistema deve distinguir configuracao declarada no arquivo, configuracao efetivamente aplicada e estado observado.
 - RF-285: A API deve expor endpoint para leitura da configuracao efetiva sem revelar segredos.
-- RF-286: A API deve expor endpoint para atualizar configuracoes mutaveis com validacao, auditoria, idempotencia e mascaramento de segredos.
-- RF-287: Alteracoes de configuracao devem ser persistidas atomicamente ou rejeitadas sem deixar estado parcial.
+- RF-286: Endpoints de mutacao de configuracao, mounts e grants devem rejeitar alteracoes com `409 configuration_managed_by_file`.
+- RF-287: O arquivo completo deve ser validado antes da aplicacao atomica no boot; configuracao invalida deve impedir a inicializacao sem deixar estado parcial.
 - RF-288: Segredos como `CONTROL_TOWER_TOKEN`, chaves privadas e tokens de peers nao devem ser retornados em claro por API, Swagger, logs ou exportacoes de diagnostico.
 
 ### 5.16 Logs e Auditoria
@@ -745,104 +745,43 @@ O contrato da API deve ser documentado, preferencialmente em OpenAPI, para permi
 
 #### 7.2.2 Modelo de Configuracao
 
-Cada node deve montar uma configuracao efetiva a partir de camadas bem definidas.
+O contrato vigente do node esta em [NODE_YAML.md](NODE_YAML.md). Ele substitui
+as propostas anteriores de configuracao mutavel por API ou banco local.
 
-Camadas de leitura, da menor para a maior precedencia:
+- `node.yaml` obrigatorio, `version: 1`, selecionado por `--config`, depois
+  `JOLT_CONFIG_FILE`, com padrao `./node.yaml`.
+- Defaults compilados sao substituidos pelo YAML; todos os parametros
+  operacionais, mounts e transfer_grants sao aplicados somente no inicio.
+- Tokens e chave de cifra permanecem externos. UID, GID, umask e volumes Docker
+  continuam configuracao de implantacao.
+- Mounts e grants exigem IDs explicitos e estaveis. IDs anteriores nao podem
+  ser redirecionados para outro recurso. Grants dependem da identidade exata
+  do peer autenticado; declarar um grant nao estabelece confianca.
+- A Control Tower consulta mounts/grants e informa “Gerenciado por arquivo”.
+  Mutacoes dessas configuracoes retornam `409 configuration_managed_by_file`.
+  Pareamento, revogacao, rotacao de identidade e operacoes de arquivos continuam
+  disponiveis, respeitando RBAC.
+- Jobs, uploads, tokens, idempotencia, confianca e eventos usam YAML cifrado
+  com AES-256-GCM, journal imutavel e snapshots transacionais. Nao ha SQLite,
+  migrations, SQLCipher nem fallback SQL no node.
+- A chave de 32 bytes aleatorios em Base64 vem de `JOLT_STATE_ENCRYPTION_KEY`
+  ou `JOLT_STATE_ENCRYPTION_KEY_FILE`, nunca das duas fontes simultaneamente.
+- `data_dir` e `keys_dir` sao persistentes e separados; o arquivo de chave fica
+  fora deles e dos backups. Arquivos de estado usam `0600`; diretorios `0700`.
+- Snapshots incluem configuracao, estado cifrado e identidade, exigem o node
+  parado e excluem temporarios e chave externa. Bancos antigos sao recusados,
+  sem conversao ou exclusao; esta entrega atende instalacoes novas.
+- Validacao rejeita campos desconhecidos, tipos invalidos, chaves duplicadas,
+  aliases, merges, documentos adicionais, caminhos protegidos e traversal.
+  Diretorios ausentes ficam indisponiveis e nao sao criados pelo node.
+- Revogar um peer persiste o bloqueio dos IDs de grants associados; reiniciar,
+  remover/reinserir a configuracao ou parear novamente nao remove o bloqueio.
+  Nova autorizacao exige novo ID apos restabelecer a confianca.
 
-- valores padrao compilados no binario;
-- arquivo de configuracao montado no container;
-- variaveis de ambiente;
-- banco local persistido;
-- overrides temporarios de runtime quando existirem.
-
-Precedencia recomendada:
-
-- valores padrao existem apenas como fallback;
-- arquivo de configuracao define bootstrap declarativo;
-- variaveis de ambiente sobrescrevem arquivo para facilitar Docker/Compose;
-- banco local persiste alteracoes feitas por API autenticada ou Control Tower;
-- configuracoes marcadas como locked por ambiente nao podem ser sobrescritas pelo banco.
-
-Tipos de configuracao:
-
-- **Bootstrap imutavel em runtime**: porta HTTP da API, porta mTLS, path do volume interno, path do banco, `CONTROL_TOWER_TOKEN`, modo de exposicao e endpoints publicos base. Alteracoes exigem reinicio.
-- **Configuracao operacional mutavel**: nome amigavel do node, mounts cadastrados, permissao logica de mounts, grants, politicas padrao, limites de paralelismo, timeouts, retries e preferencias de limpeza. Alteracoes passam por API autenticada e sao persistidas no banco.
-- **Estado observado**: disponibilidade de mounts, espaco em disco, permissao real do filesystem, estado de peers, jobs ativos, eventos idle e diagnosticos. Nao deve ser editado diretamente.
-- **Segredos**: identidade criptografica, chaves privadas, tokens operacionais e credenciais temporarias. Devem ser persistidos separadamente ou marcados como secretos no banco, nunca retornados em claro.
-- **Material criptografico em arquivo**: identidade, chaves privadas, certificados mTLS e CAs confiaveis devem ficar em diretorio de keys dedicado, fora dos mounts de transferencia.
-
-Modelo conceitual:
-
-```text
-defaults -> config file -> environment -> persisted database -> effective config
-                                                     |
-                                                     v
-                                            observed runtime state
-```
-
-Leitura pela API:
-
-- `GET /config/effective`: retorna configuracao efetiva sem segredos.
-- `GET /config/sources`: informa de onde veio cada campo, sem revelar valores secretos.
-- `GET /config/schema`: retorna schema de configuracao e campos mutaveis/imutaveis.
-- `GET /diagnostics/config`: retorna inconsistencias, campos ausentes, conflitos e avisos.
-
-Escrita pela API:
-
-- `PATCH /config`: altera apenas campos mutaveis.
-- `PUT /mounts/{mount_id}` ou endpoint equivalente altera mounts.
-- `PUT /policies/defaults` altera politicas padrao.
-- `POST /config/reload` pode reler arquivo de configuracao quando tecnicamente seguro, mas nao deve alterar portas ou tokens sem reinicio.
-
-Toda escrita de configuracao deve:
-
-- exigir token operacional valido;
-- validar schema e regras de dominio antes de persistir;
-- gravar em transacao;
-- emitir evento de auditoria;
-- incluir identificador de correlacao;
-- indicar se a alteracao aplica imediatamente ou exige restart;
-- mascarar segredos em resposta, logs e eventos.
-
-Armazenamento recomendado no node:
-
-- SQLite para configuracoes mutaveis, peers, clusters, mounts, grants, jobs, eventos e diagnosticos.
-- Arquivos no volume de keys para identidade criptografica, certificados mTLS, chaves privadas e CAs confiaveis.
-- Arquivos no volume persistente de dados para banco, estado de jobs, metadados, diagnosticos e artefatos grandes quando apropriado.
-- Arquivo de configuracao opcional para bootstrap declarativo e reprodutibilidade.
-
-Exemplo conceitual de volumes:
-
-```yaml
-services:
-  jolt-node:
-    image: jolt/node:latest
-    environment:
-      - NODE_NAME=nas-home
-      - API_PORT=8080
-      - MTLS_PORT=8443
-      - CONTROL_TOWER_TOKEN=change-me
-      - JOLT_DATA_DIR=/var/lib/jolt
-      - JOLT_KEYS_DIR=/var/lib/jolt-keys
-      - PUID=1000
-      - PGID=1000
-      - UMASK=077
-    volumes:
-      - ./jolt-data:/var/lib/jolt
-      - ./jolt-keys:/var/lib/jolt-keys
-      - /srv/media:/mnt/media:rw
-```
-
-O volume `jolt-keys` deve ser tratado como material sensivel. Ele nao deve ser registrado automaticamente como mount, nao deve ser navegavel por peers e nao deve aparecer em grants.
-
-A Control Tower deve ler e alterar configuracoes apenas pelas APIs dos nodes. Ela pode manter cache ou preferencias locais, mas o node permanece fonte de verdade da propria configuracao.
-
-Conflitos entre camadas:
-
-- se um campo estiver definido por ambiente e tambem no banco, a politica deve indicar se ambiente bloqueia o campo ou apenas define valor inicial;
-- para o MVP, campos sensiveis e estruturais definidos por ambiente devem ser tratados como locked;
-- a API deve mostrar que o campo esta bloqueado, mas nao deve retornar o valor secreto;
-- tentativas de alterar campo locked devem retornar erro estruturado.
+Exemplo de implantacao: [docker-compose.yml](../docker-compose.yml) e
+[node/node.docker.yaml](../node/node.docker.yaml). A configuracao publica e
+montada em `/etc/jolt/node.yaml:ro`; estado e identidade usam volumes separados.
+O banco SQLCipher da Control Tower permanece inalterado.
 
 ### 7.3 Permissionamento e Identidade de Arquivos
 
@@ -2755,15 +2694,15 @@ O MVP deve incluir:
 - Nodes sem interface web propria.
 - Nodes expondo apenas porta HTTP da API/Swagger e porta mTLS de transferencia.
 - Token da Control Tower recebido pelo node por variavel de ambiente.
-- Diretorio de keys dedicado, configuravel por `JOLT_KEYS_DIR`.
+- Diretorio de keys dedicado, configuravel por `keys_dir` no `node.yaml`.
 - Volume Docker separado para keys, distinto do volume de dados e dos mounts de transferencia.
 - Validacao de permissoes do diretorio de keys no boot.
 - Rotacao mTLS planejada com estados `active`, `next` e `previous`.
 - Revogacao emergencial de certificado mTLS comprometido.
-- Modelo de configuracao por camadas: defaults, arquivo, ambiente, banco local e estado observado.
+- Modelo de configuracao do node: defaults, YAML obrigatorio, segredos externos e estado observado.
 - Endpoint de leitura de configuracao efetiva sem segredos.
-- Endpoint de alteracao de configuracoes mutaveis por API autenticada.
-- Campos estruturais e secretos definidos por ambiente tratados como locked no MVP.
+- Configuracoes, mounts e grants somente para leitura por API; alteracoes pelo `node.yaml` aplicadas apos reinicio.
+- Campos estruturais definidos no YAML e segredos externos aplicados somente no boot.
 - Lista de nodes conhecidos na Control Tower.
 - Visualizacao de estado, capacidades e diagnosticos resumidos por node.
 - Operacoes da Control Tower executadas pelas mesmas APIs dos nodes.
@@ -2854,7 +2793,7 @@ Itens candidatos para evolucao:
 - CA-012: O sistema impede acesso a arquivos fora dos mounts configurados.
 - CA-013: Um convite expirado ou revogado nao permite pareamento.
 - CA-014: Uma mudanca de identidade de peer conhecido exige confirmacao manual antes de nova confianca.
-- CA-015: No primeiro boot, o sistema cria identidade local, banco e estrutura interna de dados.
+- CA-015: No primeiro boot, o node valida o YAML e cria identidade e estado YAML cifrado em diretorios novos.
 - CA-016: Apos reinicio com o mesmo volume persistente, o node mantem o mesmo `node_id` e fingerprint.
 - CA-017: Apos perda do volume persistente, o node recebe nova identidade e peers antigos nao confiam automaticamente nele.
 - CA-018: Um node idle mantem API HTTP autenticada, Swagger/OpenAPI e porta mTLS disponiveis sem executar varredura pesada nos mounts.
@@ -2911,10 +2850,10 @@ Itens candidatos para evolucao:
 - CA-069: Perder a Control Tower nao apaga jobs nem grants persistidos nos nodes.
 - CA-070: Uma nova Control Tower consegue reconstruir a visao operacional consultando APIs dos nodes autorizados.
 - CA-071: Rotacionar `CONTROL_TOWER_TOKEN` invalida chamadas com o token antigo e permite chamadas com o token novo.
-- CA-072: O node monta configuracao efetiva respeitando precedencia entre defaults, arquivo, ambiente e banco local.
+- CA-072: O node aplica defaults e YAML obrigatorio no inicio, mantendo segredos externos.
 - CA-073: A API retorna configuracao efetiva sem expor `CONTROL_TOWER_TOKEN`, chaves privadas ou outros segredos.
 - CA-074: Tentar alterar por API um campo locked por variavel de ambiente retorna erro estruturado.
-- CA-075: Alterar configuracao mutavel por API persiste no banco local e sobrevive a reinicio.
+- CA-075: Mounts e grants sao somente leitura pela API; alteracoes no YAML exigem reinicio.
 - CA-076: Falha de validacao ao alterar configuracao nao deixa estado parcial persistido.
 - CA-077: O node persiste identidade, chaves privadas e certificados mTLS em diretorio dedicado configurado por `JOLT_KEYS_DIR`.
 - CA-078: O diretorio de keys nao aparece como mount de transferencia e nao pode ser usado em Transfer Path Grants.
@@ -2945,9 +2884,9 @@ Itens candidatos para evolucao:
 - CA-103: Uma automacao ou agente de IA com policy restrita a um mount nao consegue acessar outro mount do mesmo node nem inferir paths absolutos fora do escopo permitido.
 - CA-104: Toda operacao mutavel do API Filesystem registra auditoria com ator, tipo de ator, Node Path avaliado, `node_id`, `mount_id`, `path` relativo, decisao e identificador de correlacao.
 - CA-105: Quando um node ou mount estiver indisponivel, o API Filesystem retorna erro ou estado estruturado sem tentar acessar o filesystem por canal alternativo.
-- CA-106: Os binarios do node e da Control Tower oferecem comando offline de snapshot que recusa execucao concorrente com a instancia ativa, valida a integridade do SQLite e publica arquivo atomico com manifest e checksums.
+- CA-106: Os binarios do node e da Control Tower oferecem comando offline de snapshot que recusa execucao concorrente com a instancia ativa, valida a integridade do estado (YAML cifrado no node, SQLCipher no control) e publica arquivo atomico com manifest e checksums.
 - CA-107: O snapshot do node inclui dados e keys no mesmo conjunto, enquanto o snapshot da Control Tower exclui explicitamente a encryption key externa e registra essa exclusao no manifest.
-- CA-108: O diagnostico offline de restore do node valida identidade, banco, mounts, peers, grants, jobs e parciais sem retomar jobs ou alterar o estado restaurado.
+- CA-108: O diagnostico offline de restore do node valida identidade, estado cifrado, mounts, peers, grants, jobs e parciais sem retomar jobs ou alterar o estado restaurado.
 - CA-109: O diagnostico offline de restore da Control Tower valida a encryption key externa, administradores habilitados e credenciais criptografadas sem imprimir plaintext.
 
 ## 13. Decisoes Fechadas, Riscos e Decisoes em Aberto
@@ -2968,9 +2907,9 @@ Itens candidatos para evolucao:
 - Control Tower e reconstruivel; nodes sao a fonte de verdade de jobs, grants, mounts e identidade.
 - Restore sem identidade criptografica preservada deve ser tratado como novo node.
 - Jobs restaurados nao retomam automaticamente sem revalidacao.
-- Configuracao efetiva do node sera composta por defaults, arquivo, variaveis de ambiente, banco local e estado observado.
-- Configuracoes mutaveis serao persistidas no banco local; configuracoes estruturais/secretas por ambiente ficam locked no MVP.
-- Material criptografico do node ficara em diretorio de keys dedicado, separado do banco e dos mounts de transferencia.
+- Configuracao efetiva do node sera composta por defaults, YAML obrigatorio e estado observado; segredos permanecem externos.
+- Configuracoes do node sao gerenciadas por arquivo e aplicadas por reinicio; estado operacional e persistido em YAML cifrado.
+- Material criptografico do node ficara em diretorio de keys dedicado, separado do estado operacional e dos mounts de transferencia.
 - Rotacao mTLS usara janela de sobreposicao com estados `active`, `next`, `previous` e suporte a revogacao emergencial.
 - Certificados mTLS serao gerados internamente no MVP; importacao de certificados externos ou pre-provisionados fica no roadmap pos-MVP.
 - Control Tower tera autenticacao propria com usuarios humanos, service accounts, Argon2id e cookies de sessao.
@@ -2990,7 +2929,7 @@ Itens candidatos para evolucao:
 - Definir formato de exportacao/importacao de configuracao e diagnostico de DR.
 - Definir politica de retencao de backups recomendada.
 - Definir como armazenar tokens da Control Tower em backup: segredo direto, referencia externa ou integracao futura com secret manager.
-- Definir formato oficial do arquivo de configuracao: YAML, TOML ou JSON.
+- Formato oficial do arquivo de configuracao do node definido: `node.yaml` (ver [NODE_YAML.md](NODE_YAML.md)).
 - Definir quais campos poderao usar reload sem restart apos o MVP.
 - Definir duracao padrao da grace period para certificado mTLS anterior.
 - Definir formato exato dos metadados de keys e lista de revogacao.

@@ -11,7 +11,7 @@ import (
 
 	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/entities"
-	"github.com/jfxdev/jolt/backend/internal/infra/db"
+
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
 )
 
@@ -33,13 +33,19 @@ type Input struct {
 	CorrelationID    string
 }
 
+type serviceStore interface {
+	contracts.ConfigurationReader
+	contracts.GrantWriter
+	contracts.TrustStore
+}
+
 type Service struct {
-	store contracts.Store
+	store serviceStore
 	files *filesystem.Service
 	now   func() time.Time
 }
 
-func New(store contracts.Store, files *filesystem.Service) *Service {
+func New(store serviceStore, files *filesystem.Service) *Service {
 	return &Service{store: store, files: files, now: func() time.Time { return time.Now().UTC() }}
 }
 
@@ -72,7 +78,7 @@ func (s *Service) Create(ctx context.Context, input Input) (entities.TransferPat
 
 func (s *Service) Update(ctx context.Context, id string, input Input) (entities.TransferPathGrant, error) {
 	existing, err := s.store.GetTransferGrant(ctx, id)
-	if errors.Is(err, db.ErrNotFound) {
+	if errors.Is(err, contracts.ErrNotFound) {
 		return existing, ErrNotFound
 	}
 	if err != nil {
@@ -93,7 +99,7 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (entities.
 			return grant, ErrConflict
 		}
 	}
-	if err := s.store.UpdateTransferGrant(ctx, grant); errors.Is(err, db.ErrNotFound) {
+	if err := s.store.UpdateTransferGrant(ctx, grant); errors.Is(err, contracts.ErrNotFound) {
 		return grant, ErrNotFound
 	} else if err != nil {
 		return grant, err
@@ -102,7 +108,7 @@ func (s *Service) Update(ctx context.Context, id string, input Input) (entities.
 }
 
 func (s *Service) Delete(ctx context.Context, id, correlationID string) error {
-	if err := s.store.DeleteTransferGrant(ctx, id, correlationID, s.now()); errors.Is(err, db.ErrNotFound) {
+	if err := s.store.DeleteTransferGrant(ctx, id, correlationID, s.now()); errors.Is(err, contracts.ErrNotFound) {
 		return ErrNotFound
 	} else {
 		return err
@@ -120,7 +126,7 @@ func (s *Service) validate(ctx context.Context, input Input) (entities.TransferP
 		return grant, fmt.Errorf("%w: peer_node_id and mount_id are required", ErrInvalid)
 	}
 	peer, err := s.store.GetPeer(ctx, grant.PeerNodeID)
-	if errors.Is(err, db.ErrNotFound) || !entities.TrustedPeerState(peer.State) {
+	if errors.Is(err, contracts.ErrNotFound) || !entities.TrustedPeerState(peer.State) {
 		return grant, fmt.Errorf("%w: grant requires the exact trusted peer identity", ErrInvalid)
 	}
 	if err != nil {

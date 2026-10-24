@@ -109,28 +109,13 @@ impede spray distribuído ou enumeração paciente.
 
 ---
 
-### P0.3 🟠 Assimetria de criptografia em repouso (node DB em texto claro)
+### P0.3 — Concluído: configuração e estado YAML cifrado no node
 
-**Problema.** O Control Tower cifra todo o banco com SQLCipher. O **node** usa
-SQLite puro, sem criptografia. O banco do node contém grants, identidades de
-peers confiáveis, paths de mount, checkpoints e idempotência.
-
-**Evidência.**
-- Control: `control/internal/database/sqlcipher.go` (full-page SQLCipher).
-- Node: `node/backend/internal/infra/db/sqlite.go:12` importa
-  `modernc.org/sqlite`; `sqlite.go:23` `sql.Open("sqlite", path)` sem
-  `PRAGMA key`. Nenhuma referência a cipher/encrypt no arquivo.
-
-**Solução proposta.** Adicionar criptografia opcional/obrigatória ao node DB com
-paridade ao Control Tower:
-- Trocar o driver do node para o toolchain SQLCipher (CGO), reutilizando o
-  padrão já validado no control (`docs/IMPLEMENTATION.md` cita imagem Alpine
-  arm64 com SQLCipher CGO).
-- Chave externa via env (ex.: `JOLT_DB_ENCRYPTION_KEY`), fail-closed sem chave,
-  migração offline de bancos plaintext existentes (mesmo modelo do
-  `encrypt-database` do control).
-- Nota: a chave privada de identidade já vive em `JOLT_KEYS_DIR` fora do DB, mas
-  o restante do estado operacional permanece exposto em disco hoje.
+O node usa `node.yaml` para mounts, grants e parâmetros operacionais, e YAML
+cifrado com AES-256-GCM para estado transacional. A chave externa é
+`JOLT_STATE_ENCRYPTION_KEY` ou `JOLT_STATE_ENCRYPTION_KEY_FILE`. Não há SQLCipher,
+SQLite, CGO ou conversão de bancos legados no node. Instalações antigas devem
+permanecer separadas. Contratos e operação: [NODE_YAML.md](NODE_YAML.md).
 
 ---
 
@@ -446,12 +431,14 @@ camada complementar.
 
 ### C5 🟠 Node DB serializado por `SetMaxOpenConns(1)` — gargalo de throughput
 
-**Problema.** Node e Control Tower fixam **uma única conexão** ao SQLite. Todo
+**Escopo atual: Control Tower.** O node foi substituído por YAML (P0.3).
+
+**Problema original.** Node e Control Tower fixavam **uma única conexão** ao SQLite. Todo
 request de API, worker de job e stream SSE contendem pela mesma conexão. Correto
 para consistência, mas limita concorrência sob carga (transferências paralelas +
 navegação + eventos disputam o mesmo lock).
 
-**Evidência.** `node/backend/internal/infra/db/sqlite.go:27`
+**Evidência histórica (node substituído por YAML).** `node/backend/internal/infra/db/sqlite.go:27`
 `database.SetMaxOpenConns(1)`; `control/internal/database/sqlcipher.go:42` idem.
 
 **Solução proposta.** WAL já habilitado no node permite múltiplos leitores com
@@ -834,8 +821,9 @@ agregado, em vez de abortar o job.
 (`key → job_id`) nunca são removidos; a tabela cresce indefinidamente, como as
 sessões de [C12](#).
 
-**Evidência.** `node/backend/internal/infra/db/sqlite.go:85` (schema),
-`:497` (insert); sem rotina de expurgo.
+**Evidência atual.** `node/backend/internal/infra/state/jobs.go` preserva
+idempotência no journal e nos snapshots, sem expurgo. O registro foi mantido
+para evitar reexecução de operações confirmadas.
 
 **Solução proposta.** Estender o sweeper (ver [C12](#c12)) para apagar registros
 de idempotência mais antigos que uma janela configurável.
@@ -1031,7 +1019,7 @@ candidatas a um próximo passo:
 | --- | --- | --- | --- | --- |
 | P0.1 | Corrigir docs Vue → React | 🔴 | Baixo | 1 |
 | P0.2 | Rate-limit + lockout + MFA no login | 🔴 | Médio | 2 |
-| P0.3 | Criptografia do node DB (SQLCipher) | 🟠 | Médio | 3 |
+| P0.3 | YAML e estado cifrado do node | Concluído | — | 3 |
 | P1.1 | Métricas + tracing | 🟠 | Médio | 4 |
 | P1.2 | Liveness/readiness | 🟠 | Baixo | 5 |
 | P1.3 | API de logs recentes | 🟠 | Médio | 6 |

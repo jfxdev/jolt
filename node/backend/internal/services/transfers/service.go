@@ -20,7 +20,7 @@ import (
 	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/entities"
 	joltcrypto "github.com/jfxdev/jolt/backend/internal/infra/crypto"
-	"github.com/jfxdev/jolt/backend/internal/infra/db"
+
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
 	"github.com/jfxdev/jolt/backend/internal/services/jobs"
 )
@@ -79,8 +79,14 @@ func (f SourceFile) CurrentETag() (string, error) {
 	return sourceETag(info), nil
 }
 
+type serviceStore interface {
+	contracts.ConfigurationReader
+	contracts.TrustStore
+	contracts.JobStore
+}
+
 type Service struct {
-	store             contracts.Store
+	store             serviceStore
 	files             *filesystem.Service
 	jobs              *jobs.Service
 	certificates      *joltcrypto.CertificateManager
@@ -92,7 +98,7 @@ type Service struct {
 	dialContext       func(context.Context, string, string) (net.Conn, error)
 }
 
-func New(store contracts.Store, files *filesystem.Service, jobService *jobs.Service, certificates *joltcrypto.CertificateManager, chunkSize int64) *Service {
+func New(store serviceStore, files *filesystem.Service, jobService *jobs.Service, certificates *joltcrypto.CertificateManager, chunkSize int64) *Service {
 	return &Service{
 		store: store, files: files, jobs: jobService, certificates: certificates, chunkSize: chunkSize,
 		connectTimeout: 10 * time.Second, idleReadTimeout: time.Minute,
@@ -121,7 +127,7 @@ func (s *Service) ConfigureDialContext(dial func(context.Context, string, string
 
 func (s *Service) CreatePull(ctx context.Context, request PullRequest, idempotencyKey string) (entities.Job, bool, error) {
 	peer, err := s.store.GetPeer(ctx, strings.TrimSpace(request.PeerNodeID))
-	if errors.Is(err, db.ErrNotFound) || !entities.TrustedPeerState(peer.State) {
+	if errors.Is(err, contracts.ErrNotFound) || !entities.TrustedPeerState(peer.State) {
 		return entities.Job{}, false, fmt.Errorf("%w: exact trusted peer is required", ErrForbidden)
 	}
 	if err != nil {
@@ -171,7 +177,7 @@ func (s *Service) CreatePull(ctx context.Context, request PullRequest, idempoten
 
 func (s *Service) OpenSource(ctx context.Context, peerNodeID, grantID, relative string, checksum bool) (SourceFile, error) {
 	grant, err := s.store.GetTransferGrant(ctx, grantID)
-	if errors.Is(err, db.ErrNotFound) {
+	if errors.Is(err, contracts.ErrNotFound) {
 		return SourceFile{}, ErrForbidden
 	}
 	if err != nil {
@@ -443,7 +449,7 @@ func (s *Service) CreateBatchPull(ctx context.Context, request BatchPullRequest,
 		return entities.Job{}, false, err
 	} else if found {
 		if storedHash != requestHash {
-			return entities.Job{}, false, db.ErrIdempotencyConflict
+			return entities.Job{}, false, contracts.ErrIdempotencyConflict
 		}
 		return job, true, nil
 	}
@@ -1217,7 +1223,7 @@ func (s *Service) planRemoteAction(ctx context.Context, mountID string, item ent
 
 func (s *Service) trustedPeer(ctx context.Context, nodeID string) (entities.Peer, error) {
 	peer, err := s.store.GetPeer(ctx, strings.TrimSpace(nodeID))
-	if errors.Is(err, db.ErrNotFound) || (err == nil && !entities.TrustedPeerState(peer.State)) {
+	if errors.Is(err, contracts.ErrNotFound) || (err == nil && !entities.TrustedPeerState(peer.State)) {
 		return entities.Peer{}, fmt.Errorf("%w: exact trusted peer is required", ErrForbidden)
 	}
 	if err != nil {
@@ -1231,7 +1237,7 @@ func (s *Service) trustedPeer(ctx context.Context, nodeID string) (entities.Peer
 
 func (s *Service) sendGrant(ctx context.Context, peerNodeID, grantID string) (entities.TransferPathGrant, error) {
 	grant, err := s.store.GetTransferGrant(ctx, strings.TrimSpace(grantID))
-	if errors.Is(err, db.ErrNotFound) {
+	if errors.Is(err, contracts.ErrNotFound) {
 		return grant, ErrForbidden
 	}
 	if err != nil {
@@ -1246,7 +1252,7 @@ func (s *Service) sendGrant(ctx context.Context, peerNodeID, grantID string) (en
 
 func (s *Service) receiveGrant(ctx context.Context, peerNodeID, grantID, policy string) (entities.TransferPathGrant, error) {
 	grant, err := s.store.GetTransferGrant(ctx, strings.TrimSpace(grantID))
-	if errors.Is(err, db.ErrNotFound) {
+	if errors.Is(err, contracts.ErrNotFound) {
 		return grant, ErrForbidden
 	}
 	if err != nil {

@@ -5,6 +5,6 @@ go 1.26.0
 toolchain go1.26.10
 
 require (
-	github.com/mutecomm/go-sqlcipher/v4 v4.4.2
+	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/sys v0.49.0
 )

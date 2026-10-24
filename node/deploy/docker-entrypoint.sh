@@ -50,7 +50,7 @@ validate_access() {
 umask "$JOLT_UMASK"
 
 if [ "$(id -u)" = "0" ]; then
-  prepare_internal_directory "$JOLT_DATA_PATH" 0750
+  prepare_internal_directory "$JOLT_DATA_PATH" 0700
   prepare_internal_directory "$JOLT_KEYS_PATH" 0700
 
   OLD_IFS="$IFS"
