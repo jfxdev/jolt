@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type Route } from "@playwright/test";
 
 async function fixture(
   page: Page,
@@ -320,3 +320,98 @@ test("retry after navigating to another node keeps its original destination", as
     true,
   );
 });
+
+test("destination pagination recovers after failure and a trailing-slash edit", async ({ page }) => {
+  await fixture(page);
+  await page.route("**/api/v1/nodes/a/transfers/targets", route => route.fulfill({
+    json: { max_source_paths: 1000, targets: [{
+      node_id: "b", name: "Node B", state: "online", available: true,
+      mounts: [{ mount_id: "media", name: "Arquivos", root_path: "dest", conflict_policies: ["fail"], can_browse: true, available: true, state: "available" }],
+    }] },
+  }));
+  let attempts = 0;
+  let pending: Route | undefined;
+  const directory = (name: string) => ({ name, path: `dest/${name}`, type: "directory", size: 0 });
+  await page.route(/\/api\/v1\/nodes\/b\/mounts\/media\/files(?:\?|$)/, route => {
+    if (!new URL(route.request().url()).searchParams.get("after")) {
+      return route.fulfill({ json: { items: [directory("first")], next_after: "more" } });
+    }
+    if (++attempts === 1) return route.fulfill({ status: 503, json: { error: { message: "Falha simulada" } } });
+    pending = route;
+  });
+  await page.goto("/nodes/a/mounts/media");
+  await page.getByRole("checkbox", { name: "Selecionar file-0000.txt", exact: true }).check();
+  await page.getByRole("button", { name: "Copiar para…", exact: true }).click();
+  const more = page.getByRole("button", { name: "Carregar mais subpastas", exact: true });
+  await expect(page.getByRole("button", { name: "first", exact: true })).toBeVisible();
+  await more.click();
+  await expect(page.getByText("Não foi possível carregar mais subpastas.", { exact: true })).toBeVisible();
+  await more.click();
+  await expect.poll(() => !!pending).toBe(true);
+  await page.getByRole("textbox", { name: "Pasta de destino", exact: true }).fill("dest/");
+  await pending!.fulfill({ json: { items: [directory("second")], next_after: "last" } });
+  await expect(page.getByRole("button", { name: "second", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "first", exact: true })).toBeVisible();
+  await expect(more).toBeEnabled();
+  await expect(page.getByText("Não foi possível carregar mais subpastas.", { exact: true })).toHaveCount(0);
+});
+
+test("older section retries cannot clear the latest failure", async ({ page }) => {
+  await fixture(page, { failTrust: true });
+  await page.goto("/nodes/a/mounts/media");
+  const error = page.getByText("Confiança: Não foi possível atualizar esta seção.");
+  await expect(error).toBeVisible();
+  let pending: Route | undefined;
+  let calls = 0;
+  await page.route("**/api/v1/control-tower/nodes/a/trust", route => {
+    if (++calls === 1) { pending = route; return; }
+    return route.fulfill({ status: 503, json: { error: { message: "Falha mais recente" } } });
+  });
+  const retry = page.getByRole("button", { name: "Tentar novamente", exact: true });
+  await retry.click();
+  await expect.poll(() => !!pending).toBe(true);
+  await retry.click();
+  await expect(page.getByText("Falha mais recente", { exact: true })).toBeVisible();
+  await pending!.fulfill({ json: { peers: [], connections: [], requests: [], invites: [] } });
+  // The response has been delivered; let React commit any queued state writes.
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expect(error).toBeVisible();
+});
+
+for (const operation of ["add", "remove"] as const) {
+  test(`successful node ${operation} survives an inventory refresh failure`, async ({ page }, testInfo) => {
+    await fixture(page);
+    await page.goto("/nodes/a");
+    await expect(page.getByRole("heading", { name: "Node A", exact: true })).toBeVisible();
+    let mutated = false;
+    let refreshFailures = 0;
+    const inventoryError = "Falha ao atualizar nodes";
+    await page.route("**/api/v1/control-tower/nodes", route => {
+      if (route.request().method() === "POST") {
+        mutated = true;
+        return route.fulfill({ status: 201, json: { node_id: "c" } });
+      }
+      if (refreshFailures++) return route.fallback();
+      return route.fulfill({ status: 503, json: { error: { message: inventoryError } } });
+    });
+    if (operation === "add") {
+      if (testInfo.project.name === "mobile") await page.getByRole("button", { name: "Toggle Sidebar" }).click();
+      await page.getByRole("button", { name: "Adicionar node", exact: true }).click();
+      await page.getByRole("textbox", { name: "Nome amigável", exact: true }).fill("Node C");
+      await page.getByLabel("Token operacional", { exact: true }).fill("synthetic-token");
+      await page.getByRole("button", { name: "Validar e conectar", exact: true }).click();
+      await expect(page.getByText("Node conectado com sucesso.", { exact: true })).toBeVisible();
+    } else {
+      await page.route("**/api/v1/control-tower/nodes/a", route => {
+        mutated = true;
+        return route.fulfill({ status: 204 });
+      });
+      await page.getByRole("button", { name: "Remover node", exact: true }).click();
+      await page.getByRole("textbox", { name: "Digite Node A para confirmar", exact: true }).fill("Node A");
+      await page.getByRole("button", { name: "Remover da Control Tower", exact: true }).click();
+      await expect(page.getByText("Node removido da Control Tower. O node e seus dados não foram alterados.", { exact: true })).toBeVisible();
+    }
+    expect(mutated).toBe(true);
+    await expect(page.getByText(inventoryError, { exact: true })).toHaveCount(1);
+  });
+}

@@ -67,6 +67,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const handleError = useApiError();
 
   const currentNodeRef = useRef(nodeId); currentNodeRef.current = nodeId;
+  const requests = useRef({ nodeId, sequences: { mounts: 0, jobs: 0, trust: 0, mtls: 0 } });
+  if (requests.current.nodeId !== nodeId) {
+    requests.current = { nodeId, sequences: { mounts: 0, jobs: 0, trust: 0, mtls: 0 } };
+  }
   const [sectionErrors, setSectionErrors] = useState<Partial<Record<WorkspaceSection, string>>>({});
   const [mounts, setMounts] = useState<Mount[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -166,17 +170,20 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   useJobEvents(nodeId, canStreamJobs, updateJobs);
 
   const retrySection = useCallback(async (section: WorkspaceSection) => {
-    if (!nodeId) return;
+    if (!nodeId || currentNodeRef.current !== nodeId) return;
     const paths = { mounts: "mounts", jobs: "jobs", trust: "peers", mtls: "keys/mtls" };
     if (!hasPermissionNow(`nodes/${nodeId}/${paths[section]}`, section === "mtls" ? "read" : "list")) return;
+    const request = requests.current;
+    const ticket = ++request.sequences[section];
+    const latest = () => requests.current === request && request.sequences[section] === ticket;
     try {
-      if (section === "mounts") { const result = await api.mounts(nodeId); if (currentNodeRef.current === nodeId) setMounts(result.items || []); }
-      if (section === "jobs") { const result = await api.jobs(nodeId); if (currentNodeRef.current === nodeId) setJobs(result.items || []); }
-      if (section === "trust") { const result = await api.nodeTrust(nodeId); if (currentNodeRef.current === nodeId) setTrust(result); }
-      if (section === "mtls") { const result = await api.mtlsState(nodeId); if (currentNodeRef.current === nodeId) setMtlsState(result); }
-      if (currentNodeRef.current === nodeId) setSectionErrors(previous => { const next = { ...previous }; delete next[section]; return next; });
+      if (section === "mounts") { const result = await api.mounts(nodeId); if (latest()) setMounts(result.items || []); }
+      if (section === "jobs") { const result = await api.jobs(nodeId); if (latest()) setJobs(result.items || []); }
+      if (section === "trust") { const result = await api.nodeTrust(nodeId); if (latest()) setTrust(result); }
+      if (section === "mtls") { const result = await api.mtlsState(nodeId); if (latest()) setMtlsState(result); }
+      if (latest()) setSectionErrors(previous => { const next = { ...previous }; delete next[section]; return next; });
     } catch (error) {
-      if (currentNodeRef.current === nodeId) { setSectionErrors(previous => ({ ...previous, [section]: "Não foi possível atualizar esta seção." })); handleError(error); }
+      if (latest()) { setSectionErrors(previous => ({ ...previous, [section]: "Não foi possível atualizar esta seção." })); handleError(error); }
     }
   }, [nodeId, hasPermissionNow, handleError]);
   const refreshJobs = useCallback(() => retrySection("jobs"), [retrySection]);

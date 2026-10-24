@@ -197,6 +197,7 @@ func (s *Server) completeUploadSession(w http.ResponseWriter, r *http.Request) {
 		writeUploadReceipt(w, session)
 		return
 	}
+	prepared := false
 	if session.State != "publishing" {
 		digest, err := s.files.PrepareUpload(r.Context(), session)
 		if err != nil {
@@ -214,10 +215,17 @@ func (s *Server) completeUploadSession(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, r, err)
 			return
 		}
+		prepared = true
 	}
 	published, err := s.files.PublishedUpload(r.Context(), session)
 	if err == nil && !published {
-		_, _, err = s.files.CompleteUpload(r.Context(), session.MountID, session.Destination, session.ID, session.Size, session.PublishChecksum, session.Overwrite)
+		checksum := session.PublishChecksum
+		if prepared {
+			// The session lock excludes appends since PrepareUpload verified this
+			// partial. A recovered publishing intent must still verify its digest.
+			checksum = ""
+		}
+		_, _, err = s.files.CompleteUpload(r.Context(), session.MountID, session.Destination, session.ID, session.Size, checksum, session.Overwrite)
 	}
 	if err != nil {
 		s.registry.Inc("jolt_uploads_failed_total")

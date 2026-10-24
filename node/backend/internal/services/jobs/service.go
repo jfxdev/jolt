@@ -1561,11 +1561,14 @@ func (s *Service) executeParallelLocalCopy(ctx context.Context, job entities.Job
 						bytesCompleted += completed - item.BytesCompleted
 						item.BytesCompleted, item.UpdatedAt = completed, s.now()
 						currentBytes, currentCompleted, currentFailed := bytesCompleted, filesCompleted, filesFailed
-						stateMu.Unlock()
+						// Keep snapshots ordered through persistence; a delayed worker
+						// must not overwrite a newer aggregate with older counters.
 						if err := s.store.UpdateJobItem(context.Background(), item); err != nil {
+							stateMu.Unlock()
 							return err
 						}
 						s.updateDirectoryProgress(job.ID, currentBytes, job.BytesTotal, currentCompleted, currentFailed, s.now())
+						stateMu.Unlock()
 						return nil
 					}, s.BandwidthLimiter(job))
 				if copyErr != nil {
@@ -1587,12 +1590,13 @@ func (s *Service) executeParallelLocalCopy(ctx context.Context, job entities.Job
 				}
 				filesCompleted++
 				currentBytes, currentCompleted, currentFailed := bytesCompleted, filesCompleted, filesFailed
-				stateMu.Unlock()
 				if err := s.store.UpdateJobItem(context.Background(), item); err != nil {
+					stateMu.Unlock()
 					results <- err
 					continue
 				}
 				s.updateDirectoryProgress(job.ID, currentBytes, job.BytesTotal, currentCompleted, currentFailed, s.now())
+				stateMu.Unlock()
 				results <- nil
 			}
 		}()

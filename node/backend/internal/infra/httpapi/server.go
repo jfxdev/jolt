@@ -1505,6 +1505,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, code = http.StatusBadRequest, "path_traversal"
 	case errors.Is(err, filesystem.ErrConflict):
 		status, code = http.StatusConflict, "conflict"
+	case errors.Is(err, filesystem.ErrSourceChanged):
+		status, code = http.StatusConflict, "upload_destination_changed"
 	case errors.Is(err, filesystem.ErrDisabled):
 		status, code = http.StatusConflict, "mount_disabled"
 	case errors.Is(err, filesystem.ErrInvalid):

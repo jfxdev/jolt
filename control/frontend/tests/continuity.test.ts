@@ -71,6 +71,21 @@ test("lost completion response retries the receipt without resending bytes", asy
   assert.equal(completed, 2);
   assert.equal(appended, 0);
 });
+test("a changed upload destination stops completion without retries", async () => {
+  let completed = 0;
+  const error = Object.assign(new Error("destination changed"), {
+    status: 409, code: "upload_destination_changed",
+  });
+  await assert.rejects(uploadResumable({
+    create: async () => ({ ...session, offset: 7 }),
+    append: async () => { throw new Error("completed bytes must not be resent"); },
+    complete: async () => { completed++; throw error; },
+    abort: async () => undefined,
+  }, new Blob(["payload"]), "file.txt", false, {
+    sleep: async () => { throw new Error("permanent completion errors must not back off"); },
+  }), error);
+  assert.equal(completed, 1);
+});
 test("network totals distinguish unavailable/restricted data from zero", () => {
   assert.deepEqual(summarizeNetworkJobs([undefined]), {
     active: null,

@@ -22,10 +22,10 @@ export function TransferDestinationFolder({ nodeId, mount, value, onChange, disa
   const handleError = useApiError();
   const [directories, setDirectories] = useState<FileEntry[]>([]);
   const [nextAfter, setNextAfter] = useState("");
-  const current = useRef(""); current.current = `${nodeId}:${mount.mount_id}:${value}`;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const folder = transferDestinationFolder(value);
+  const current = useRef(""); current.current = `${nodeId}:${mount.mount_id}:${folder}`;
   const root = transferDestinationFolder(mount.root_path) || "";
   const withinRoot = folder !== null && (!root || folder === root || folder.startsWith(`${root}/`));
   const parent = folder?.split("/").slice(0, -1).join("/") || "";
@@ -55,7 +55,7 @@ export function TransferDestinationFolder({ nodeId, mount, value, onChange, disa
   }, [nodeId, mount.mount_id, mount.can_browse, folder, withinRoot, handleError]);
 
   async function loadMore() {
-    const target = current.current; setLoading(true);
+    const target = current.current; setLoading(true); setError("");
     try {
       const response = await api.files(nodeId, mount.mount_id, folder!, nextAfter);
       if (current.current !== target) return;

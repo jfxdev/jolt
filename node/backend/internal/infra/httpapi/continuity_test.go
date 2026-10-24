@@ -180,6 +180,76 @@ func TestUploadVerificationBindsToDurablePartial(t *testing.T) {
 	}
 }
 
+func TestUploadRecoveryRejectsChangedPublication(t *testing.T) {
+	for _, boundary := range []string{"partial", "destination"} {
+		t.Run(boundary, func(t *testing.T) {
+			ctx := context.Background()
+			storage, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer storage.Close()
+			files := filesystem.New(storage)
+			root := t.TempDir()
+			mount, err := files.SaveMount(ctx, entities.Mount{Name: "files", LocalPath: root, Mode: "read_write", Enabled: true, Published: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := continuityHandler(&receiptFailure{Store: storage, fail: true})
+			base := "/api/v1/mounts/" + mount.ID + "/files/uploads"
+			created := uploadCall(h, "POST", base, `{"path":"file.txt","size":7}`)
+			var session entities.UploadSession
+			if created.Code != 201 || json.Unmarshal(created.Body.Bytes(), &session) != nil {
+				t.Fatalf("create: %d %s", created.Code, created.Body)
+			}
+			if w := uploadCall(h, "PATCH", base+"/"+session.ID, "payload"); w.Code != 200 {
+				t.Fatal(w.Body)
+			}
+			if boundary == "partial" {
+				digest, err := files.PrepareUpload(ctx, session)
+				if err != nil {
+					t.Fatal(err)
+				}
+				session.State, session.PublishChecksum = "publishing", digest
+				if err := storage.UpdateUploadSession(ctx, session); err != nil {
+					t.Fatal(err)
+				}
+				partials, err := filepath.Glob(filepath.Join(root, "*.partial"))
+				if err != nil || len(partials) != 1 {
+					t.Fatalf("partials: %v %v", partials, err)
+				}
+				if err := os.WriteFile(partials[0], []byte("changed"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if w := uploadCall(h, "POST", base+"/"+session.ID+"/complete", "{}"); w.Code != 500 {
+					t.Fatalf("receipt fault: %d %s", w.Code, w.Body)
+				}
+				if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("changed"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			w := uploadCall(continuityHandler(storage), "POST", base+"/"+session.ID+"/complete", "{}")
+			if boundary == "partial" {
+				if w.Code != 400 {
+					t.Fatalf("changed partial accepted: %d %s", w.Code, w.Body)
+				}
+				if _, err := os.Stat(filepath.Join(root, "file.txt")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("changed partial published: %v", err)
+				}
+			} else {
+				if w.Code != 409 || !strings.Contains(w.Body.String(), `"code":"upload_destination_changed"`) {
+					t.Fatalf("changed destination: %d %s", w.Code, w.Body)
+				}
+				content, err := os.ReadFile(filepath.Join(root, "file.txt"))
+				if err != nil || string(content) != "changed" {
+					t.Fatalf("replacement changed: %q %v", content, err)
+				}
+			}
+		})
+	}
+}
+
 func TestJobItemPagePreservesMissingJobStatus(t *testing.T) {
 	storage, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
 	if err != nil {

@@ -108,7 +108,11 @@ export default function FileBrowserPage() {
       try {
         const result = await api.files(nodeId, mountId, path, after);
         if (sequence !== listingSequence.current || targetRef.current !== target) return;
-        setFiles(previous => after ? [...previous, ...(result.items || []).filter(item => !previous.some(old => old.path === item.path))] : result.items || []);
+        setFiles(previous => {
+          if (!after) return result.items || [];
+          const seen = new Set(previous.map(item => item.path));
+          return [...previous, ...(result.items || []).filter(item => !seen.has(item.path))];
+        });
         setNextAfter(result.next_after || "");
         if (!after) setSelectedEntries([]);
         setCurrentPath(path);
