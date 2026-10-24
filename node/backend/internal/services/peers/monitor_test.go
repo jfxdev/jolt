@@ -14,13 +14,13 @@ import (
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
 	joltcrypto "github.com/jfxdev/jolt/backend/internal/infra/crypto"
-	"github.com/jfxdev/jolt/backend/internal/infra/db"
+	db "github.com/jfxdev/jolt/backend/internal/infra/state"
 	"github.com/jfxdev/jolt/backend/internal/services/pairing"
 )
 
 func TestHeartbeatRequiresConsecutiveFailuresBeforeOffline(t *testing.T) {
 	root := t.TempDir()
-	store, err := db.Open(filepath.Join(root, "jolt.db"), make([]byte, 32))
+	store, err := db.Open(filepath.Join(root, "state"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestHeartbeatMarksPeerThatRejectsOurCertificate(t *testing.T) {
 	// Its identity is the one we trust, so our client-side verification
 	// passes and the only failure is the peer's refusal.
 	peerRoot := t.TempDir()
-	peerStore, err := db.Open(filepath.Join(peerRoot, "jolt.db"), make([]byte, 32))
+	peerStore, err := db.Open(filepath.Join(peerRoot, "state"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestHeartbeatMarksPeerThatRejectsOurCertificate(t *testing.T) {
 	t.Cleanup(func() { _ = server.Close() })
 
 	root := t.TempDir()
-	store, err := db.Open(filepath.Join(root, "jolt.db"), make([]byte, 32))
+	store, err := db.Open(filepath.Join(root, "state"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,7 +3,6 @@ package httpapi
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,7 +19,8 @@ import (
 	"github.com/jfxdev/jolt/backend/internal/entities"
 	"github.com/jfxdev/jolt/backend/internal/infra/config"
 	joltcrypto "github.com/jfxdev/jolt/backend/internal/infra/crypto"
-	"github.com/jfxdev/jolt/backend/internal/infra/db"
+	db "github.com/jfxdev/jolt/backend/internal/infra/state"
+	"github.com/jfxdev/jolt/backend/internal/infra/yamlutil"
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
 	"github.com/jfxdev/jolt/backend/internal/services/grants"
 	"github.com/jfxdev/jolt/backend/internal/services/jobs"
@@ -33,9 +33,9 @@ func testHandler(t *testing.T) http.Handler {
 	return handler
 }
 
-func testComponents(t *testing.T) (http.Handler, *jobs.Service) {
+func testComponents(t *testing.T, mountPaths ...string) (http.Handler, *jobs.Service) {
 	t.Helper()
-	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"), make([]byte, 32))
+	store, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,26 +43,19 @@ func testComponents(t *testing.T) (http.Handler, *jobs.Service) {
 	cfg := config.Config{ControlTowerToken: "secret", PublicHealth: true, NodeName: "test", APIAddress: ":0", MTLSAddress: ":0"}
 	identity := entities.Identity{NodeID: "node", Fingerprint: "AA:BB"}
 	files := filesystem.New(store)
+	for _, path := range mountPaths {
+		if _, err := files.SaveMount(context.Background(), entities.Mount{ID: "editor", Name: "editor", LocalPath: path, Mode: "read_write", Enabled: true, Published: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	jobService := jobs.New(store, files)
 	return New(cfg, identity, files, jobService, pairing.New(store, identity), grants.New(store, files), slog.New(slog.NewTextHandler(io.Discard, nil))), jobService
 }
 
 func TestTextEditorContentIsLimitedTo512KB(t *testing.T) {
-	handler := testHandler(t)
 	mountPath := t.TempDir()
-	create := httptest.NewRequest(http.MethodPost, "/api/v1/mounts", strings.NewReader(
-		`{"name":"editor","local_path":"`+mountPath+`","mode":"read_write"}`))
-	create.Header.Set("Authorization", "Bearer secret")
-	create.Header.Set("Content-Type", "application/json")
-	created := httptest.NewRecorder()
-	handler.ServeHTTP(created, create)
-	if created.Code != http.StatusCreated {
-		t.Fatalf("create mount status=%d body=%s", created.Code, created.Body.String())
-	}
-	var mount entities.Mount
-	if err := json.Unmarshal(created.Body.Bytes(), &mount); err != nil {
-		t.Fatal(err)
-	}
+	handler, _ := testComponents(t, mountPath)
+	mount := entities.Mount{ID: "editor"}
 
 	call := func(method, path string, body io.Reader) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(method, path, body)
@@ -89,7 +82,7 @@ func TestTextEditorContentIsLimitedTo512KB(t *testing.T) {
 }
 
 func TestRevokePeerAPIBlocksTrust(t *testing.T) {
-	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"), make([]byte, 32))
+	store, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +133,7 @@ func TestRevokePeerAPIBlocksTrust(t *testing.T) {
 }
 
 func TestOperationalTokenRotationHasSafeTwoPhaseCutover(t *testing.T) {
-	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"), make([]byte, 32))
+	store, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +187,7 @@ func TestOperationalTokenRotationHasSafeTwoPhaseCutover(t *testing.T) {
 
 func TestMTLSCertificateLifecycleAPI(t *testing.T) {
 	dataDir, keysDir := t.TempDir(), t.TempDir()
-	store, err := db.Open(filepath.Join(dataDir, "test.db"), make([]byte, 32))
+	store, err := db.Open(filepath.Join(dataDir, "state"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,5 +395,38 @@ func TestAPIAcceptsBearerToken(t *testing.T) {
 	}
 	if response.Header().Get("X-Correlation-ID") == "" {
 		t.Fatal("missing correlation id")
+	}
+}
+
+func TestConfigurationMutationsAreRejected(t *testing.T) {
+	handler := testHandler(t)
+	for _, endpoint := range []struct{ method, path string }{{"POST", "/api/v1/mounts"}, {"PUT", "/api/v1/mounts/files"}, {"DELETE", "/api/v1/mounts/files"}, {"POST", "/api/v1/grants"}, {"PATCH", "/api/v1/grants/grant"}, {"DELETE", "/api/v1/grants/grant"}} {
+		request := httptest.NewRequest(endpoint.method, endpoint.path, strings.NewReader(`{}`))
+		request.Header.Set("Authorization", "Bearer secret")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "configuration_managed_by_file") {
+			t.Fatalf("%s %s: %d %s", endpoint.method, endpoint.path, response.Code, response.Body.String())
+		}
+	}
+	request := httptest.NewRequest("GET", "/api/v1/node", nil)
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if !strings.Contains(response.Body.String(), `"source":"yaml"`) || !strings.Contains(response.Body.String(), `"apply_mode":"restart"`) {
+		t.Fatal("configuration metadata missing")
+	}
+}
+
+func TestOpenAPIFileConfigurationContract(t *testing.T) {
+	var document map[string]any
+	if err := yamlutil.Decode([]byte(openAPISpec), &document); err != nil {
+		t.Fatal(err)
+	}
+	schemas := document["components"].(map[string]any)["schemas"].(map[string]any)
+	for _, name := range []string{"FileConfiguration", "GrantStatus"} {
+		if _, ok := schemas[name]; !ok {
+			t.Fatalf("missing response schema %s", name)
+		}
 	}
 }

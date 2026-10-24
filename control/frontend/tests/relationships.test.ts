@@ -47,3 +47,11 @@ test("trust links include both exact registered IDs and encode their URL paramet
   assert.equal(parsed.searchParams.get("source"), "a/id");
   assert.equal(parsed.searchParams.get("target"), "b&id");
 });
+
+test("configured authorizations remain inactive while revoked or awaiting trust", () => {
+  const inactive = { ...entry, peers: [{ ...peer, grants: [
+    { ...grant, enabled: false, configured_enabled: true, inactive_reason: "revoked" },
+    { ...grant, grant_id: "pending", enabled: false, configured_enabled: true, inactive_reason: "peer_untrusted" },
+  ] }] };
+  assert.equal(relationshipAccessSummary(inactive, "b"), "Sem acesso a arquivos");
+});

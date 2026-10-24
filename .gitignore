@@ -16,8 +16,10 @@ dist/
 .DS_Store
 node/testdata/node*/data/*
 !node/testdata/node*/data/.gitkeep
-node/testdata/node*/keys/*
-!node/testdata/node*/keys/.gitkeep
 node/testdata/node*/files/*
 !node/testdata/node*/files/.gitkeep
 
+# Local declarative development node configuration and persistent state
+node/testdata/node*/node.yaml
+node/testdata/node*/state/
+node/testdata/node*/keys/

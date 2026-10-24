@@ -1,0 +1,26 @@
+# Mount this file read-only. Changes require restarting the node.
+version: 1
+node_name: nas-home
+api_address: ":8080"
+mtls_address: ":8443"
+mtls_public_endpoint: https://jolt-node:8443
+data_dir: /var/lib/jolt
+keys_dir: /var/lib/jolt-keys
+mounts:
+  - id: files
+    name: Files
+    local_path: /mnt/files
+    mode: read_write
+    published: true
+    enabled: true
+transfer_grants: []
+# Pair nodes through the Control Tower before authorizing file transfers.
+# transfer_grants:
+#   - id: send-files-to-backup
+#     peer_node_id: <authenticated-peer-node-id>
+#     mount_id: files
+#     path: "."
+#     direction: send
+#     permissions: {read: true, write: false, delete: false, rename: false}
+#     visible_to_peer: true
+#     enabled: true

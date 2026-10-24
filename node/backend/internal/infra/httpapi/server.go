@@ -21,7 +21,7 @@ import (
 	"github.com/jfxdev/jolt/backend/internal/entities"
 	"github.com/jfxdev/jolt/backend/internal/infra/config"
 	joltcrypto "github.com/jfxdev/jolt/backend/internal/infra/crypto"
-	"github.com/jfxdev/jolt/backend/internal/infra/db"
+
 	"github.com/jfxdev/jolt/backend/internal/infra/metrics"
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
 	"github.com/jfxdev/jolt/backend/internal/services/grants"
@@ -262,7 +262,7 @@ func (s *Server) acceptOperationalToken(ctx context.Context, token string) bool 
 		return secureEqual(token, s.config.ControlTowerToken)
 	}
 	state, err := s.store.GetOperationalTokenState(ctx)
-	if errors.Is(err, db.ErrNotFound) {
+	if errors.Is(err, contracts.ErrNotFound) {
 		return secureEqual(token, s.config.ControlTowerToken)
 	}
 	if err != nil {
@@ -332,7 +332,8 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"node_id": s.identity.NodeID, "name": s.config.NodeName, "fingerprint": s.identity.Fingerprint,
+		"configuration": map[string]any{"source": "yaml", "apply_mode": "restart", "mounts_mutable": false, "grants_mutable": false},
+		"node_id":       s.identity.NodeID, "name": s.config.NodeName, "fingerprint": s.identity.Fingerprint,
 		"identity_epoch": s.identity.Epoch, "public_key": s.identity.PublicKey,
 		"mtls_endpoint":             s.config.MTLSPublicEndpoint,
 		"upload_max_bytes":          s.config.UploadMaxBytes,
@@ -345,6 +346,7 @@ func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) effectiveConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
+		"configuration":             map[string]any{"source": "yaml", "apply_mode": "restart", "revision": s.config.Revision, "mounts_mutable": false, "grants_mutable": false},
 		"upload_max_bytes":          s.config.UploadMaxBytes,
 		"upload_max_sessions":       s.config.UploadMaxSessions,
 		"upload_max_reserved_bytes": s.config.UploadMaxReservedBytes,
@@ -464,7 +466,7 @@ func (s *Server) identityHandovers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) operationalTokenState(w http.ResponseWriter, r *http.Request) {
 	state, err := s.store.GetOperationalTokenState(r.Context())
-	if errors.Is(err, db.ErrNotFound) {
+	if errors.Is(err, contracts.ErrNotFound) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"rotation_state": "environment", "environment_token_disabled": false,
 		})
@@ -516,7 +518,7 @@ func (s *Server) commitOperationalToken(w http.ResponseWriter, r *http.Request) 
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if err := s.store.CommitOperationalToken(r.Context(), operationalTokenDigest(token),
 		r.Header.Get("X-Correlation-ID"), time.Now().UTC()); err != nil {
-		if errors.Is(err, db.ErrNotFound) {
+		if errors.Is(err, contracts.ErrNotFound) {
 			writeError(w, r, http.StatusConflict, "operational_token_not_prepared",
 				"The authenticated token is not the prepared rotation token.", nil)
 			return
@@ -673,7 +675,7 @@ func (s *Server) createBatchPullTransfer(w http.ResponseWriter, r *http.Request)
 	}
 	job, repeated, err := s.transfers.CreateBatchPull(r.Context(), request.transferRequest(r.Header.Get("X-Correlation-ID")), r.Header.Get("Idempotency-Key"), requestHash)
 	if err != nil {
-		if errors.Is(err, db.ErrIdempotencyConflict) {
+		if errors.Is(err, contracts.ErrIdempotencyConflict) {
 			writeError(w, r, http.StatusConflict, "idempotency_conflict", "The Idempotency-Key was already used for a different request.", nil)
 			return
 		}
@@ -793,56 +795,15 @@ type mountRequest struct {
 }
 
 func (s *Server) createMount(w http.ResponseWriter, r *http.Request) {
-	var request mountRequest
-	if !decodeJSON(w, r, &request) {
-		return
-	}
-	m := entities.Mount{Name: request.Name, LocalPath: request.LocalPath, Mode: request.Mode, Published: true, Enabled: true}
-	if request.Published != nil {
-		m.Published = *request.Published
-	}
-	if request.Enabled != nil {
-		m.Enabled = *request.Enabled
-	}
-	result, err := s.files.SaveMount(r.Context(), m)
-	if err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, result)
+	writeError(w, r, http.StatusConflict, "configuration_managed_by_file", "Gerenciado por arquivo. Edite node.yaml e reinicie o node.", nil)
 }
 
 func (s *Server) updateMount(w http.ResponseWriter, r *http.Request) {
-	existing, err := s.files.GetMount(r.Context(), r.PathValue("mountID"))
-	if err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	var request mountRequest
-	if !decodeJSON(w, r, &request) {
-		return
-	}
-	existing.Name, existing.LocalPath, existing.Mode = request.Name, request.LocalPath, request.Mode
-	if request.Published != nil {
-		existing.Published = *request.Published
-	}
-	if request.Enabled != nil {
-		existing.Enabled = *request.Enabled
-	}
-	result, err := s.files.SaveMount(r.Context(), existing)
-	if err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
+	writeError(w, r, http.StatusConflict, "configuration_managed_by_file", "Gerenciado por arquivo. Edite node.yaml e reinicie o node.", nil)
 }
 
 func (s *Server) deleteMount(w http.ResponseWriter, r *http.Request) {
-	if err := s.files.DeleteMount(r.Context(), r.PathValue("mountID")); err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	writeError(w, r, http.StatusConflict, "configuration_managed_by_file", "Gerenciado por arquivo. Edite node.yaml e reinicie o node.", nil)
 }
 
 func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
@@ -1512,37 +1473,15 @@ func (s *Server) listGrants(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createGrant(w http.ResponseWriter, r *http.Request) {
-	var request grantRequest
-	if !decodeJSON(w, r, &request) {
-		return
-	}
-	grant, err := s.grants.Create(r.Context(), s.grantInput(r, request))
-	if err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, grant)
+	writeError(w, r, http.StatusConflict, "configuration_managed_by_file", "Gerenciado por arquivo. Edite node.yaml e reinicie o node.", nil)
 }
 
 func (s *Server) updateGrant(w http.ResponseWriter, r *http.Request) {
-	var request grantRequest
-	if !decodeJSON(w, r, &request) {
-		return
-	}
-	grant, err := s.grants.Update(r.Context(), r.PathValue("grantID"), s.grantInput(r, request))
-	if err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, grant)
+	writeError(w, r, http.StatusConflict, "configuration_managed_by_file", "Gerenciado por arquivo. Edite node.yaml e reinicie o node.", nil)
 }
 
 func (s *Server) deleteGrant(w http.ResponseWriter, r *http.Request) {
-	if err := s.grants.Delete(r.Context(), r.PathValue("grantID"), r.Header.Get("X-Correlation-ID")); err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	writeError(w, r, http.StatusConflict, "configuration_managed_by_file", "Gerenciado por arquivo. Edite node.yaml e reinicie o node.", nil)
 }
 
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
@@ -1686,6 +1625,26 @@ components:
       type: http
       scheme: bearer
   schemas:
+    FileConfiguration:
+      type: object
+      readOnly: true
+      required: [source, apply_mode, mounts_mutable, grants_mutable]
+      properties:
+        source: {type: string, enum: [yaml]}
+        apply_mode: {type: string, enum: [restart]}
+        mounts_mutable: {type: boolean, const: false}
+        grants_mutable: {type: boolean, const: false}
+        revision: {type: string, description: Applied public configuration digest}
+    GrantStatus:
+      type: object
+      readOnly: true
+      required: [enabled, configured_enabled]
+      properties:
+        enabled: {type: boolean, description: Effective authorization after trust and filesystem validation}
+        configured_enabled: {type: boolean, description: Operator value in node.yaml}
+        inactive_reason:
+          type: string
+          enum: [disabled, revoked, peer_untrusted, mount_unavailable, mount_read_only, peer_role_incompatible, path_unavailable]
     Error:
       type: object
       properties:
@@ -1706,11 +1665,25 @@ paths:
   /api/v1/node:
     get:
       responses:
-        "200": {description: Node identity and capabilities}
+        "200":
+          description: Node identity and capabilities
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configuration: {$ref: '#/components/schemas/FileConfiguration'}
   /api/v1/config/effective:
     get:
       responses:
-        "200": {description: Effective configuration with secrets redacted}
+        "200":
+          description: Effective configuration; secrets and internal paths redacted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configuration: {$ref: '#/components/schemas/FileConfiguration'}
   /api/v1/fs/browse:
     get:
       parameters:
@@ -1745,7 +1718,19 @@ paths:
                 published: {type: boolean}
                 enabled: {type: boolean}
       responses:
-        "201": {description: Mount created}
+        "409": {description: configuration_managed_by_file - edit node.yaml and restart}
+  /api/v1/mounts/{mountID}:
+    parameters:
+      - {in: path, name: mountID, required: true, schema: {type: string}}
+    get:
+      responses:
+        "200": {description: Configured mount and observed filesystem availability}
+    put:
+      responses:
+        "409": {description: configuration_managed_by_file - edit node.yaml and restart}
+    delete:
+      responses:
+        "409": {description: configuration_managed_by_file - edit node.yaml and restart}
   /api/v1/mounts/{mountID}/files:
     get:
       parameters:
@@ -2314,7 +2299,16 @@ paths:
   /api/v1/grants:
     get:
       responses:
-        "200": {description: Transfer Path Grants owned by this node}
+        "200":
+          description: Configured grants and effective authorization status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/GrantStatus'}
     post:
       requestBody:
         required: true
@@ -2341,16 +2335,16 @@ paths:
                 visible_to_peer: {type: boolean}
                 enabled: {type: boolean}
       responses:
-        "201": {description: Grant created for an exact trusted peer and existing mount}
+        "409": {description: configuration_managed_by_file - edit node.yaml and restart}
   /api/v1/grants/{grantID}:
     patch:
       parameters:
         - {in: path, name: grantID, required: true, schema: {type: string}}
       responses:
-        "200": {description: Grant updated and applied to new operations}
+        "409": {description: configuration_managed_by_file - edit node.yaml and restart}
     delete:
       parameters:
         - {in: path, name: grantID, required: true, schema: {type: string}}
       responses:
-        "204": {description: Grant revoked}
+        "409": {description: configuration_managed_by_file - edit node.yaml and restart}
 `

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -11,7 +12,7 @@ import (
 	"time"
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
-	"github.com/jfxdev/jolt/backend/internal/infra/db"
+
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
 	"github.com/jfxdev/jolt/backend/internal/services/jobs"
 )
@@ -73,7 +74,7 @@ func (s *Server) createUploadSession(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(s.config.UploadSessionTTL),
 	}
 	if err := s.store.CreateUploadSession(r.Context(), session); err != nil {
-		if errors.Is(err, db.ErrUploadSessionExists) {
+		if errors.Is(err, contracts.ErrUploadSessionExists) {
 			writeError(w, r, http.StatusConflict, "upload_in_progress",
 				"Outro upload retomável já está enviando para este caminho.", nil)
 			return
@@ -166,7 +167,7 @@ func (s *Server) appendUploadChunk(w http.ResponseWriter, r *http.Request) {
 	s.registry.Add("jolt_upload_bytes_total", written-offset)
 	now := time.Now().UTC()
 	if err := s.store.TouchUploadSession(r.Context(), session.ID, now,
-		now.Add(s.config.UploadSessionTTL)); err != nil && !errors.Is(err, db.ErrNotFound) {
+		now.Add(s.config.UploadSessionTTL)); err != nil && !errors.Is(err, contracts.ErrNotFound) {
 		s.fail(w, r, err)
 		return
 	}
@@ -226,7 +227,7 @@ func (s *Server) abortUploadSession(w http.ResponseWriter, r *http.Request) {
 func (s *Server) loadUploadSession(w http.ResponseWriter, r *http.Request) (entities.UploadSession, bool) {
 	session, err := s.store.GetUploadSession(r.Context(), r.PathValue("uploadID"))
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound) {
+		if errors.Is(err, contracts.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "upload_not_found", "Upload não encontrado.", nil)
 			return entities.UploadSession{}, false
 		}

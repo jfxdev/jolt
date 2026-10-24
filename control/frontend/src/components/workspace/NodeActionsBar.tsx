@@ -41,7 +41,7 @@ export function NodeActionsBar() {
           Conectar
         </Button>
       )}
-      {hasPermission(nodePath("mounts"), "create") && (
+      {node.configuration?.mounts_mutable !== false && hasPermission(nodePath("mounts"), "create") && (
         <Button size="sm" onClick={() => setMountOpen(true)}>
           Novo mount
         </Button>

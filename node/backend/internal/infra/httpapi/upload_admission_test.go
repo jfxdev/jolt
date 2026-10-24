@@ -14,8 +14,8 @@ import (
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
 	"github.com/jfxdev/jolt/backend/internal/infra/config"
-	"github.com/jfxdev/jolt/backend/internal/infra/db"
 	"github.com/jfxdev/jolt/backend/internal/infra/metrics"
+	db "github.com/jfxdev/jolt/backend/internal/infra/state"
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
 	"github.com/jfxdev/jolt/backend/internal/services/grants"
 	"github.com/jfxdev/jolt/backend/internal/services/jobs"
@@ -24,7 +24,7 @@ import (
 
 func admissionFixture(t *testing.T, cfg config.Config) (http.Handler, string) {
 	t.Helper()
-	storage, err := db.Open(filepath.Join(t.TempDir(), "node.db"), make([]byte, 32))
+	storage, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}

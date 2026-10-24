@@ -7,15 +7,25 @@ import (
 	"github.com/jfxdev/jolt/backend/internal/entities"
 )
 
-type Store interface {
-	Close() error
+type ConfigurationReader interface {
 	ListMounts(context.Context) ([]entities.Mount, error)
 	GetMount(context.Context, string) (entities.Mount, error)
+	ListTransferGrants(context.Context) ([]entities.TransferPathGrant, error)
+	GetTransferGrant(context.Context, string) (entities.TransferPathGrant, error)
+}
+
+type ConfigurationWriter interface {
 	UpsertMount(context.Context, entities.Mount) error
 	DeleteMount(context.Context, string) error
+}
+
+type TokenStore interface {
 	GetOperationalTokenState(context.Context) (entities.OperationalTokenState, error)
 	StageOperationalToken(context.Context, string, string, time.Time) error
 	CommitOperationalToken(context.Context, string, string, time.Time) error
+}
+
+type JobStore interface {
 	CreateJob(context.Context, entities.Job, string) (entities.Job, bool, error)
 	CreateJobWithItems(context.Context, entities.Job, []entities.JobItem, string) (entities.Job, bool, error)
 	CreateJobWithItemsHashed(context.Context, entities.Job, []entities.JobItem, string, string) (entities.Job, bool, error)
@@ -33,6 +43,9 @@ type Store interface {
 	ReplaceJobItems(context.Context, string, []entities.JobItem) error
 	ListJobItems(context.Context, string) ([]entities.JobItem, error)
 	UpdateJobItem(context.Context, entities.JobItem) error
+}
+
+type TrustStore interface {
 	CreatePairingInvite(context.Context, entities.PairingInvite, string) error
 	ListPairingInvites(context.Context) ([]entities.PairingInvite, error)
 	GetPairingInvite(context.Context, string) (entities.PairingInvite, error)
@@ -50,15 +63,30 @@ type Store interface {
 	ApplyPeerIdentityHandover(context.Context, string, int, string, int, string, string) error
 	ConfirmPeerIdentityHandover(context.Context, string, int, string) error
 	RevokePeer(context.Context, string, string, time.Time) error
+}
+
+type GrantWriter interface {
 	CreateTransferGrant(context.Context, entities.TransferPathGrant) error
 	UpdateTransferGrant(context.Context, entities.TransferPathGrant) error
-	ListTransferGrants(context.Context) ([]entities.TransferPathGrant, error)
-	GetTransferGrant(context.Context, string) (entities.TransferPathGrant, error)
 	DeleteTransferGrant(context.Context, string, string, time.Time) error
+}
+
+type UploadStore interface {
 	CreateUploadSession(context.Context, entities.UploadSession) error
 	GetUploadSession(context.Context, string) (entities.UploadSession, error)
 	ListUploadSessions(context.Context, string) ([]entities.UploadSession, error)
 	TouchUploadSession(context.Context, string, time.Time, time.Time) error
 	DeleteUploadSession(context.Context, string) error
 	ExpiredUploadSessions(context.Context, time.Time) ([]entities.UploadSession, error)
+}
+
+type Store interface {
+	Close() error
+	ConfigurationReader
+	ConfigurationWriter
+	TokenStore
+	JobStore
+	TrustStore
+	GrantWriter
+	UploadStore
 }

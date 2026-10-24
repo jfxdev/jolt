@@ -1,8 +1,10 @@
 # Disaster recovery
 
-The node's data and keys volumes must be backed up together while the process is
-stopped. The keys volume preserves the node identity; the data volume preserves
-mount registrations, idempotency records, jobs, grants, and peers.
+The node's `node.yaml`, data and keys volumes must be backed up together while
+stopped. Configuration is operator-owned; operational state is encrypted YAML.
+Keep `JOLT_STATE_ENCRYPTION_KEY` (or its external key file) separately. The key
+file must be outside the state and identity directories. See [node YAML](NODE_YAML.md).
+The Control Tower continues to use SQLCipher.
 
 ## Encrypting an existing Control Tower database
 
@@ -41,7 +43,7 @@ volumes:
 mkdir -p backups
 docker compose stop jolt-node
 docker compose run --rm --no-deps \
-  -e CONTROL_TOWER_DB_ENCRYPTION_KEY \
+  -e JOLT_STATE_ENCRYPTION_KEY \
   -v "$PWD/backups:/backup" \
   jolt-node \
   /usr/local/bin/jolt-node snapshot \
@@ -54,8 +56,9 @@ docker compose start jolt-node
 The command:
 
 - refuses to run while the node holds its instance lock;
-- runs `PRAGMA integrity_check` and creates a consistent SQLite copy without
-  transient WAL/SHM files;
+- authenticates the encrypted head, snapshot manifest, pages and transaction sequence;
+- includes `node.yaml`, committed state and identity, excluding locks, temporary files
+  and unrelated files from the state directory;
 - archives the data and keys directories as one atomic `.tar.gz`;
 - writes `manifest.json` with the `node_id`, fingerprint, file modes, sizes, and
   SHA-256 digests;
@@ -69,7 +72,7 @@ up with the storage system's native tooling.
 The equivalent local binary command is:
 
 ```sh
-jolt-node snapshot \
+jolt-node snapshot --config /path/to/node.yaml \
   --data-dir /path/to/node/data \
   --keys-dir /path/to/node/keys \
   --output /secure/backups/jolt-node.tar.gz
@@ -100,9 +103,9 @@ beside the database archive. The manifest records
 ## Restore
 
 1. Keep the node stopped.
-2. Restore data and keys to empty directories with the same ownership.
+2. Restore data and keys to empty directories with the same ownership (`0700` directories, `0600` files), and restore `node.yaml` read-only.
 3. Restore external mounts and update container bind-mount paths if the host changed.
-4. Start the node with the same `PUID`, `PGID`, token, data path, and keys path.
+4. Supply the same external state key and token, then start with the saved YAML and the same `PUID`/`PGID`.
 5. Compare `node_id` and fingerprint with the pre-backup values.
 6. Inspect mount states before allowing writes.
 
@@ -122,7 +125,7 @@ docker compose run --rm --no-deps \
 
 The node report checks:
 
-- SQLite integrity and foreign-key references;
+- encrypted state authentication, committed sequence, and resource references;
 - identity file permissions, public/private key correspondence, `node_id`,
   fingerprint, and identity epoch;
 - registered mount existence, target type, readability, and requested

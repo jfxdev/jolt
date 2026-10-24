@@ -12,7 +12,7 @@ import (
 
 	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/entities"
-	"github.com/jfxdev/jolt/backend/internal/infra/db"
+
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
 )
 
@@ -57,7 +57,7 @@ type RemoteExecutor interface {
 }
 
 type Service struct {
-	store                    contracts.Store
+	store                    contracts.JobStore
 	files                    *filesystem.Service
 	now                      func() time.Time
 	defaultMaxAttempts       int
@@ -81,7 +81,7 @@ type Service struct {
 	wg           sync.WaitGroup
 }
 
-func New(store contracts.Store, files *filesystem.Service, maxAttempts ...int) *Service {
+func New(store contracts.JobStore, files *filesystem.Service, maxAttempts ...int) *Service {
 	defaultMaxAttempts := 3
 	if len(maxAttempts) > 0 && maxAttempts[0] > 0 {
 		defaultMaxAttempts = maxAttempts[0]
@@ -394,7 +394,7 @@ func (s *Service) List(ctx context.Context, limit int) ([]entities.Job, error) {
 
 func (s *Service) Get(ctx context.Context, id string) (entities.Job, error) {
 	j, err := s.store.GetJob(ctx, id)
-	if errors.Is(err, db.ErrNotFound) {
+	if errors.Is(err, contracts.ErrNotFound) {
 		return j, ErrNotFound
 	}
 	return j, err
@@ -837,7 +837,7 @@ func (s *Service) OverrideItem(ctx context.Context, id string, ordinal int, acti
 
 func (s *Service) getForUpdate(ctx context.Context, id string) (entities.Job, error) {
 	job, err := s.store.GetJob(ctx, id)
-	if errors.Is(err, db.ErrNotFound) {
+	if errors.Is(err, contracts.ErrNotFound) {
 		return job, ErrNotFound
 	}
 	return job, err
@@ -863,7 +863,7 @@ func (s *Service) worker() {
 		}
 		for {
 			job, err := s.store.ClaimNextJob(s.ctx, s.now())
-			if errors.Is(err, db.ErrNotFound) {
+			if errors.Is(err, contracts.ErrNotFound) {
 				break
 			}
 			if err != nil {

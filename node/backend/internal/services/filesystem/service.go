@@ -18,7 +18,6 @@ import (
 
 	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/entities"
-	"github.com/jfxdev/jolt/backend/internal/infra/db"
 )
 
 var (
@@ -31,12 +30,17 @@ var (
 	ErrSourceChanged = errors.New("source changed during copy")
 )
 
+type serviceStore interface {
+	contracts.ConfigurationReader
+	contracts.ConfigurationWriter
+}
+
 type Service struct {
 	maxUploadBytes     int64
 	uploadMinFreeBytes int64
 	uploadWriteMu      sync.Mutex
 	spaceAvailable     func(*os.File) (int64, error)
-	store              contracts.Store
+	store              serviceStore
 	now                func() time.Time
 	forbiddenRoots     []string
 }
@@ -61,7 +65,7 @@ func (r *limitedReader) Read(buffer []byte) (int, error) {
 	return count, err
 }
 
-func New(store contracts.Store, forbiddenRoots ...string) *Service {
+func New(store serviceStore, forbiddenRoots ...string) *Service {
 	cleaned := make([]string, 0, len(forbiddenRoots))
 	for _, root := range forbiddenRoots {
 		if root == "" {
@@ -90,7 +94,7 @@ func (s *Service) ListMounts(ctx context.Context) ([]entities.Mount, error) {
 
 func (s *Service) GetMount(ctx context.Context, id string) (entities.Mount, error) {
 	m, err := s.store.GetMount(ctx, id)
-	if errors.Is(err, db.ErrNotFound) {
+	if errors.Is(err, contracts.ErrNotFound) {
 		return m, ErrNotFound
 	}
 	if err == nil {
@@ -145,9 +149,9 @@ func (s *Service) SaveMount(ctx context.Context, mount entities.Mount) (entities
 }
 
 func (s *Service) DeleteMount(ctx context.Context, id string) error {
-	if err := s.store.DeleteMount(ctx, id); errors.Is(err, db.ErrNotFound) {
+	if err := s.store.DeleteMount(ctx, id); errors.Is(err, contracts.ErrNotFound) {
 		return ErrNotFound
-	} else if errors.Is(err, db.ErrInUse) {
+	} else if errors.Is(err, contracts.ErrInUse) {
 		return fmt.Errorf("%w: mount is referenced by an active transfer grant", ErrConflict)
 	} else {
 		return err

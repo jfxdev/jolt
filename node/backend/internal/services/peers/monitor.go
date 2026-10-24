@@ -16,11 +16,10 @@ import (
 	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/entities"
 	joltcrypto "github.com/jfxdev/jolt/backend/internal/infra/crypto"
-	"github.com/jfxdev/jolt/backend/internal/infra/db"
 )
 
 type Monitor struct {
-	store            contracts.Store
+	store            contracts.TrustStore
 	certificates     *joltcrypto.CertificateManager
 	interval         time.Duration
 	timeout          time.Duration
@@ -39,7 +38,7 @@ func (m *Monitor) ConfigureDialContext(dial func(context.Context, string, string
 	m.dialContext = dial
 }
 
-func NewMonitor(store contracts.Store, certificates *joltcrypto.CertificateManager, interval, timeout time.Duration, failureThreshold int, logger *slog.Logger) *Monitor {
+func NewMonitor(store contracts.TrustStore, certificates *joltcrypto.CertificateManager, interval, timeout time.Duration, failureThreshold int, logger *slog.Logger) *Monitor {
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
@@ -95,7 +94,7 @@ func (m *Monitor) check(parent context.Context, peer entities.Peer) {
 		now := m.now()
 		if observedNext && peer.PreviousFingerprint != "" {
 			if confirmErr := m.store.ConfirmPeerIdentityHandover(parent, peer.NodeID,
-				peer.IdentityEpoch, peer.Fingerprint); confirmErr != nil && !errors.Is(confirmErr, db.ErrNotFound) {
+				peer.IdentityEpoch, peer.Fingerprint); confirmErr != nil && !errors.Is(confirmErr, contracts.ErrNotFound) {
 				m.logger.Error("confirm peer identity handover", "peer_node_id", peer.NodeID, "error", confirmErr)
 			}
 		}

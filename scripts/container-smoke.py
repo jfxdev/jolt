@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Exercise the real Control Tower -> node boundary with disposable data.
 
-Build jolt-node:smoke and jolt-control:smoke before running. No host directories
-are mounted, credentials are random, ports bind only to loopback, and only the
+Build jolt-node:smoke and jolt-control:smoke before running. Only a temporary read-only configuration file
+is mounted, credentials are random, ports bind only to loopback, and only the
 containers/network created by this invocation are removed.
 """
 
 import argparse
+import base64
+import tempfile
+from pathlib import Path
 import json
 import secrets
 import subprocess
@@ -82,10 +85,15 @@ def exercise(node_base, control_base, node_name, node_token, password):
         "name": "Smoke node", "endpoint": "http://node-smoke:8080", "token": node_token,
     }), 201)
     node_id = registered["node_id"]
-    mount = expect(node("POST", "/api/v1/mounts", {
-        "name": "Disposable files", "local_path": "/mnt/files", "mode": "read_write",
-    }), 201)
+    metadata = expect(node("GET", "/api/v1/node"), 200)
+    assert metadata["configuration"]["source"] == "yaml"
+    mount = expect(node("GET", "/api/v1/mounts/files"), 200)
     mount_id = mount["mount_id"]
+    for method, path in [("POST", "/api/v1/mounts"), ("PUT", "/api/v1/mounts/files"),
+                         ("DELETE", "/api/v1/mounts/files"), ("POST", "/api/v1/grants")]:
+        error = expect(node(method, path, {}), 409)
+        assert "configuration_managed_by_file" in str(error)
+    print("PASS: YAML resources are visible and immutable through the API")
     direct = f"/api/v1/mounts/{mount_id}/files"
     proxied = f"/api/v1/nodes/{node_id}/mounts/{mount_id}/files"
 
@@ -139,6 +147,21 @@ def exercise(node_base, control_base, node_name, node_token, password):
         raise AssertionError("Proxied resumable upload did not preserve its bytes")
     expect(control("POST", proxied + "/uploads", {"path": "large.bin", "size": 33}), 413)
     print("PASS: operator chunk upload, completion, download and size limit")
+    pending = expect(node("POST", direct + "/uploads", {"path": "public/restart.txt", "size": 4}), 201)
+    resume_path = direct + "/uploads/" + pending["upload_id"]
+    expect(node("PATCH", resume_path, b"jo", headers={"Content-Range": "bytes 0-1/4", "Content-Type": "application/octet-stream"}), 200)
+    before = expect(node("GET", "/api/v1/node"), 200)["node_id"]
+    docker("restart", node_name)
+    node_base = "http://" + docker("port", node_name, "8080/tcp").splitlines()[0]
+    wait_ready(node_base)
+    assert expect(node("GET", "/api/v1/node"), 200)["node_id"] == before
+    assert expect(node("GET", resume_path), 200)["offset"] == 2
+    expect(node("PATCH", resume_path, b"lt", headers={"Content-Range": "bytes 2-3/4", "Content-Type": "application/octet-stream"}), 200)
+    expect(node("POST", resume_path + "/complete", {}), 201)
+    assert node("GET", direct + "/content?path=public/restart.txt")[1] == b"jolt"
+    assert docker("exec", node_name, "sh", "-c", "find /var/lib/jolt -name '*.db*'") == ""
+    print("PASS: identity and upload checkpoints survive restart without database files")
+
 
     private = expect(control("POST", proxied + "/uploads", {
         "path": "private/upload.txt", "size": 4,
@@ -188,6 +211,26 @@ def main():
     network = "jolt-smoke-" + secrets.token_hex(8)
     names = []
     network_created = False
+    configuration = tempfile.TemporaryDirectory(prefix="jolt-smoke-config-")
+    config_path = Path(configuration.name) / "node.yaml"
+    config_path.write_text("""version: 1
+node_name: smoke
+api_address: ":8080"
+mtls_address: ":8443"
+mtls_public_endpoint: https://node-smoke:8443
+data_dir: /var/lib/jolt
+keys_dir: /var/lib/jolt-keys
+upload_max_bytes: 32
+upload_min_free_bytes: 0
+mounts:
+  - id: files
+    name: Disposable files
+    local_path: /mnt/files
+    mode: read_write
+    published: true
+    enabled: true
+transfer_grants: []
+""")
     try:
         docker("network", "create", network)
         network_created = True
@@ -198,11 +241,10 @@ def main():
         node_name, control_name = network + "-node", network + "-control"
         node_token, password = secrets.token_hex(32), secrets.token_hex(24)
         docker("run", *common, "--name", node_name, "--network-alias", "node-smoke",
-               "--publish", "127.0.0.1::8080", "--tmpfs", "/mnt/files:mode=0777",
-               "--env", "JOLT_OWNED_PATHS=/mnt/files", "--env", "UPLOAD_MAX_BYTES=32",
-               "--env", "UPLOAD_MIN_FREE_BYTES=0", "--env", "CONTROL_TOWER_TOKEN=" + node_token,
-               "--env", "JOLT_DB_ENCRYPTION_KEY=" + secrets.token_hex(32),
-               "--env", "MTLS_PUBLIC_ENDPOINT=https://node-smoke:8443", args.node_image)
+               "--publish", "127.0.0.1::8080", "--volume", "/mnt/files",
+               "--env", "JOLT_OWNED_PATHS=/mnt/files",
+               "--mount", "type=bind,src=" + str(config_path) + ",dst=/etc/jolt/node.yaml,readonly", "--env", "CONTROL_TOWER_TOKEN=" + node_token,
+               "--env", "JOLT_STATE_ENCRYPTION_KEY=" + base64.b64encode(secrets.token_bytes(32)).decode(), args.node_image)
         names.append(node_name)
         docker("run", *common, "--name", control_name, "--publish", "127.0.0.1::8090",
                "--env", "CONTROL_TOWER_ADMIN_PASSWORD=" + password,
@@ -211,11 +253,16 @@ def main():
         node_base = "http://" + docker("port", node_name, "8080/tcp").splitlines()[0]
         control_base = "http://" + docker("port", control_name, "8090/tcp").splitlines()[0]
         exercise(node_base, control_base, node_name, node_token, password)
+    except Exception:
+        for name in names:
+            print(docker("logs", "--tail", "25", name).replace(node_token, "[redacted]").replace(password, "[redacted]"))
+        raise
     finally:
         for name in reversed(names):
             docker("rm", "--force", "--volumes", name)
         if network_created:
             docker("network", "rm", network)
+        configuration.cleanup()
 
 
 if __name__ == "__main__":

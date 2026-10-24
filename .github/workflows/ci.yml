@@ -46,6 +46,12 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Verify node has no SQL runtime
+        if: matrix.module == 'node'
+        run: |
+          CGO_ENABLED=0 go build ./backend/cmd/jolt-node
+          if go list -deps ./backend/cmd/jolt-node | grep -E '(^database/sql$|sqlcipher|sqlite)'; then exit 1; fi
+
       - name: Vet
         run: go vet ./...
 

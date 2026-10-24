@@ -8,12 +8,12 @@ import (
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
 	joltcrypto "github.com/jfxdev/jolt/backend/internal/infra/crypto"
-	"github.com/jfxdev/jolt/backend/internal/infra/db"
+	db "github.com/jfxdev/jolt/backend/internal/infra/state"
 )
 
 func testService(t *testing.T, nodeID string) *Service {
 	t.Helper()
-	storage, err := db.Open(filepath.Join(t.TempDir(), "pairing.db"), make([]byte, 32))
+	storage, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,13 +185,13 @@ func TestRevokePeerDisablesTrustAndAllRelatedGrants(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	if err := service.store.UpsertMount(context.Background(), entities.Mount{
+	if err := service.store.(*db.Store).UpsertMount(context.Background(), entities.Mount{
 		ID: "media", Name: "Media", LocalPath: t.TempDir(), TargetType: "directory",
 		Mode: "read_write", Published: true, Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.store.CreateTransferGrant(context.Background(), entities.TransferPathGrant{
+	if err := service.store.(*db.Store).CreateTransferGrant(context.Background(), entities.TransferPathGrant{
 		ID: "grant-1", PeerNodeID: "target", MountID: "media", Path: ".",
 		Direction: "send_receive", Permissions: entities.GrantPermissions{Read: true, Write: true},
 		Enabled: true, CreatedAt: now, UpdatedAt: now,
@@ -237,7 +237,7 @@ func TestRevokePeerDisablesTrustAndAllRelatedGrants(t *testing.T) {
 	if err != nil || peer.State != "revoked" {
 		t.Fatalf("peer trust was restored by heartbeat: peer=%+v err=%v", peer, err)
 	}
-	grant, err := service.store.GetTransferGrant(context.Background(), "grant-1")
+	grant, err := service.store.(*db.Store).GetTransferGrant(context.Background(), "grant-1")
 	if err != nil || grant.Enabled || grant.CorrelationID != "cor-revoke" {
 		t.Fatalf("grant=%+v err=%v", grant, err)
 	}
@@ -252,7 +252,7 @@ func TestRevokePeerDisablesTrustAndAllRelatedGrants(t *testing.T) {
 // history: a re-paired peer was showing up as degraded because thousands of
 // stale heartbeat failures survived the upsert.
 func TestRepairingAPeerResetsHeartbeatCounters(t *testing.T) {
-	storage, err := db.Open(filepath.Join(t.TempDir(), "pairing.db"), make([]byte, 32))
+	storage, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}

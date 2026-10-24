@@ -1,5 +1,9 @@
 # Implementation status
 
+Node persistence and resource management now follow [NODE_YAML.md](NODE_YAML.md):
+mandatory versioned configuration, restart application, read-only mounts/grants,
+encrypted journal/snapshots, no node SQL runtime and no legacy conversion.
+
 Current release assessment and remediation status:
 [`RELEASE_0.1.0.md`](RELEASE_0.1.0.md). The dated inventory below predates
 resumable uploads, subpath RBAC, public shares, metrics and the release hardening.
@@ -126,7 +130,7 @@ Status legend:
 - Single Go binary with bearer-token authentication and OpenAPI/Swagger.
 - Stable logical `node_id`, versioned Ed25519 identity, and human-checkable
   fingerprint.
-- SQLite-backed mounts, jobs, job items, events, peers, grants, pairing state,
+- YAML-defined mounts/grants and encrypted YAML jobs, job items, events, peers, pairing state,
   idempotency, and durable checkpoints.
 - Safe relative paths with path-traversal and symlink-escape protection.
 - Key and data directories cannot be registered as transfer mounts.
@@ -239,7 +243,7 @@ Status legend:
   returned to the browser.
 - Pairing establishes identity trust only; it never creates mounts or grants.
 - Cluster membership is persisted but never creates transitive trust.
-- Transfer Path Grants are node-owned SQLite resources bound to:
+- Transfer Path Grants are operator-defined YAML resources bound to:
   - one exact trusted peer identity;
   - one existing local mount;
   - one safe relative path inside that mount.
@@ -279,7 +283,7 @@ Status legend:
 
 ### Durable asynchronous jobs
 
-- Persistent SQLite queue with atomic claims and bounded node concurrency
+- Persistent encrypted YAML queue with atomic claims and bounded node concurrency
   configured by `MAX_CONCURRENT_JOBS`.
 - Durable jobs for mkdir, local copy, move, delete, and direct remote file pull.
 - Recovery converts jobs left in executing/requested states to
@@ -491,14 +495,14 @@ Status legend:
 - Offline `snapshot` subcommands are available in both binaries.
 - Both services hold an exclusive instance lock and refuse an offline snapshot
   while the corresponding process is active.
-- Snapshots run SQLite integrity checks, consolidate the database without
-  transient WAL/SHM files, and atomically publish a mode-`0600` tar.gz archive.
-- Node snapshots keep data and cryptographic keys in one backup set and record
+- Node snapshots authenticate encrypted YAML transactions and snapshots; Control
+  Tower snapshots check and consolidate SQLCipher. Both publish atomic mode-`0600` archives.
+- Node snapshots keep configuration, encrypted state and identity in one backup set and record
   the `node_id`, fingerprint, file modes, sizes, and SHA-256 hashes in a
   manifest.
 - Control Tower snapshots explicitly exclude the external encryption key and
   record that fact in their manifest.
-- Offline node restore diagnostics validate SQLite integrity, identity
+- Offline node restore diagnostics validate encrypted YAML integrity, identity
   public/private correspondence, optional expected identity, mounts, peers,
   grants, non-terminal jobs, durable checkpoints, and bounded partial-file
   discovery without mutating restored state.
@@ -575,7 +579,7 @@ Status legend:
 ### Priority 4 — recovery and hardening
 
 - Consistent node and Control Tower snapshot commands are complete, including
-  active-instance exclusion, SQLite integrity validation, atomic archives,
+  active-instance exclusion, state integrity validation, atomic archives,
   restricted output permissions, and per-file SHA-256 manifests.
 - Restore diagnostics for identity, mounts, grants, jobs, and partial files are
   complete for both node and Control Tower.
@@ -656,7 +660,7 @@ Current automated tests and build verification cover:
 - mTLS public-certificate rollout validation, durable peer acceptance,
   acknowledgement persistence, and Control Tower distribution;
 - consistent node and Control Tower snapshot creation, active-instance locking,
-  SQLite consolidation, and archive manifest validation;
+  encrypted state consolidation, and archive manifest validation;
 - offline node and Control Tower restore diagnostics, including identity/key
   validation, mount/grant/job/partial checks, external-key verification, and
   non-zero blocking reports;

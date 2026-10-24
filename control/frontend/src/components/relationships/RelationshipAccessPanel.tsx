@@ -46,8 +46,9 @@ export function RelationshipAccessPanel({ node, otherName, peer, canListGrants, 
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const grantsPath = `nodes/${node.node_id}/grants`;
-  const canCreate = hasPermission(grantsPath, "create");
-  const canUpdate = hasPermission(grantsPath, "update");
+  const managed = node.configuration?.grants_mutable === false;
+  const canCreate = !managed && hasPermission(grantsPath, "create");
+  const canUpdate = !managed && hasPermission(grantsPath, "update");
   const canListMounts = hasPermission(`nodes/${node.node_id}/mounts`, "list");
 
   useEffect(() => {
@@ -115,6 +116,7 @@ export function RelationshipAccessPanel({ node, otherName, peer, canListGrants, 
   const duplicate = form && !editing && peer ? matchingTransferGrant(grants, peer.node_id, form.mount_id, form.path, form.direction) : undefined;
 
   return <section className="grid min-w-0 content-start gap-3">
+    {managed && <p className="text-sm text-muted-foreground">Gerenciado por arquivo. Edite as autorizações no node.yaml e reinicie o node para aplicar.</p>}
     <div className="flex flex-wrap items-start justify-between gap-2">
       <div className="flex items-center gap-2"><h3 className="font-semibold">{node.name}</h3>{canListGrants && <Badge variant="secondary" aria-label={`${grants.length} autorizações em ${node.name}`} title="Autorizações">{grants.length}</Badge>}</div>
       {peer && canCreate && !form && <Button type="button" size="sm" variant="outline" aria-label={`Adicionar autorização em ${node.name}`} disabled={busy || !canListMounts || !!mountError || peer.trust_status !== "connected"} onClick={() => start()}><Plus /> Adicionar</Button>}
@@ -135,15 +137,16 @@ export function RelationshipAccessPanel({ node, otherName, peer, canListGrants, 
             <div className="flex flex-wrap items-center gap-1">
               <TransferDirectionBadge direction={grant.direction} />
               <GrantPermissionBadges value={grant.permissions} />
+              {grant.inactive_reason && <span className="text-xs text-muted-foreground">{grant.inactive_reason === "revoked" ? "Revogada. Uma nova autorização no arquivo é necessária." : grant.inactive_reason === "peer_untrusted" ? "Aguardando relação de confiança." : grant.inactive_reason === "disabled" ? "Desabilitada no arquivo." : "Indisponível: verifique o volume, a pasta e as permissões."}</span>}
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-3">
-              <Switch checked={grant.enabled} disabled={!canUpdate || busy || !!form} aria-label={`Ativar autorização: ${label}`} title={grant.enabled ? "Autorização ativa" : "Autorização desabilitada"} onCheckedChange={(enabled) => void run(() => api.updateGrant(node.node_id, grant.grant_id, { ...grantValue(grant), enabled }), "Autorização atualizada.")} />
+              {!managed && <Switch checked={grant.enabled} disabled={!canUpdate || busy || !!form} aria-label={`Ativar autorização: ${label}`} title={grant.enabled ? "Autorização ativa" : "Autorização desabilitada"} onCheckedChange={(enabled) => void run(() => api.updateGrant(node.node_id, grant.grant_id, { ...grantValue(grant), enabled }), "Autorização atualizada.")} />}
               <ButtonGroup aria-label={`Ações da autorização: ${label}`}>
                 {canUpdate && <Button type="button" size="icon-sm" variant="outline" aria-label={`Editar autorização: ${label}`} title="Editar autorização" disabled={busy || !!form || !canListMounts || !!mountError} onClick={() => start(grant)}><Pencil /></Button>}
                 <DropdownMenu><DropdownMenuTrigger render={<Button type="button" size="icon-sm" variant="outline" aria-label={`Mais opções: ${label}`} title="Mais opções" disabled={busy || !!form} />}><MoreHorizontal /></DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="min-w-44">
                     <DropdownMenuItem onClick={() => setExpanded(expanded === grant.grant_id ? null : grant.grant_id)}><SlidersHorizontal /> {expanded === grant.grant_id ? "Ocultar detalhes" : "Ver detalhes"}</DropdownMenuItem>
-                    {hasPermission(grantsPath, "delete") && <><DropdownMenuSeparator /><DropdownMenuItem variant="destructive" onClick={() => void remove(grant)}><Trash2 /> Remover autorização</DropdownMenuItem></>}
+                    {!managed && hasPermission(grantsPath, "delete") && <><DropdownMenuSeparator /><DropdownMenuItem variant="destructive" onClick={() => void remove(grant)}><Trash2 /> Remover autorização</DropdownMenuItem></>}
                   </DropdownMenuContent>
                 </DropdownMenu>
               </ButtonGroup>

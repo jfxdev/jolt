@@ -20,14 +20,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/infra/config"
 	joltcrypto "github.com/jfxdev/jolt/backend/internal/infra/crypto"
-	"github.com/jfxdev/jolt/backend/internal/infra/database"
-	"github.com/jfxdev/jolt/backend/internal/infra/db"
 	"github.com/jfxdev/jolt/backend/internal/infra/httpapi"
 	"github.com/jfxdev/jolt/backend/internal/infra/metrics"
 	"github.com/jfxdev/jolt/backend/internal/infra/mtlsapi"
 	"github.com/jfxdev/jolt/backend/internal/infra/recovery"
+	db "github.com/jfxdev/jolt/backend/internal/infra/state"
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
 	"github.com/jfxdev/jolt/backend/internal/services/grants"
 	"github.com/jfxdev/jolt/backend/internal/services/jobs"
@@ -58,17 +58,17 @@ func main() {
 		}
 		return
 	}
-	if len(os.Args) > 1 && os.Args[1] == "encrypt-database" {
-		if err := runEncryptDatabase(os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, "database encryption failed:", err)
-			os.Exit(1)
-		}
-		return
-	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	cfg, err := config.Load()
+	flags := flag.NewFlagSet("jolt-node", flag.ExitOnError)
+	configFile := flags.String("config", "", "path to node.yaml")
+	_ = flags.Parse(os.Args[1:])
+	cfg, err := config.Load(*configFile)
 	if err != nil {
 		logger.Error("invalid configuration", "error", err)
+		os.Exit(1)
+	}
+	if err := db.RejectLegacy(cfg.DataDir); err != nil {
+		logger.Error("legacy state is not supported", "error", err)
 		os.Exit(1)
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
@@ -86,14 +86,19 @@ func main() {
 		logger.Error("load node identity", "error", err)
 		os.Exit(1)
 	}
-	store, err := db.Open(filepath.Join(cfg.DataDir, "jolt.db"), cfg.EncryptionKey)
+	store, err := db.Open(cfg.DataDir, cfg.EncryptionKey)
 	if err != nil {
-		logger.Error("open database", "error", err)
+		logger.Error("open encrypted YAML state", "error", err)
 		os.Exit(1)
 	}
 	defer store.Close()
+	mounts, grantsConfig := cfg.Resources()
+	if err := store.ApplyConfiguration(context.Background(), cfg.Revision, mounts, grantsConfig, cfg.PublicYAML); err != nil {
+		logger.Error("apply node configuration", "error", err)
+		os.Exit(1)
+	}
 
-	fileService := filesystem.New(store, cfg.KeysDir, cfg.DataDir)
+	fileService := filesystem.New(store, cfg.ProtectedPaths()...)
 	jobService := jobs.New(store, fileService, cfg.JobMaxAttempts)
 	jobService.ConfigureChunkSize(cfg.CopyChunkSize)
 	jobService.ConfigureBandwidth(cfg.NodeBandwidthLimit)
@@ -161,7 +166,7 @@ func main() {
 			"address", cfg.APIAddress, "scheme", scheme, "client_certificate_required", cfg.APITLSClientCAFile != "")
 		if !cfg.APITLSEnabled() {
 			logger.Warn("control API is serving plaintext HTTP; the operational token and file bytes " +
-				"are exposed on the wire. Set API_TLS_CERT_FILE and API_TLS_KEY_FILE, or keep this " +
+				"are exposed on the wire. Set api_tls_cert_file and api_tls_key_file in node.yaml, or keep this " +
 				"listener on a private network. See docs/REVERSE_PROXY.md")
 		}
 		var err error
@@ -185,7 +190,14 @@ func main() {
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
-	<-signals
+	failed := false
+	select {
+	case <-signals:
+	case <-store.Failure():
+		logger.Error("persistent state failure; stopping node")
+		failed = true
+		stopJobs()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
@@ -197,6 +209,9 @@ func main() {
 	stopJobs()
 	if err := jobService.Shutdown(ctx); err != nil {
 		logger.Error("job worker shutdown failed", "error", err)
+	}
+	if failed {
+		os.Exit(1)
 	}
 }
 
@@ -229,7 +244,7 @@ func registerNodeMetrics(registry *metrics.Registry, cfg config.Config) {
 // sweepUploadSessions discards resumable uploads whose client never came back,
 // removing the partial file before the row so a crash mid-sweep cannot leave an
 // orphan partial with no session pointing at it.
-func sweepUploadSessions(ctx context.Context, store *db.Store, files *filesystem.Service,
+func sweepUploadSessions(ctx context.Context, store contracts.UploadStore, files *filesystem.Service,
 	logger *slog.Logger, ttl time.Duration) {
 	interval := ttl / 4
 	if interval < time.Minute {
@@ -306,13 +321,24 @@ func apiTLSConfig(cfg config.Config) (*tls.Config, error) {
 
 func runSnapshot(arguments []string) error {
 	flags := flag.NewFlagSet("snapshot", flag.ContinueOnError)
-	dataDir := flags.String("data-dir", environmentOrDefault("JOLT_DATA_DIR", "./.jolt/data"),
+	configFile := flags.String("config", environmentOrDefault("JOLT_CONFIG_FILE", "./node.yaml"), "path to node.yaml")
+	dataDir := flags.String("data-dir", "",
 		"node data directory")
-	keysDir := flags.String("keys-dir", environmentOrDefault("JOLT_KEYS_DIR", "./.jolt/keys"),
+	keysDir := flags.String("keys-dir", "",
 		"node keys directory")
 	output := flags.String("output", "", "destination .tar.gz file")
 	if err := flags.Parse(arguments); err != nil {
 		return err
+	}
+	publicConfig, err := config.Read(*configFile)
+	if err != nil {
+		return err
+	}
+	if *dataDir == "" {
+		*dataDir = publicConfig.DataDir
+	}
+	if *keysDir == "" {
+		*keysDir = publicConfig.KeysDir
 	}
 	if strings.TrimSpace(*output) == "" {
 		return errors.New("--output is required")
@@ -329,11 +355,11 @@ func runSnapshot(arguments []string) error {
 	if err != nil {
 		return err
 	}
-	encryptionKey, err := config.ParseEncryptionKey(os.Getenv("JOLT_DB_ENCRYPTION_KEY"))
+	encryptionKey, err := config.LoadEncryptionKey()
 	if err != nil {
 		return err
 	}
-	manifest, err := recovery.CreateSnapshot(context.Background(), absoluteData, absoluteKeys, absoluteOutput, encryptionKey)
+	manifest, err := recovery.CreateSnapshot(context.Background(), absoluteData, absoluteKeys, absoluteOutput, encryptionKey, *configFile)
 	if err != nil {
 		return err
 	}
@@ -342,14 +368,25 @@ func runSnapshot(arguments []string) error {
 
 func runRestoreDiagnostics(arguments []string) error {
 	flags := flag.NewFlagSet("restore-diagnostics", flag.ContinueOnError)
-	dataDir := flags.String("data-dir", environmentOrDefault("JOLT_DATA_DIR", "./.jolt/data"),
+	configFile := flags.String("config", environmentOrDefault("JOLT_CONFIG_FILE", "./node.yaml"), "path to node.yaml")
+	dataDir := flags.String("data-dir", "",
 		"restored node data directory")
-	keysDir := flags.String("keys-dir", environmentOrDefault("JOLT_KEYS_DIR", "./.jolt/keys"),
+	keysDir := flags.String("keys-dir", "",
 		"restored node keys directory")
 	expectedNodeID := flags.String("expected-node-id", "", "expected stable node_id")
 	expectedFingerprint := flags.String("expected-fingerprint", "", "expected identity fingerprint")
 	if err := flags.Parse(arguments); err != nil {
 		return err
+	}
+	publicConfig, err := config.Read(*configFile)
+	if err != nil {
+		return err
+	}
+	if *dataDir == "" {
+		*dataDir = publicConfig.DataDir
+	}
+	if *keysDir == "" {
+		*keysDir = publicConfig.KeysDir
 	}
 	absoluteData, err := filepath.Abs(*dataDir)
 	if err != nil {
@@ -359,7 +396,7 @@ func runRestoreDiagnostics(arguments []string) error {
 	if err != nil {
 		return err
 	}
-	encryptionKey, err := config.ParseEncryptionKey(os.Getenv("JOLT_DB_ENCRYPTION_KEY"))
+	encryptionKey, err := config.LoadEncryptionKey()
 	if err != nil {
 		return err
 	}
@@ -379,12 +416,20 @@ func runRestoreDiagnostics(arguments []string) error {
 
 func runRecoverOperationalToken(arguments []string) error {
 	flags := flag.NewFlagSet("recover-operational-token", flag.ContinueOnError)
-	dataDir := flags.String("data-dir", environmentOrDefault("JOLT_DATA_DIR", "./.jolt/data"),
+	configFile := flags.String("config", environmentOrDefault("JOLT_CONFIG_FILE", "./node.yaml"), "path to node.yaml")
+	dataDir := flags.String("data-dir", "",
 		"offline node data directory")
 	confirmation := flags.String("confirm", "",
 		`required acknowledgement: "replace-operational-token"`)
 	if err := flags.Parse(arguments); err != nil {
 		return err
+	}
+	publicConfig, err := config.Read(*configFile)
+	if err != nil {
+		return err
+	}
+	if *dataDir == "" {
+		*dataDir = publicConfig.DataDir
 	}
 	if *confirmation != "replace-operational-token" {
 		return errors.New(`--confirm replace-operational-token is required`)
@@ -393,7 +438,7 @@ func runRecoverOperationalToken(arguments []string) error {
 	if len(token) < 32 {
 		return errors.New("JOLT_RECOVERY_OPERATIONAL_TOKEN must contain at least 32 characters")
 	}
-	encryptionKey, err := config.ParseEncryptionKey(os.Getenv("JOLT_DB_ENCRYPTION_KEY"))
+	encryptionKey, err := config.LoadEncryptionKey()
 	if err != nil {
 		return err
 	}
@@ -401,18 +446,12 @@ func runRecoverOperationalToken(arguments []string) error {
 	if err != nil {
 		return err
 	}
-	databasePath := filepath.Join(absoluteData, "jolt.db")
-	if info, err := os.Stat(databasePath); err != nil {
-		return fmt.Errorf("open existing node database: %w", err)
-	} else if !info.Mode().IsRegular() {
-		return errors.New("node database is not a regular file")
-	}
 	instanceLock, err := recovery.AcquireLock(absoluteData)
 	if err != nil {
 		return err
 	}
 	defer instanceLock.Close()
-	storage, err := db.Open(databasePath, encryptionKey)
+	storage, err := db.OpenExisting(absoluteData, encryptionKey)
 	if err != nil {
 		return err
 	}
@@ -429,35 +468,6 @@ func runRecoverOperationalToken(arguments []string) error {
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{
 		"status": "recovered", "credential": "operational_token",
 		"environment_token_disabled": true, "correlation_id": correlationID,
-	})
-}
-
-func runEncryptDatabase(arguments []string) error {
-	flags := flag.NewFlagSet("encrypt-database", flag.ContinueOnError)
-	dataDir := flags.String("data-dir", environmentOrDefault("JOLT_DATA_DIR", "./.jolt/data"),
-		"offline node data directory containing a plaintext jolt.db")
-	if err := flags.Parse(arguments); err != nil {
-		return err
-	}
-	encryptionKey, err := config.ParseEncryptionKey(os.Getenv("JOLT_DB_ENCRYPTION_KEY"))
-	if err != nil {
-		return err
-	}
-	absoluteData, err := filepath.Abs(*dataDir)
-	if err != nil {
-		return err
-	}
-	instanceLock, err := recovery.AcquireLock(absoluteData)
-	if err != nil {
-		return err
-	}
-	defer instanceLock.Close()
-	databasePath := filepath.Join(absoluteData, "jolt.db")
-	if err := database.MigratePlaintext(context.Background(), databasePath, encryptionKey); err != nil {
-		return err
-	}
-	return json.NewEncoder(os.Stdout).Encode(map[string]any{
-		"status": "encrypted", "database": databasePath,
 	})
 }
 

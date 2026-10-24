@@ -88,6 +88,7 @@ export interface AuditEvent {
 export type NodeState = "online" | "offline" | "degraded" | "untrusted" | string;
 
 export interface NodeInfo {
+  configuration?: { source: "yaml"; apply_mode: "restart"; mounts_mutable: boolean; grants_mutable: boolean };
   node_id: string;
   name: string;
   endpoint: string;
@@ -104,6 +105,7 @@ export interface Mount {
   mode: MountMode;
   published?: boolean;
   enabled?: boolean;
+  state?: "available" | "unavailable" | "degraded";
 }
 
 export type FileEntryType = "directory" | "file" | "symlink";
@@ -186,6 +188,8 @@ export interface GrantPermissions {
 export type GrantDirection = "send" | "receive" | "send_receive";
 
 export interface Grant {
+  configured_enabled?: boolean;
+  inactive_reason?: string;
   grant_id: string;
   peer_node_id: string;
   mount_id: string;

@@ -63,7 +63,7 @@ falta validar o código contra falhas intermediárias e replay.
 `node/backend/internal/infra/httpapi/server.go` (`prepareOperationalToken`,
 `commitOperationalToken`, `operationalTokenState`);
 `control/internal/httpapi/server.go` (`rotate-token`);
-tabela/estado em `node/backend/internal/infra/db/sqlite.go`
+estado em `node/backend/internal/infra/state/tokens.go`
 (`GetOperationalTokenState`).
 
 **Resultado esperado.** Confirmar segurança da máquina de estados e ausência de
@@ -78,8 +78,8 @@ código nesta análise.
 
 **O que procurar.**
 - Lock exclusivo de instância: correção contra corrida com processo ativo.
-- Snapshot: consolidação do SQLite sem WAL/SHM transitórios, permissões `0600`,
-  exclusão da chave externa (control), manifesto SHA-256.
+- Snapshot: autenticação do YAML cifrado do node e consolidação do SQLCipher
+  do control, permissões `0600`, exclusão de chaves externas, manifesto SHA-256.
 - Restore diagnostics: integridade, correspondência chave pública/privada,
   detecção de mount ausente/divergente, partial-files.
 - Recuperação de emergência: substituição atômica de token/credencial e de admin;

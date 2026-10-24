@@ -14,7 +14,7 @@ import (
 	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/entities"
 	joltcrypto "github.com/jfxdev/jolt/backend/internal/infra/crypto"
-	"github.com/jfxdev/jolt/backend/internal/infra/db"
+
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
 )
 
@@ -72,12 +72,12 @@ type UpdatePeerEndpointsInput struct {
 }
 
 type Service struct {
-	store    contracts.Store
+	store    contracts.TrustStore
 	identity entities.Identity
 	now      func() time.Time
 }
 
-func New(store contracts.Store, identity entities.Identity) *Service {
+func New(store contracts.TrustStore, identity entities.Identity) *Service {
 	return &Service{store: store, identity: identity, now: func() time.Time { return time.Now().UTC() }}
 }
 
@@ -128,7 +128,7 @@ func (s *Service) ListInvites(ctx context.Context) ([]entities.PairingInvite, er
 
 func (s *Service) RevokeInvite(ctx context.Context, id string) error {
 	invite, err := s.store.GetPairingInvite(ctx, id)
-	if errors.Is(err, db.ErrNotFound) {
+	if errors.Is(err, contracts.ErrNotFound) {
 		return ErrNotFound
 	}
 	if err != nil {
@@ -137,7 +137,7 @@ func (s *Service) RevokeInvite(ctx context.Context, id string) error {
 	if s.now().After(invite.ExpiresAt) {
 		return ErrExpired
 	}
-	if err := s.store.RevokePairingInvite(ctx, id, s.now()); errors.Is(err, db.ErrNotFound) {
+	if err := s.store.RevokePairingInvite(ctx, id, s.now()); errors.Is(err, contracts.ErrNotFound) {
 		return ErrNotFound
 	} else {
 		return err
@@ -192,7 +192,7 @@ func (s *Service) ListRequests(ctx context.Context) ([]entities.PairingRequest, 
 
 func (s *Service) ApproveInvite(ctx context.Context, id string, input ApproveInviteInput) (entities.Peer, error) {
 	invite, err := s.store.GetPairingInvite(ctx, id)
-	if errors.Is(err, db.ErrNotFound) {
+	if errors.Is(err, contracts.ErrNotFound) {
 		return entities.Peer{}, ErrNotFound
 	}
 	if err != nil {
@@ -222,7 +222,7 @@ func (s *Service) ApproveInvite(ctx context.Context, id string, input ApproveInv
 
 func (s *Service) AcceptRequest(ctx context.Context, id, confirmedFingerprint, correlationID string) (entities.Peer, error) {
 	request, err := s.store.GetPairingRequest(ctx, id)
-	if errors.Is(err, db.ErrNotFound) {
+	if errors.Is(err, contracts.ErrNotFound) {
 		return entities.Peer{}, ErrNotFound
 	}
 	if err != nil {
@@ -250,7 +250,7 @@ func (s *Service) AcceptRequest(ctx context.Context, id, confirmedFingerprint, c
 
 func (s *Service) RejectRequest(ctx context.Context, id string) error {
 	request, err := s.store.GetPairingRequest(ctx, id)
-	if errors.Is(err, db.ErrNotFound) {
+	if errors.Is(err, contracts.ErrNotFound) {
 		return ErrNotFound
 	}
 	if err != nil {
@@ -274,12 +274,12 @@ func (s *Service) RevokePeer(ctx context.Context, nodeID, correlationID string) 
 	if nodeID == "" || nodeID == s.identity.NodeID {
 		return ErrInvalid
 	}
-	if _, err := s.store.GetPeer(ctx, nodeID); errors.Is(err, db.ErrNotFound) {
+	if _, err := s.store.GetPeer(ctx, nodeID); errors.Is(err, contracts.ErrNotFound) {
 		return ErrNotFound
 	} else if err != nil {
 		return err
 	}
-	if err := s.store.RevokePeer(ctx, nodeID, correlationID, s.now()); errors.Is(err, db.ErrNotFound) {
+	if err := s.store.RevokePeer(ctx, nodeID, correlationID, s.now()); errors.Is(err, contracts.ErrNotFound) {
 		return ErrNotFound
 	} else {
 		return err
@@ -290,7 +290,7 @@ func (s *Service) UpdatePeerEndpoints(ctx context.Context, nodeID string,
 	input UpdatePeerEndpointsInput) (entities.Peer, error) {
 	nodeID = strings.TrimSpace(nodeID)
 	peer, err := s.store.GetPeer(ctx, nodeID)
-	if errors.Is(err, db.ErrNotFound) {
+	if errors.Is(err, contracts.ErrNotFound) {
 		return entities.Peer{}, ErrNotFound
 	}
 	if err != nil {
@@ -307,7 +307,7 @@ func (s *Service) UpdatePeerEndpoints(ctx context.Context, nodeID string,
 	if err != nil {
 		return entities.Peer{}, err
 	}
-	if err := s.store.UpdatePeerEndpoints(ctx, nodeID, endpoint, mtlsEndpoint, input.CorrelationID); errors.Is(err, db.ErrNotFound) {
+	if err := s.store.UpdatePeerEndpoints(ctx, nodeID, endpoint, mtlsEndpoint, input.CorrelationID); errors.Is(err, contracts.ErrNotFound) {
 		return entities.Peer{}, ErrNotFound
 	} else if err != nil {
 		return entities.Peer{}, err
@@ -322,7 +322,7 @@ func (s *Service) RecoverPeerIdentity(ctx context.Context, nodeID, confirmedFing
 	correlationID string) (entities.Peer, error) {
 	nodeID, confirmedFingerprint = strings.TrimSpace(nodeID), strings.TrimSpace(confirmedFingerprint)
 	peer, err := s.store.GetPeer(ctx, nodeID)
-	if errors.Is(err, db.ErrNotFound) {
+	if errors.Is(err, contracts.ErrNotFound) {
 		return entities.Peer{}, ErrNotFound
 	}
 	if err != nil {
@@ -332,7 +332,7 @@ func (s *Service) RecoverPeerIdentity(ctx context.Context, nodeID, confirmedFing
 		confirmedFingerprint == peer.Fingerprint {
 		return entities.Peer{}, fmt.Errorf("%w: identity recovery requires a different manually confirmed fingerprint", ErrInvalid)
 	}
-	if err := s.store.RecoverPeerIdentity(ctx, nodeID, confirmedFingerprint, correlationID); errors.Is(err, db.ErrNotFound) {
+	if err := s.store.RecoverPeerIdentity(ctx, nodeID, confirmedFingerprint, correlationID); errors.Is(err, contracts.ErrNotFound) {
 		return entities.Peer{}, ErrInvalid
 	} else if err != nil {
 		return entities.Peer{}, err
@@ -349,7 +349,7 @@ func (s *Service) ApplyIdentityHandover(ctx context.Context, handover joltcrypto
 		return entities.Peer{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	peer, err := s.store.GetPeer(ctx, handover.NodeID)
-	if errors.Is(err, db.ErrNotFound) {
+	if errors.Is(err, contracts.ErrNotFound) {
 		return entities.Peer{}, ErrNotFound
 	}
 	if err != nil {
@@ -361,7 +361,7 @@ func (s *Service) ApplyIdentityHandover(ctx context.Context, handover joltcrypto
 	}
 	if err := s.store.ApplyPeerIdentityHandover(ctx, peer.NodeID, handover.PreviousEpoch,
 		handover.PreviousFingerprint, handover.NextEpoch, handover.NextFingerprint,
-		correlationID); errors.Is(err, db.ErrNotFound) {
+		correlationID); errors.Is(err, contracts.ErrNotFound) {
 		return entities.Peer{}, ErrInvalid
 	} else if err != nil {
 		return entities.Peer{}, err
