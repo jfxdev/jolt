@@ -7,8 +7,36 @@ permissions:
   contents: read
 
 jobs:
+  prepare:
+    name: Determine release state
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    outputs:
+      already_published: ${{ steps.state.outputs.already_published }}
+      version: ${{ steps.state.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --force --tags origin
+          version="$(git tag --points-at "$GITHUB_SHA" --list '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*' | sort -V | tail -n 1)"
+          if [ -n "$version" ] && gh release view "$version" --json isDraft --jq '.isDraft' | grep -qx false; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+
   candidate-node:
     name: Build node candidate
+    needs: prepare
+    if: needs.prepare.outputs.already_published != 'true'
     permissions:
       contents: read
       packages: write
@@ -40,6 +68,8 @@ jobs:
 
   candidate-control:
     name: Build control candidate
+    needs: prepare
+    if: needs.prepare.outputs.already_published != 'true'
     permissions:
       contents: read
       packages: write
@@ -71,7 +101,8 @@ jobs:
 
   smoke:
     name: Smoke published candidates
-    needs: [candidate-node, candidate-control]
+    needs: [prepare, candidate-node, candidate-control]
+    if: needs.prepare.outputs.already_published != 'true'
     permissions:
       contents: read
       packages: read
@@ -100,7 +131,8 @@ jobs:
 
   publish:
     name: Create tag and GitHub Release
-    needs: [candidate-node, candidate-control, smoke]
+    needs: [prepare, candidate-node, candidate-control, smoke]
+    if: needs.prepare.outputs.already_published != 'true'
     permissions:
       contents: write
       packages: write

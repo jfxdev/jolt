@@ -37,10 +37,19 @@ class ReleaseVersionTests(unittest.TestCase):
             f"{self.day}.10",
         )
 
-    def test_serial_allocations_choose_distinct_versions(self) -> None:
+    def test_reuses_the_first_publication_version_after_midnight(self) -> None:
+        self.assertEqual(
+            allocate_version([self.day], "2026-10-25", [self.day]),
+            self.day,
+        )
+
+    def test_concurrent_collision_retries_with_the_next_version(self) -> None:
+        # Two publishers can observe the same snapshot. The workflow reserves
+        # with an atomic ref creation; the loser reloads this updated snapshot.
         first = allocate_version([self.day], self.day, [])
-        second = allocate_version([self.day, first], self.day, [])
-        self.assertEqual((first, second), (f"{self.day}.1", f"{self.day}.2"))
+        colliding_attempt = allocate_version([self.day], self.day, [])
+        retry = allocate_version([self.day, first], self.day, [])
+        self.assertEqual((first, colliding_attempt, retry), (f"{self.day}.1", f"{self.day}.1", f"{self.day}.2"))
 
 
 if __name__ == "__main__":

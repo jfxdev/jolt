@@ -18,10 +18,21 @@ def versions_for_day(tags: list[str], day: str) -> list[tuple[int, str]]:
     ]
 
 
+def dated_versions(tags: list[str]) -> list[tuple[str, int, str]]:
+    pattern = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:\.(\d+))?$")
+    return [
+        (match.group(1), int(match.group(2) or 0), tag)
+        for tag in tags
+        if (match := pattern.fullmatch(tag))
+    ]
+
+
 def allocate_version(tags: list[str], day: str, commit_tags: list[str]) -> str:
-    dated_commit_tags = versions_for_day(commit_tags, day)
+    # A retry can cross midnight in Sao Paulo. The first tag already associated
+    # with this commit remains its version, regardless of the current date.
+    dated_commit_tags = dated_versions(commit_tags)
     if dated_commit_tags:
-        return max(dated_commit_tags)[1]
+        return max(dated_commit_tags)[2]
     existing = versions_for_day(tags, day)
     if not existing:
         return day
