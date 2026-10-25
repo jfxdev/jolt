@@ -161,17 +161,18 @@ jobs:
           docker buildx imagetools create --tag "$control_image:$VERSION" "$control_image@$CONTROL_DIGEST"
           test "$(docker buildx imagetools inspect --format "{{.Manifest.Digest}}" "$node_image:$VERSION")" = "$NODE_DIGEST"
           test "$(docker buildx imagetools inspect --format "{{.Manifest.Digest}}" "$control_image:$VERSION")" = "$CONTROL_DIGEST"
-      - name: Make packages public and verify anonymous pulls
+      - name: Verify public package visibility with anonymous pulls
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           owner="${GITHUB_REPOSITORY_OWNER,,}"
-          gh api --method PATCH "users/$owner/packages/container/jolt-node" -f visibility=public
-          gh api --method PATCH "users/$owner/packages/container/jolt-control" -f visibility=public
           docker logout ghcr.io || true
-          docker pull "ghcr.io/$owner/jolt-node:$VERSION"
-          docker pull "ghcr.io/$owner/jolt-control:$VERSION"
+          for image in jolt-node jolt-control; do
+            docker pull "ghcr.io/$owner/$image:$VERSION" || {
+              echo "ghcr.io/$owner/$image is not public; change its visibility once in GitHub Package settings." >&2
+              exit 1
+            }
+          done
       - name: Create or update the draft release
         env:
           VERSION: ${{ steps.version.outputs.version }}
