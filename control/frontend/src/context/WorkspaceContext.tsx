@@ -5,6 +5,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  useRef,
   type ReactNode,
 } from "react";
 import { useParams } from "react-router-dom";
@@ -27,7 +28,11 @@ import { usePermissions } from "@/context/PermissionsContext";
 import { useApiError } from "@/hooks/useApiError";
 import { useJobEvents } from "@/hooks/useJobEvents";
 
+export type WorkspaceSection = "mounts" | "jobs" | "trust" | "mtls";
+
 interface WorkspaceContextValue {
+ sectionErrors: Partial<Record<WorkspaceSection, string>>;
+ retrySection: (section: WorkspaceSection) => Promise<void>;
   nodeId: string;
   node: NodeInfo | null;
   mounts: Mount[];
@@ -61,6 +66,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const { loadPermissions, hasPermissionNow } = usePermissions();
   const handleError = useApiError();
 
+  const currentNodeRef = useRef(nodeId); currentNodeRef.current = nodeId;
+  const requests = useRef({ nodeId, sequences: { mounts: 0, jobs: 0, trust: 0, mtls: 0 } });
+  if (requests.current.nodeId !== nodeId) {
+    requests.current = { nodeId, sequences: { mounts: 0, jobs: 0, trust: 0, mtls: 0 } };
+  }
+  const [sectionErrors, setSectionErrors] = useState<Partial<Record<WorkspaceSection, string>>>({});
   const [mounts, setMounts] = useState<Mount[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [trust, setTrust] = useState<TrustView | null>(null);
@@ -82,6 +93,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!nodeId) return;
     let active = true;
+    const request = requests.current;
+    const sections: WorkspaceSection[] = ["mounts", "jobs", "trust", "mtls"];
+    const tickets = { ...request.sequences };
+    sections.forEach(section => { tickets[section] = ++request.sequences[section]; });
+    const latest = (section: WorkspaceSection) => active && requests.current === request && request.sequences[section] === tickets[section];
+    setSectionErrors({});
     setMounts([]);
     setJobs([]);
     setTrust(null);
@@ -104,10 +121,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           `${base}/keys/identity`,
           `control-tower/nodes/${nodeId}/token`,
         ]);
+        if (!active || requests.current !== request) return;
         // One trust request replaces the peers/grants/invites/requests
         // fan-out: it is the only view that knows what the other side sees.
-        const [mountResult, jobResult, trustResult, mtlsResult] =
-          await Promise.all([
+        const results =
+          await Promise.allSettled([
             hasPermissionNow(`${base}/mounts`, "list")
               ? api.mounts(nodeId)
               : empty(),
@@ -121,13 +139,23 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
               ? api.mtlsState(nodeId)
               : Promise.resolve(null),
           ]);
-        if (!active) return;
-        const loadedJobs = (jobResult as { items: Job[] }).items || [];
-        setMounts((mountResult as { items: Mount[] }).items || []);
-        setJobs(loadedJobs);
-        setTrust(trustResult as TrustView | null);
-        setMtlsState(mtlsResult as MTLSState | null);
-
+        if (!active || requests.current !== request) return;
+        const [mountResult, jobResult, trustResult, mtlsResult] = results;
+        const loadedJobs = latest("jobs") && jobResult.status === "fulfilled" ? (jobResult.value as { items: Job[] }).items || [] : [];
+        if (latest("mounts") && mountResult.status === "fulfilled") setMounts((mountResult.value as { items: Mount[] }).items || []);
+        if (latest("jobs") && jobResult.status === "fulfilled") setJobs(loadedJobs);
+        if (latest("trust") && trustResult.status === "fulfilled") setTrust(trustResult.value as TrustView | null);
+        if (latest("mtls") && mtlsResult.status === "fulfilled") setMtlsState(mtlsResult.value as MTLSState | null);
+        setSectionErrors(previous => {
+          const next = { ...previous };
+          results.forEach((result, index) => {
+            const section = sections[index];
+            if (!latest(section)) return;
+            if (result.status === "rejected") next[section] = "Não foi possível atualizar esta seção.";
+            else delete next[section];
+          });
+          return next;
+        });
         const jobPaths = loadedJobs
           .slice(0, 100)
           .map((job) => `${base}/jobs/${job.job_id}`);
@@ -148,29 +176,32 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodeId]);
 
-  useJobEvents(nodeId, canStreamJobs, setJobs);
-
-  const refreshJobs = useCallback(async () => {
-    if (!nodeId) return;
-    const result = await api.jobs(nodeId);
-    setJobs(result.items || []);
+  const updateJobs = useCallback((updater: (previous: Job[]) => Job[]) => {
+    if (currentNodeRef.current === nodeId) setJobs(updater);
   }, [nodeId]);
+  useJobEvents(nodeId, canStreamJobs, updateJobs);
 
-  const refreshMounts = useCallback(async () => {
-    if (!nodeId) return;
-    const result = await api.mounts(nodeId);
-    setMounts(result.items || []);
-  }, [nodeId]);
-
-  const refreshTrust = useCallback(async () => {
-    if (!nodeId || !hasPermissionNow(`nodes/${nodeId}/peers`, "list")) return;
-    setTrust(await api.nodeTrust(nodeId));
-  }, [nodeId, hasPermissionNow]);
-
-  const refreshMTLSState = useCallback(async () => {
-    if (!nodeId || !hasPermissionNow(nodePath("keys/mtls"), "read")) return;
-    setMtlsState(await api.mtlsState(nodeId));
-  }, [nodeId, hasPermissionNow, nodePath]);
+  const retrySection = useCallback(async (section: WorkspaceSection) => {
+    if (!nodeId || currentNodeRef.current !== nodeId) return;
+    const paths = { mounts: "mounts", jobs: "jobs", trust: "peers", mtls: "keys/mtls" };
+    if (!hasPermissionNow(`nodes/${nodeId}/${paths[section]}`, section === "mtls" ? "read" : "list")) return;
+    const request = requests.current;
+    const ticket = ++request.sequences[section];
+    const latest = () => requests.current === request && request.sequences[section] === ticket;
+    try {
+      if (section === "mounts") { const result = await api.mounts(nodeId); if (latest()) setMounts(result.items || []); }
+      if (section === "jobs") { const result = await api.jobs(nodeId); if (latest()) setJobs(result.items || []); }
+      if (section === "trust") { const result = await api.nodeTrust(nodeId); if (latest()) setTrust(result); }
+      if (section === "mtls") { const result = await api.mtlsState(nodeId); if (latest()) setMtlsState(result); }
+      if (latest()) setSectionErrors(previous => { const next = { ...previous }; delete next[section]; return next; });
+    } catch (error) {
+      if (latest()) { setSectionErrors(previous => ({ ...previous, [section]: "Não foi possível atualizar esta seção." })); handleError(error); }
+    }
+  }, [nodeId, hasPermissionNow, handleError]);
+  const refreshJobs = useCallback(() => retrySection("jobs"), [retrySection]);
+  const refreshMounts = useCallback(() => retrySection("mounts"), [retrySection]);
+  const refreshTrust = useCallback(() => retrySection("trust"), [retrySection]);
+  const refreshMTLSState = useCallback(() => retrySection("mtls"), [retrySection]);
 
   const value = useMemo(() => {
     const trustPeers = trust?.peers || [];
@@ -188,7 +219,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       pairingRequests: trust?.requests || [],
       mtlsState,
       loading,
-      setJobs,
+      setJobs: updateJobs,
+      sectionErrors,
+      retrySection,
       refreshJobs,
       refreshMounts,
       refreshTrust,
@@ -207,7 +240,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     refreshMounts,
     refreshTrust,
     refreshMTLSState,
-    nodePath,
+    nodePath, updateJobs, sectionErrors, retrySection,
   ]);
 
   return (

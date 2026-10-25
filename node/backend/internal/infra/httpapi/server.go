@@ -104,12 +104,14 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 	if s.store != nil {
 		mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/uploads", s.listUploadSessions)
 		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads", s.createUploadSession)
-		mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.getUploadSession)
-		mux.HandleFunc("PATCH /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.appendUploadChunk)
-		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads/{uploadID}/complete", s.completeUploadSession)
-		mux.HandleFunc("DELETE /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.abortUploadSession)
+		mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/uploads/{uploadID}/verification", s.uploadLocked(s.verifyUploadSession))
+		mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.uploadLocked(s.getUploadSession))
+		mux.HandleFunc("PATCH /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.uploadLocked(s.appendUploadChunk))
+		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads/{uploadID}/complete", s.uploadLocked(s.completeUploadSession))
+		mux.HandleFunc("DELETE /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.uploadLocked(s.abortUploadSession))
 	}
 	mux.HandleFunc("GET /api/v1/jobs", s.listJobs)
+	mux.HandleFunc("GET /api/v1/jobs/summary", s.jobSummary)
 	mux.HandleFunc("GET /api/v1/jobs/events", s.streamJobEvents)
 	mux.HandleFunc("GET /api/v1/jobs/{jobID}", s.getJob)
 	mux.HandleFunc("GET /api/v1/jobs/{jobID}/items", s.listJobItems)
@@ -508,6 +510,10 @@ func (s *Server) prepareOperationalToken(w http.ResponseWriter, r *http.Request)
 	}
 	if err := s.store.StageOperationalToken(r.Context(), operationalTokenDigest(request.NewToken),
 		r.Header.Get("X-Correlation-ID"), time.Now().UTC()); err != nil {
+		if errors.Is(err, contracts.ErrInUse) {
+			writeError(w, r, http.StatusConflict, "token_rotation_in_progress", "Another token rotation is pending.", nil)
+			return
+		}
 		s.fail(w, r, err)
 		return
 	}
@@ -808,12 +814,12 @@ func (s *Server) deleteMount(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	items, err := s.files.List(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path"), limit)
+	page, err := s.files.ListPage(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path"), limit, r.URL.Query().Get("after"))
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "path": r.URL.Query().Get("path")})
+	writeJSON(w, http.StatusOK, map[string]any{"items": page.Items, "path": r.URL.Query().Get("path"), "has_more": page.HasMore, "next_after": page.NextAfter})
 }
 
 func (s *Server) metadata(w http.ResponseWriter, r *http.Request) {
@@ -1066,30 +1072,27 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, job)
 }
 
-func (s *Server) listJobItems(w http.ResponseWriter, r *http.Request) {
-	items, err := s.jobs.ListItems(r.Context(), r.PathValue("jobID"))
+func (s *Server) jobSummary(w http.ResponseWriter, r *http.Request) {
+	summary, err := s.store.JobSummary(r.Context())
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, summary)
+}
+
+func (s *Server) listJobItems(w http.ResponseWriter, r *http.Request) {
 	after, _ := strconv.Atoi(r.URL.Query().Get("after"))
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 || limit > 500 {
-		limit = 200
-	}
-	page := make([]entities.JobItem, 0, min(limit, len(items)))
-	nextAfter := 0
-	for _, item := range items {
-		if item.Ordinal < after {
-			continue
+	items, next, err := s.store.ListJobItemsPage(r.Context(), r.PathValue("jobID"), after, limit)
+	if err != nil {
+		if errors.Is(err, contracts.ErrNotFound) {
+			err = jobs.ErrNotFound
 		}
-		if len(page) == limit {
-			nextAfter = item.Ordinal
-			break
-		}
-		page = append(page, item)
+		s.fail(w, r, err)
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": page, "next_after": nextAfter})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_after": next})
 }
 
 type overrideJobItemRequest struct {
@@ -1502,6 +1505,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, code = http.StatusBadRequest, "path_traversal"
 	case errors.Is(err, filesystem.ErrConflict):
 		status, code = http.StatusConflict, "conflict"
+	case errors.Is(err, filesystem.ErrSourceChanged):
+		status, code = http.StatusConflict, "upload_destination_changed"
 	case errors.Is(err, filesystem.ErrDisabled):
 		status, code = http.StatusConflict, "mount_disabled"
 	case errors.Is(err, filesystem.ErrInvalid):
@@ -1764,8 +1769,18 @@ paths:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: query, name: path, schema: {type: string}}
         - {in: query, name: limit, schema: {type: integer, maximum: 1000}}
+        - {in: query, name: after, schema: {type: string}, description: Opaque keyset cursor from next_after}
       responses:
-        "200": {description: Directory entries}
+        "200":
+          description: Directory entries in deterministic order; follow next_after while has_more is true
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: {type: array, items: {type: object}}
+                  has_more: {type: boolean}
+                  next_after: {type: string}
     delete:
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
@@ -1927,7 +1942,7 @@ paths:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: path, name: uploadID, required: true, schema: {type: string}}
       responses:
-        "200": {description: Session with its current offset}
+        "200": {description: Session with durable offset, state (open, publishing or completed), and completed_at/checksum for completed receipts}
         "410": {description: The session expired}
     patch:
       summary: Appends one chunk at the offset named by Content-Range
@@ -1956,6 +1971,35 @@ paths:
         - {in: path, name: uploadID, required: true, schema: {type: string}}
       responses:
         "204": {description: Upload discarded}
+  /api/v1/mounts/{mountID}/files/uploads/{uploadID}/verification:
+    get:
+      summary: SHA-256 verification of every received byte for safe source re-selection
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: path, name: uploadID, required: true, schema: {type: string}}
+        - {in: query, name: after, schema: {type: integer, format: int64, minimum: 0}, description: Byte cursor returned by next_after}
+      responses:
+        "200":
+          description: At most sixteen 8 MiB blocks; zero next_after means verification is complete
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [offset, blocks, next_after]
+                properties:
+                  offset: {type: integer, format: int64}
+                  next_after: {type: integer, format: int64}
+                  blocks:
+                    type: array
+                    items:
+                      type: object
+                      required: [offset, size, sha256]
+                      properties:
+                        offset: {type: integer, format: int64}
+                        size: {type: integer, format: int64, maximum: 8388608}
+                        sha256: {type: string}
+        "409": {description: Upload already completed}
+        "410": {description: Session expired}
   /api/v1/mounts/{mountID}/files/uploads/{uploadID}/complete:
     post:
       summary: Verifies and publishes a completed resumable upload
@@ -1963,7 +2007,7 @@ paths:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: path, name: uploadID, required: true, schema: {type: string}}
       responses:
-        "201": {description: File published atomically at its destination}
+        "201": {description: Durable completion receipt including upload_id, destination_path, size, SHA-256 checksum, state and completed_at; repeat returns the same receipt until expiry}
         "400": {description: The upload is short of the declared size or its checksum does not match}
         "409": {description: The destination exists and the session does not allow overwrite}
   /api/v1/mounts/{mountID}/files/copy/plan:
@@ -2014,6 +2058,20 @@ paths:
     get:
       responses:
         "200": {description: Persistent job history}
+  /api/v1/jobs/summary:
+    get:
+      summary: Counts all durable jobs by state, independent of history pagination
+      responses:
+        "200":
+          description: Current counts and observation time
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [counts, observed_at]
+                properties:
+                  counts: {type: object, additionalProperties: {type: integer}}
+                  observed_at: {type: string, format: date-time}
   /api/v1/jobs/events:
     get:
       parameters:

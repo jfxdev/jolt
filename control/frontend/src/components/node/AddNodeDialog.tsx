@@ -35,7 +35,7 @@ export function AddNodeDialog({ open, onOpenChange }: Props) {
       await api.addNode(form);
       setForm(EMPTY);
       onOpenChange(false);
-      await loadNodes();
+      await loadNodes().catch(() => undefined);
       toast.success("Node conectado com sucesso.");
     } catch (error) {
       handleError(error);

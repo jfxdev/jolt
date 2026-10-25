@@ -39,7 +39,7 @@ export function DeleteNodeDialog({ open, onOpenChange }: Props) {
       await api.removeNode(nodeId);
       onOpenChange(false);
       navigate("/");
-      await loadNodes();
+      await loadNodes().catch(() => undefined);
       toast.success(
         "Node removido da Control Tower. O node e seus dados não foram alterados.",
       );

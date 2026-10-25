@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -33,7 +34,7 @@ func (s *Server) uploadTargets(w http.ResponseWriter, r *http.Request, resource 
 			Sessions []json.RawMessage `json:"sessions"`
 		}
 		if err := s.callNodeJSON(r.Context(), node, http.MethodGet, "/api/v1/"+resource, nil, &response, r.Header.Get("X-Correlation-ID")); err != nil {
-			s.writeLogicalTransferNodeError(w, r, err)
+			s.writeUploadLookupError(w, r, err)
 			return fileTargets{}, true, false
 		}
 		visible := make([]json.RawMessage, 0, len(response.Sessions))
@@ -50,14 +51,14 @@ func (s *Server) uploadTargets(w http.ResponseWriter, r *http.Request, resource 
 		writeJSON(w, http.StatusOK, map[string]any{"sessions": visible})
 		return fileTargets{}, true, true
 	}
-	if len(parts) > 6 || len(parts) == 6 && parts[5] != "complete" {
+	if len(parts) > 6 || len(parts) == 6 && (parts[5] != "complete" && parts[5] != "verification") {
 		writeError(w, r, http.StatusNotFound, "resource_not_found", "Recurso não encontrado.")
 		return fileTargets{}, true, false
 	}
 	var session uploadSessionView
 	lookup := "/api/v1/mounts/" + url.PathEscape(parts[1]) + "/files/uploads/" + url.PathEscape(parts[4])
 	if err := s.callNodeJSON(r.Context(), node, http.MethodGet, lookup, nil, &session, r.Header.Get("X-Correlation-ID")); err != nil {
-		s.writeLogicalTransferNodeError(w, r, err)
+		s.writeUploadLookupError(w, r, err)
 		return fileTargets{}, true, false
 	}
 	if session.ID != parts[4] || session.MountID != parts[1] || session.Destination == "" {
@@ -65,4 +66,19 @@ func (s *Server) uploadTargets(w http.ResponseWriter, r *http.Request, resource 
 		return fileTargets{}, true, false
 	}
 	return fileTargets{Paths: []string{session.Destination}}, false, true
+}
+
+func (s *Server) writeUploadLookupError(w http.ResponseWriter, r *http.Request, err error) {
+	var apiErr *nodeAPIError
+	if errors.As(err, &apiErr) {
+		if apiErr.StatusCode == http.StatusNotFound {
+			writeError(w, r, http.StatusNotFound, "upload_not_found", "Upload não encontrado no node.")
+			return
+		}
+		if apiErr.StatusCode == http.StatusGone {
+			writeError(w, r, http.StatusGone, "upload_expired", "Este envio expirou. Verifique o destino antes de iniciar um novo envio.")
+			return
+		}
+	}
+	writeError(w, r, http.StatusBadGateway, "node_unavailable", "Não foi possível consultar os uploads deste node.")
 }

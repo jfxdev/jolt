@@ -101,3 +101,17 @@ Diagnostics authenticate every committed envelope, inspect mounts, peers, grants
 jobs and partials, and report unsafe conditions. Interrupted jobs require explicit
 validation before resuming. The Control Tower credential must also be updated
 when recovering the node operational token.
+
+## Operational continuity
+
+Upload sessions include publication intents and completion receipts in encrypted
+state. Receipts follow `upload_session_ttl`, remain queryable by ID, and do not
+reserve an active upload slot. Recovery compares SHA-256 content before accepting
+a previously published destination. See [sharing and browsing](SHARING_AND_BROWSING.md)
+for verification pages, directory cursors and job summaries.
+
+Control Tower node-token rotation records its encrypted candidate before calling
+the node. Retrying after a lost response reconciles that same candidate. A node
+rejects a different preparation while one is pending; repeating the committed
+candidate is idempotent. This adds a Control Tower table and optional YAML state
+fields, without changing the node configuration contract or encryption keys.

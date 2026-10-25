@@ -413,7 +413,13 @@ export interface ArchivePlan {
 	max_bytes: number;
 }
 
+export interface JobSummary { counts: Record<string, number>; observed_at: string }
+export interface FilePage extends ListResponse<FileEntry> { next_after?: string; has_more?: boolean }
+export interface UploadVerification { offset: number; next_after: number; blocks: { offset: number; size: number; sha256: string }[] }
+
 export interface UploadSession {
+ state?: "open" | "publishing" | "completed";
+ completed_at?: string;
 	upload_id: string;
 	mount_id: string;
 	destination_path: string;

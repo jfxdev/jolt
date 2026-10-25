@@ -105,6 +105,29 @@ an ancestor would make the walk loop, and a link out of the mount would expose
 paths the caller has no authorization for. Size filters exclude directories,
 whose reported size is filesystem bookkeeping rather than content.
 
+## Directory pages and operational status
+
+`GET /api/v1/mounts/{mountID}/files` keeps the existing `items` and `path`
+fields and adds `has_more` and `next_after`. Pass the opaque `next_after` back
+as `after` until `has_more` is false. The default page is 200 entries, maximum
+1,000. Directories come first; case-folded names use exact names to break ties.
+The explorer, destination folder picker and public folder listing offer more
+pages instead of silently truncating the directory. Selection stays intact when
+loading another page. The cursor is not a filesystem snapshot: concurrent
+insertions before it are visible on refresh.
+
+`GET /api/v1/jobs/summary` returns `{counts, observed_at}` over all durable jobs,
+including active jobs older than the recent history page. The control proxy
+requires `list` on `nodes/{nodeID}/jobs`, just like the job list and SSE stream.
+Job-item pages are selected from the storage index before decoding payloads.
+The proxy preserves `Last-Event-ID` during SSE reconnection.
+
+The network view updates every 15 seconds while visible, with at most four
+requests in flight. It separates running operations, queued jobs and waiting
+states; sections use their existing permissions. Missing information is shown
+as unavailable/restricted, with prior observations timestamped. A failed
+workspace section leaves the other sections usable and has its own retry.
+
 ## Resumable uploads
 
 The Control Tower resolves each upload ID to its persisted mount and destination
@@ -119,7 +142,25 @@ flaky link, use the session API:
 1. `POST …/files/uploads` with `{path, size, overwrite, checksum?}` → session.
 2. `PATCH …/files/uploads/{uploadID}` with
    `Content-Range: bytes <start>-<end>/<total>` per chunk.
-3. `POST …/files/uploads/{uploadID}/complete` → verifies and publishes.
+3. `POST …/files/uploads/{uploadID}/complete` → verifies and publishes, returning a durable receipt.
+4. After reopening the explorer, select the corresponding local file for a
+   pending session. `GET …/files/uploads/{uploadID}/verification?after=0`
+   returns at most sixteen 8 MiB SHA-256 blocks per page, the durable `offset`,
+   and a byte `next_after` (zero when finished). The browser verifies every
+   received byte before sending the remainder, without loading the whole file.
+   A different prefix or size is refused without sending any new bytes.
+
+Sessions transition from `open` (legacy records without a state are also open)
+to `publishing` with a durable verified checksum, then `completed`. A restarted
+node reconciles the publication intent against the partial or destination
+content before acknowledging completion. `GET` reports the state; repeating
+`complete` returns the same receipt, including SHA-256 and `completed_at`, even
+if its previous response was lost. Completion retries never republish a later
+external replacement. Receipts expire using `upload_session_ttl` after completion,
+are excluded from active session lists and reservations, and their cleanup
+never removes the published file. Session writes, publication and expiry are
+serialized together. The queue stores each original node/mount/path so changing
+the current screen cannot retarget a retry or discard.
 
 Properties that make a resumed upload trustworthy:
 
@@ -267,3 +308,14 @@ scrape_configs:
     static_configs:
       - targets: ["jolt-control:8090"]
 ```
+
+## Verification commands
+
+Run `make test`, `make vet`, and `make acceptance` for backend and unit coverage.
+For browser scenarios, run `npx playwright install chromium` once inside
+`control/frontend`, then `npm run test:e2e`. The browser suite starts its own
+loopback development server and uses synthetic API fixtures in desktop and
+mobile viewports. `scripts/container-smoke.py` exercises the real container APIs,
+including upload verification, receipts after restart, summary permissions and
+credential cutover. It requires locally built `jolt-node:smoke` and
+`jolt-control:smoke` images and removes its disposable containers and volumes.

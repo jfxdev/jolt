@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -118,7 +119,7 @@ func main() {
 		cfg.TransferChunkTimeout, cfg.JobValidationTimeout)
 	jobService.ConfigureRemoteExecutor(transferService)
 	registry := metrics.NewRegistry()
-	registerNodeMetrics(registry, cfg)
+	registerNodeMetrics(registry, cfg, store)
 	go sweepUploadSessions(jobContext, store, fileService, logger, cfg.UploadSessionTTL)
 	recoveredJobs, err := jobService.Start(jobContext, cfg.MaxConcurrentJobs)
 	if err != nil {
@@ -218,7 +219,7 @@ func main() {
 // registerNodeMetrics declares every metric the node exposes. Declaring them
 // up front means a scrape before the first request still returns a complete,
 // zero-valued series set instead of an empty page.
-func registerNodeMetrics(registry *metrics.Registry, cfg config.Config) {
+func registerNodeMetrics(registry *metrics.Registry, cfg config.Config, uploads contracts.UploadStore) {
 	registry.Counter("jolt_http_requests_total",
 		"Control API requests by method, matched route and status.", "method", "route", "status")
 	registry.Histogram("jolt_http_request_duration_seconds",
@@ -230,7 +231,21 @@ func registerNodeMetrics(registry *metrics.Registry, cfg config.Config) {
 	registry.Counter("jolt_uploads_failed_total", "Resumable uploads that failed verification.")
 	registry.Counter("jolt_uploads_aborted_total", "Resumable uploads discarded by the client.")
 	registry.Counter("jolt_upload_bytes_total", "Bytes accepted from resumable uploads.")
-	registry.Gauge("jolt_uploads_active", "Resumable upload sessions currently open.")
+	registry.GaugeFunc("jolt_uploads_active", "Unexpired resumable upload sessions currently open.", func() float64 {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		sessions, err := uploads.ListUploadSessions(ctx, "")
+		if err != nil {
+			return math.NaN()
+		}
+		count := 0
+		for _, session := range sessions {
+			if session.ExpiresAt.After(time.Now().UTC()) {
+				count++
+			}
+		}
+		return float64(count)
+	})
 	registry.Counter("jolt_jobs_total", "Jobs by type and terminal state.", "type", "state")
 	registry.Counter("jolt_job_bytes_total", "Bytes moved by jobs.", "type")
 	registry.Gauge("jolt_jobs_active", "Jobs currently running.")
@@ -267,16 +282,26 @@ func sweepUploadSessions(ctx context.Context, store contracts.UploadStore, files
 			continue
 		}
 		for _, session := range expired {
-			if err := files.AbortUpload(ctx, session.MountID, session.Destination, session.ID); err != nil {
-				logger.Error("remove expired upload partial", "upload_id", session.ID, "error", err)
-				continue
-			}
-			if err := store.DeleteUploadSession(ctx, session.ID); err != nil {
-				logger.Error("delete expired upload session", "upload_id", session.ID, "error", err)
-				continue
-			}
-			logger.Info("expired upload session swept", "upload_id", session.ID,
-				"mount_id", session.MountID, "destination", session.Destination)
+			func() {
+				unlock, err := filesystem.LockUploadSession(ctx, session.ID)
+				if err != nil {
+					return
+				}
+				defer unlock()
+				current, err := store.GetUploadSession(ctx, session.ID)
+				if err != nil || !current.ExpiresAt.Before(time.Now().UTC()) {
+					return
+				}
+				if current.State != "completed" {
+					if err := files.AbortUpload(ctx, current.MountID, current.Destination, current.ID); err != nil {
+						logger.Error("remove expired upload partial", "upload_id", current.ID, "error", err)
+						return
+					}
+				}
+				if err := store.DeleteUploadSession(ctx, current.ID); err != nil {
+					logger.Error("delete expired upload session", "upload_id", current.ID, "error", err)
+				}
+			}()
 		}
 	}
 }

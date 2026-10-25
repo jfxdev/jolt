@@ -8,6 +8,7 @@ containers/network created by this invocation are removed.
 
 import argparse
 import base64
+import hashlib
 import tempfile
 from pathlib import Path
 import json
@@ -141,7 +142,15 @@ def exercise(node_base, control_base, node_name, node_token, password):
     upload_path = proxied + "/uploads/" + session["upload_id"]
     headers = {"Content-Type": "application/octet-stream", "Content-Range": "bytes 0-3/4"}
     expect(control("PATCH", upload_path, b"jolt", cookie=restricted, headers=headers), 200)
-    expect(control("POST", upload_path + "/complete", {}, cookie=restricted), 201)
+    verification = expect(control("GET", upload_path + "/verification", cookie=restricted), 200)
+    assert verification["blocks"][0]["sha256"] == hashlib.sha256(b"jolt").hexdigest()
+    receipt = expect(control("POST", upload_path + "/complete", {}, cookie=restricted), 201)
+    assert expect(control("POST", upload_path + "/complete", {}, cookie=restricted), 201) == receipt
+    assert expect(control("GET", upload_path, cookie=restricted), 200)["state"] == "completed"
+    assert expect(control("GET", proxied + "/uploads", cookie=restricted), 200)["sessions"] == []
+    summary = expect(control("GET", f"/api/v1/nodes/{node_id}/jobs/summary"), 200)
+    assert summary["counts"]["completed"] >= 4
+    expect(control("GET", f"/api/v1/nodes/{node_id}/jobs/summary", cookie=restricted), 403)
     content = control("GET", proxied + "/content?path=public/hello.txt", cookie=restricted)
     if content[0] != 200 or content[1] != b"jolt":
         raise AssertionError("Proxied resumable upload did not preserve its bytes")
@@ -159,6 +168,8 @@ def exercise(node_base, control_base, node_name, node_token, password):
     expect(node("PATCH", resume_path, b"lt", headers={"Content-Range": "bytes 2-3/4", "Content-Type": "application/octet-stream"}), 200)
     expect(node("POST", resume_path + "/complete", {}), 201)
     assert node("GET", direct + "/content?path=public/restart.txt")[1] == b"jolt"
+    completed = expect(node("GET", resume_path), 200)
+    assert completed["state"] == "completed" and completed["offset"] == 4
     assert docker("exec", node_name, "sh", "-c", "find /var/lib/jolt -name '*.db*'") == ""
     print("PASS: identity and upload checkpoints survive restart without database files")
 
@@ -201,6 +212,13 @@ def exercise(node_base, control_base, node_name, node_token, password):
     if request(control_base, "GET", "/")[0] != 200:
         raise AssertionError("Frontend assets are unavailable")
     print("PASS: ranged requests consume download budget; frontend assets load")
+
+    rotation = expect(control("POST", f"/api/v1/control-tower/nodes/{node_id}/rotate-token", {}), 200)
+    assert rotation["old_token_invalidated"] is True
+    expect(node("GET", "/api/v1/node"), 401)
+    expect(control("GET", proxied + "/metadata?path=public/hello.txt"), 200)
+    print("PASS: token rotation persists the new credential and rejects the old token")
+
 
 
 def main():

@@ -58,7 +58,7 @@ async function conflictedUpload() {
   await setImmediate();
   assert.deepEqual(created, [false]);
   return {
-    uploads, id: `${file.name}:${file.size}:${file.lastModified}`, abort, created, errors,
+    uploads, id: `node:media:${file.name}:${file.size}:${file.lastModified}`, abort, created, errors,
     finished: () => finished,
   };
 }

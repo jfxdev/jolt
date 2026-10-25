@@ -385,6 +385,9 @@ func (s *Server) publicShareList(w http.ResponseWriter, r *http.Request) {
 	}
 	query := url.Values{}
 	query.Set("path", relative)
+	if after := r.URL.Query().Get("after"); after != "" {
+		query.Set("after", after)
+	}
 	if limit := strings.TrimSpace(r.URL.Query().Get("limit")); limit != "" {
 		query.Set("limit", limit)
 	}

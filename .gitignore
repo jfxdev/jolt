@@ -23,3 +23,7 @@ node/testdata/node*/files/*
 node/testdata/node*/node.yaml
 node/testdata/node*/state/
 node/testdata/node*/keys/
+
+# Disposable browser-test artifacts
+control/frontend/test-results/
+control/frontend/playwright-report/

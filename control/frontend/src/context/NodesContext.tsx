@@ -5,6 +5,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  useRef,
   type ReactNode,
 } from "react";
 import { api } from "@/lib/api";
@@ -27,7 +28,7 @@ const CONTROL_PERMISSION_PATHS = [
 interface NodesContextValue {
   nodes: NodeInfo[];
   loading: boolean;
-  loadNodes: () => Promise<void>;
+  loadNodes: () => Promise<NodeInfo[]>;
 }
 
 const NodesContext = createContext<NodesContextValue | null>(null);
@@ -39,16 +40,29 @@ export function NodesProvider({ children }: { children: ReactNode }) {
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const loadNodes = useCallback(async () => {
+  const actorRef = useRef(user?.user_id); actorRef.current = user?.user_id;
+  const inFlight = useRef<{ actor?: string; key: symbol; promise: Promise<NodeInfo[]> } | null>(null);
+  const loadNodes = useCallback((): Promise<NodeInfo[]> => {
+    const actor = actorRef.current;
+    if (!actor) return Promise.resolve([]);
+    if (inFlight.current?.actor === actor) return inFlight.current.promise;
     setLoading(true);
-    try {
-      const result = await api.nodes();
-      setNodes(result.items || []);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setLoading(false);
-    }
+    const key = Symbol();
+    const promise = (async () => {
+      try {
+        const result = await api.nodes();
+        if (actorRef.current === actor) setNodes(result.items || []);
+        return result.items || [];
+      } catch (error) {
+        if (actorRef.current === actor) handleError(error);
+        throw error;
+      } finally {
+        if (actorRef.current === actor) setLoading(false);
+        if (inFlight.current?.key === key) inFlight.current = null;
+      }
+    })();
+    inFlight.current = { actor, key, promise };
+    return promise;
   }, [handleError]);
 
   // Bootstrap once the user is authenticated: load control-tower permissions
@@ -60,7 +74,7 @@ export function NodesProvider({ children }: { children: ReactNode }) {
     }
     (async () => {
       await loadPermissions(CONTROL_PERMISSION_PATHS);
-      await loadNodes();
+      await loadNodes().catch(() => undefined);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);

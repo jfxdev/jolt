@@ -33,7 +33,7 @@ type TransferSelection = {
 
 export default function FileBrowserPage() {
   const { mountId } = useParams();
-  const { nodeId, mounts, refreshJobs } = useWorkspace();
+  const { nodeId, node, mounts, refreshJobs } = useWorkspace();
   const { loadPermissions, hasPermission, hasPermissionNow } = usePermissions();
   const handleError = useApiError();
   const confirm = useConfirm();
@@ -46,6 +46,10 @@ export default function FileBrowserPage() {
   const [currentPath, setCurrentPath] = useState("");
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [nextAfter, setNextAfter] = useState("");
+  const listingSequence = useRef(0);
+  const targetRef = useRef("");
+  targetRef.current = `${nodeId}:${mountId}`;
   const [newDirectory, setNewDirectory] = useState("");
   const [selectedEntries, setSelectedEntries] = useState<FileEntry[]>([]);
   const [transfer, setTransfer] = useState<TransferSelection | null>(null);
@@ -77,10 +81,11 @@ export default function FileBrowserPage() {
     currentPathRef.current = currentPath;
   }, [currentPath]);
 
-  const { uploads, start: startUpload, cancel, retry, replace, dismiss } =
+  const { uploads, start: startUpload, cancel, retry, replace, dismiss, reselect, recoveryError, refreshSessions } =
     useResumableUploads({
       nodeId,
       mountId: mount?.mount_id,
+      destinationLabel: [node?.name, mount?.name].filter(Boolean).join(" / "),
       onFinished: async () => {
         await Promise.all([
           loadFilesRef.current(currentPathRef.current),
@@ -91,22 +96,30 @@ export default function FileBrowserPage() {
     });
 
   const loadFiles = useCallback(
-    async (path: string) => {
+    async (path: string, after = "") => {
       if (!mountId) return;
+      const sequence = ++listingSequence.current;
+      const target = `${nodeId}:${mountId}`;
       setLoading(true);
       // Navigating away invalidates a search in flight for the old folder.
       searchSequence.current += 1;
       setSearchResult(null);
       setSearching(false);
       try {
-        const result = await api.files(nodeId, mountId, path);
-        setFiles(result.items || []);
-        setSelectedEntries([]);
+        const result = await api.files(nodeId, mountId, path, after);
+        if (sequence !== listingSequence.current || targetRef.current !== target) return;
+        setFiles(previous => {
+          if (!after) return result.items || [];
+          const seen = new Set(previous.map(item => item.path));
+          return [...previous, ...(result.items || []).filter(item => !seen.has(item.path))];
+        });
+        setNextAfter(result.next_after || "");
+        if (!after) setSelectedEntries([]);
         setCurrentPath(path);
       } catch (error) {
-        handleError(error);
+        if (sequence === listingSequence.current && targetRef.current === target) handleError(error);
       } finally {
-        setLoading(false);
+        if (sequence === listingSequence.current && targetRef.current === target) setLoading(false);
       }
     },
     [nodeId, mountId, handleError],
@@ -118,6 +131,10 @@ export default function FileBrowserPage() {
   }, [loadFiles]);
 
   useEffect(() => {
+    listingSequence.current++;
+    searchSequence.current++;
+    setFiles([]); setNextAfter(""); setSelectedEntries([]); setCurrentPath("");
+    setPreview(null); setEditor(null); setSharing(null); setTransfer(null); setSearchResult(null);
     if (!mount) return;
     let active = true;
     (async () => {
@@ -378,12 +395,14 @@ export default function FileBrowserPage() {
         }}
       />
 
+      {recoveryError && <p role="status" className="text-sm text-destructive">{recoveryError} <Button variant="link" onClick={() => void refreshSessions()}>Tentar novamente</Button></p>}
       <UploadQueue
         items={uploads}
         onCancel={cancel}
         onRetry={retry}
         onReplace={replace}
         onDismiss={dismiss}
+        onReselect={reselect}
       />
 
       {selectedEntries.length > 0 && (
@@ -428,6 +447,7 @@ export default function FileBrowserPage() {
         onSelectionChange={setSelectedEntries}
         onSelectionLimitReached={() => toast.error(`O limite de ${transferLimit} raízes selecionadas foi atingido. Remova uma seleção para adicionar outra.`)}
       />
+      {!searchResult && nextAfter && <Button variant="outline" disabled={loading} onClick={() => void loadFiles(currentPath, nextAfter)}>{loading ? "Carregando…" : "Carregar mais"}</Button>}
       <MediaPreviewDialog
         entry={preview}
         url={

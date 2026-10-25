@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"errors"
+	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/entities"
 	"time"
 )
@@ -17,6 +18,12 @@ func (s *Store) StageOperationalToken(ctx context.Context, hash, correlation str
 		if e != nil && !errors.Is(e, ErrNotFound) {
 			return e
 		}
+		if v.StagedHash != "" && v.StagedHash != hash {
+			return contracts.ErrInUse
+		}
+		if v.StagedHash == hash {
+			return nil
+		}
 		v.StagedHash, v.UpdatedAt, v.CorrelationID = hash, now, correlation
 		return tx.put("tokens", "operational", "", "", v)
 	})
@@ -26,6 +33,9 @@ func (s *Store) CommitOperationalToken(ctx context.Context, hash, correlation st
 		v, e := get[entities.OperationalTokenState](s, "tokens", "operational")
 		if e != nil {
 			return e
+		}
+		if hash != "" && v.ActiveHash == hash && v.StagedHash == "" {
+			return nil
 		}
 		if hash == "" || v.StagedHash != hash {
 			return ErrNotFound
