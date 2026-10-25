@@ -15,8 +15,9 @@ digests para a versão pública. Nenhuma implantação é feita.
 As versões usam a data de São Paulo: `YYYY-MM-DD`, depois `.1`, `.2` e assim
 por diante no mesmo dia. Tags são anotadas, nunca sobrescritas, e registram o
 commit e os digests publicados. Uma nova execução do mesmo commit reutiliza a
-tag já associada a ele; uma execução parcialmente concluída pode continuar sem
-gerar outra versão.
+tag já associada a ele, mesmo se cruzar a meia-noite; uma publicação já
+concluída não refaz builds nem altera artefatos. Uma execução parcialmente
+concluída pode continuar sem gerar outra versão.
 
 Cada publicação entrega:
 
