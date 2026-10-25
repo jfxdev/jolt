@@ -27,11 +27,11 @@ Cada publicação entrega:
 As imagens são públicas e atendem `linux/amd64`. Para instalar uma versão,
 prefira o digest indicado na release: ele identifica exatamente a imagem testada.
 
-Antes da primeira publicação completa, após os pacotes candidatos terem sido
-criados, altere uma vez a visibilidade de `jolt-node` e `jolt-control` para
-**Public** em GitHub Packages. O GitHub não oferece uma API para essa alteração.
-Se a execução parar na verificação anônima, faça esse ajuste e reexecute-a; a
-tag e os digests serão reutilizados.
+Os pacotes ligados a este repositório público herdam sua visibilidade e são
+verificados por pull anônimo durante a publicação. Se essa verificação falhar,
+altere uma vez a visibilidade de `jolt-node` e `jolt-control` para **Public**
+em GitHub Packages e reexecute a publicação; o GitHub não oferece API para essa
+alteração, e a tag e os digests serão reutilizados.
 
 ## Operação
 
