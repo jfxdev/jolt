@@ -76,6 +76,7 @@ Two products, one boundary:
 ### Documentation
 
 - [`docs/RELEASE_0.1.0.md`](docs/RELEASE_0.1.0.md) — current release assessment, blockers, validation evidence, and delivery plan for 0.1.0.
+- [`docs/CICD.md`](docs/CICD.md) — PR validation, dated releases, and published container images.
 - [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) — product requirements.
 - [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) — implementation status.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — findings, gaps, and prioritized roadmap.
