@@ -173,4 +173,3 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("write metrics", "error", err)
 	}
 }
-

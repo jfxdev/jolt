@@ -4,16 +4,46 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   GO_VERSION: "1.26.10"
   NODE_VERSION: "24"
 
 jobs:
+  workflow-lint:
+    name: Workflow and formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Verify Go formatting
+        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
+
+      - name: Install actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+      - name: Validate GitHub Actions workflows
+        # actionlint does not yet parse GitHub's documented queue setting.
+        run: actionlint -ignore 'unexpected key "queue"' .github/workflows/*.yml
+
+      - name: Test dated version allocation
+        run: python3 -m unittest scripts/release_version_test.py
+
   go:
     name: Go (${{ matrix.module }})
     runs-on: ubuntu-latest
@@ -25,11 +55,11 @@ jobs:
       run:
         working-directory: ${{ matrix.module }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: ${{ matrix.module }}/go.sum
@@ -65,11 +95,11 @@ jobs:
       run:
         working-directory: control/frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -99,11 +129,11 @@ jobs:
     name: Acceptance (quick)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: node/go.sum
@@ -125,11 +155,11 @@ jobs:
       matrix:
         module: [node, control]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: ${{ matrix.module }}/go.sum
@@ -145,14 +175,14 @@ jobs:
     name: Docker build and integration smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build node image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: node
           load: true
@@ -161,7 +191,7 @@ jobs:
           cache-to: type=gha,scope=node,mode=max
 
       - name: Build Control Tower image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: control
           load: true
@@ -171,3 +201,34 @@ jobs:
 
       - name: Exercise actual container APIs
         run: python3 scripts/container-smoke.py
+
+  pr-gate:
+    name: PR Gate
+    if: ${{ always() }}
+    needs: [workflow-lint, go, frontend, acceptance, vulncheck, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every validator to pass
+        env:
+          WORKFLOW_LINT: ${{ needs.workflow-lint.result }}
+          GO: ${{ needs.go.result }}
+          FRONTEND: ${{ needs.frontend.result }}
+          ACCEPTANCE: ${{ needs.acceptance.result }}
+          VULNCHECK: ${{ needs.vulncheck.result }}
+          DOCKER: ${{ needs.docker.result }}
+        run: |
+          test "$WORKFLOW_LINT" = success
+          test "$GO" = success
+          test "$FRONTEND" = success
+          test "$ACCEPTANCE" = success
+          test "$VULNCHECK" = success
+          test "$DOCKER" = success
+
+  release:
+    name: Publish release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: pr-gate
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/release.yml

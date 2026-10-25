@@ -1,0 +1,192 @@
+name: Publish dated release
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  candidate-node:
+    name: Build node candidate
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Authenticate to GHCR
+        run: echo "${{ github.token }}" | docker login ghcr.io --username "${{ github.repository_owner }}" --password-stdin
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: node
+          platforms: linux/amd64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ghcr.io/${{ github.repository_owner }}/jolt-node:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+          cache-from: type=gha,scope=release-node
+          cache-to: type=gha,scope=release-node,mode=max
+
+  candidate-control:
+    name: Build control candidate
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Authenticate to GHCR
+        run: echo "${{ github.token }}" | docker login ghcr.io --username "${{ github.repository_owner }}" --password-stdin
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: control
+          platforms: linux/amd64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ghcr.io/${{ github.repository_owner }}/jolt-control:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+          cache-from: type=gha,scope=release-control
+          cache-to: type=gha,scope=release-control,mode=max
+
+  smoke:
+    name: Smoke published candidates
+    needs: [candidate-node, candidate-control]
+    permissions:
+      contents: read
+      packages: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Authenticate to GHCR
+        run: echo "${{ github.token }}" | docker login ghcr.io --username "${{ github.repository_owner }}" --password-stdin
+      - name: Pull exact candidate digests
+        env:
+          NODE_DIGEST: ${{ needs.candidate-node.outputs.digest }}
+          CONTROL_DIGEST: ${{ needs.candidate-control.outputs.digest }}
+        run: |
+          docker pull "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-node@$NODE_DIGEST"
+          docker pull "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-control@$CONTROL_DIGEST"
+      - name: Exercise actual container APIs
+        env:
+          NODE_DIGEST: ${{ needs.candidate-node.outputs.digest }}
+          CONTROL_DIGEST: ${{ needs.candidate-control.outputs.digest }}
+        run: |
+          python3 scripts/container-smoke.py \
+            --node-image "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-node@$NODE_DIGEST" \
+            --control-image "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-control@$CONTROL_DIGEST"
+
+  publish:
+    name: Create tag and GitHub Release
+    needs: [candidate-node, candidate-control, smoke]
+    permissions:
+      contents: write
+      packages: write
+    runs-on: ubuntu-latest
+    concurrency:
+      group: jolt-dated-release
+      queue: max
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Resolve or reserve a dated annotated tag
+        id: version
+        env:
+          NODE_DIGEST: ${{ needs.candidate-node.outputs.digest }}
+          CONTROL_DIGEST: ${{ needs.candidate-control.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          export TZ=America/Sao_Paulo
+          release_day="$(date +%F)"
+          git fetch --force --tags origin
+          for attempt in $(seq 1 20); do
+            version="$(python3 scripts/release_version.py allocate --day "$release_day" --sha "$GITHUB_SHA")"
+            existing_sha="$(git rev-list -n 1 "$version" 2>/dev/null || true)"
+            if [ "$existing_sha" = "$GITHUB_SHA" ]; then
+              tag_message="$(git cat-file -p "$version")"
+              test "$(printf '%s\n' "$tag_message" | sed -n 's/^Node digest: //p')" = "$NODE_DIGEST"
+              test "$(printf '%s\n' "$tag_message" | sed -n 's/^Control digest: //p')" = "$CONTROL_DIGEST"
+              echo "version=$version" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            message="$(printf 'Jolt release %s\n\nCommit: %s\nNode digest: %s\nControl digest: %s' "$version" "$GITHUB_SHA" "$NODE_DIGEST" "$CONTROL_DIGEST")"
+            tag_object="$(gh api --method POST "repos/$GITHUB_REPOSITORY/git/tags" -f tag="$version" -f message="$message" -f object="$GITHUB_SHA" -f type=commit --jq .sha)"
+            if gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$version" -f sha="$tag_object" >/dev/null; then
+              echo "version=$version" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            git fetch --force --tags origin
+          done
+          echo "could not reserve a release tag after 20 attempts" >&2
+          exit 1
+      - name: Authenticate to GHCR
+        run: echo "${{ github.token }}" | docker login ghcr.io --username "${{ github.repository_owner }}" --password-stdin
+      - name: Promote the tested digests
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          NODE_DIGEST: ${{ needs.candidate-node.outputs.digest }}
+          CONTROL_DIGEST: ${{ needs.candidate-control.outputs.digest }}
+        run: |
+          node_image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-node"
+          control_image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-control"
+          docker buildx imagetools create --tag "$node_image:$VERSION" "$node_image@$NODE_DIGEST"
+          docker buildx imagetools create --tag "$control_image:$VERSION" "$control_image@$CONTROL_DIGEST"
+          test "$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$node_image:$VERSION")" = "$NODE_DIGEST"
+          test "$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$control_image:$VERSION")" = "$CONTROL_DIGEST"
+      - name: Make packages public and verify anonymous pulls
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          gh api --method PATCH "users/$owner/packages/container/jolt-node" -f visibility=public
+          gh api --method PATCH "users/$owner/packages/container/jolt-control" -f visibility=public
+          docker logout ghcr.io || true
+          docker pull "ghcr.io/$owner/jolt-node:$VERSION"
+          docker pull "ghcr.io/$owner/jolt-control:$VERSION"
+      - name: Create or update the draft release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          NODE_DIGEST: ${{ needs.candidate-node.outputs.digest }}
+          CONTROL_DIGEST: ${{ needs.candidate-control.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$VERSION" -f target_commitish="$GITHUB_SHA" --jq .body > "$notes"
+          printf '\n\n## Artefatos\n\n- Commit: `%s`\n- Node: `ghcr.io/%s/jolt-node@%s`\n- Control: `ghcr.io/%s/jolt-control@%s`\n- Execução: %s/%s/actions/runs/%s\n' "$GITHUB_SHA" "${GITHUB_REPOSITORY_OWNER,,}" "$NODE_DIGEST" "${GITHUB_REPOSITORY_OWNER,,}" "$CONTROL_DIGEST" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> "$notes"
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release edit "$VERSION" --title "Jolt $VERSION" --notes-file "$notes"
+          else
+            gh release create "$VERSION" --verify-tag --draft --title "Jolt $VERSION" --notes-file "$notes"
+          fi
+      - name: Publish the verified release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$VERSION" --draft=false
