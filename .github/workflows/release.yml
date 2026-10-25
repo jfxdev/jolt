@@ -125,7 +125,9 @@ jobs:
           export TZ=America/Sao_Paulo
           release_day="$(date +%F)"
           git fetch --force --tags origin
-          for attempt in $(seq 1 20); do
+          retries=20
+          while [ "$retries" -gt 0 ]; do
+            retries=$((retries - 1))
             version="$(python3 scripts/release_version.py allocate --day "$release_day" --sha "$GITHUB_SHA")"
             existing_sha="$(git rev-list -n 1 "$version" 2>/dev/null || true)"
             if [ "$existing_sha" = "$GITHUB_SHA" ]; then
@@ -157,8 +159,8 @@ jobs:
           control_image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-control"
           docker buildx imagetools create --tag "$node_image:$VERSION" "$node_image@$NODE_DIGEST"
           docker buildx imagetools create --tag "$control_image:$VERSION" "$control_image@$CONTROL_DIGEST"
-          test "$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$node_image:$VERSION")" = "$NODE_DIGEST"
-          test "$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$control_image:$VERSION")" = "$CONTROL_DIGEST"
+          test "$(docker buildx imagetools inspect --format "{{.Manifest.Digest}}" "$node_image:$VERSION")" = "$NODE_DIGEST"
+          test "$(docker buildx imagetools inspect --format "{{.Manifest.Digest}}" "$control_image:$VERSION")" = "$CONTROL_DIGEST"
       - name: Make packages public and verify anonymous pulls
         env:
           VERSION: ${{ steps.version.outputs.version }}
