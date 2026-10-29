@@ -15,6 +15,7 @@ async function fixture(
     completeCalls: 0,
     createTargets: [] as string[],
     appendBodies: [] as string[],
+    usagePaths: [] as string[],
     trustFails: !!options.failTrust,
   };
   const now = "2026-10-24T12:00:00Z";
@@ -169,6 +170,23 @@ async function fixture(
       if (request.method() === "DELETE") return route.fulfill({ status: 204 });
       return json(session());
     }
+    if (path.endsWith("/files/disk-usage")) {
+      const current = url.searchParams.get("path") || "";
+      state.usagePaths.push(current);
+      return json({
+        path: current,
+        total_bytes: current === "media" ? 768 * 1024 * 1024 : 1024 * 1024 * 1024,
+        entries: current === "media"
+          ? [{ name: "movie.mkv", path: "media/movie.mkv", type: "file", size: 800_000_000, disk_usage: 768 * 1024 * 1024, modified_at: now }]
+          : [
+              { name: "media", path: "media", type: "directory", size: 4096, disk_usage: 768 * 1024 * 1024, modified_at: now },
+              { name: "notes.txt", path: "notes.txt", type: "file", size: 250_000_000, disk_usage: 256 * 1024 * 1024, modified_at: now },
+            ],
+        scanned: current === "media" ? 1 : 3,
+        read_errors: 0,
+        truncated: false,
+      });
+    }
     if (path.endsWith("/files")) {
       const after = Number(url.searchParams.get("after") || 0),
         limit = 200,
@@ -263,6 +281,22 @@ test("large directory pages preserve selection and another section can fail inde
   await expect(
     page.getByText("Confiança: Não foi possível atualizar esta seção."),
   ).toHaveCount(0);
+});
+
+test("disk usage switch sorts allocated sizes and navigates into large folders", async ({
+  page,
+}) => {
+  const state = await fixture(page);
+  await page.goto("/nodes/a/mounts/media");
+  await page.getByRole("switch", { name: "Exibir uso de disco" }).click();
+  await expect(page.getByText("1.0 GB em disco", { exact: true })).toBeVisible();
+  await expect(page.getByRole("row").nth(1)).toContainText("media");
+  await expect(page.getByRole("row").nth(1)).toContainText("75%");
+  await expect(page.getByRole("row").nth(2)).toContainText("notes.txt");
+  await page.getByRole("button", { name: "media", exact: true }).click();
+  await expect(page.getByText("768 MB em disco", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "movie.mkv", exact: true })).toBeVisible();
+  expect(state.usagePaths).toEqual(["", "media"]);
 });
 
 test("reload restores pending upload and rejects an equal-size different prefix", async ({

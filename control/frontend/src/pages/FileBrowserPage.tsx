@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Copy, FolderArchive, MoveRight } from "lucide-react";
+import { Copy, FolderArchive, HardDrive, MoveRight } from "lucide-react";
 import { api } from "@/lib/api";
-import type { FileEntry, SearchResponse } from "@/lib/types";
+import type { DiskUsageResponse, FileEntry, SearchResponse } from "@/lib/types";
 import { useWorkspace } from "@/context/WorkspaceContext";
 import { usePermissions } from "@/context/PermissionsContext";
 import { useApiError } from "@/hooks/useApiError";
@@ -18,6 +18,8 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
 import { FileTable } from "@/components/files/FileTable";
+import { DiskUsageTable } from "@/components/files/DiskUsageTable";
+import { Switch } from "@/components/ui/switch";
 import { CrossNodeTransferDialog } from "@/components/files/CrossNodeTransferDialog";
 import { MediaPreviewDialog } from "@/components/files/MediaPreviewDialog";
 import { TextEditorDialog } from "@/components/files/TextEditorDialog";
@@ -45,6 +47,8 @@ export default function FileBrowserPage() {
 
   const [currentPath, setCurrentPath] = useState("");
   const [files, setFiles] = useState<FileEntry[]>([]);
+  const [diskUsageMode, setDiskUsageMode] = useState(false);
+  const [diskUsage, setDiskUsage] = useState<DiskUsageResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [nextAfter, setNextAfter] = useState("");
   const listingSequence = useRef(0);
@@ -88,7 +92,7 @@ export default function FileBrowserPage() {
       destinationLabel: [node?.name, mount?.name].filter(Boolean).join(" / "),
       onFinished: async () => {
         await Promise.all([
-          loadFilesRef.current(currentPathRef.current),
+          loadDirectoryRef.current(currentPathRef.current),
           refreshJobs(),
         ]);
       },
@@ -124,16 +128,51 @@ export default function FileBrowserPage() {
     },
     [nodeId, mountId, handleError],
   );
-  // Upload completion refreshes the listing; a ref keeps that callback stable.
-  const loadFilesRef = useRef(loadFiles);
+
+  const loadDiskUsage = useCallback(
+    async (path: string) => {
+      if (!mountId) return;
+      const sequence = ++listingSequence.current;
+      const target = `${nodeId}:${mountId}`;
+      setLoading(true);
+      searchSequence.current += 1;
+      setSearchResult(null);
+      setSearching(false);
+      try {
+        const result = await api.diskUsage(nodeId, mountId, path);
+        if (sequence !== listingSequence.current || targetRef.current !== target) return;
+        setDiskUsage(result);
+        setNextAfter("");
+        setSelectedEntries([]);
+        setCurrentPath(path);
+      } catch (error) {
+        if (sequence === listingSequence.current && targetRef.current === target) handleError(error);
+      } finally {
+        if (sequence === listingSequence.current && targetRef.current === target) setLoading(false);
+      }
+    },
+    [nodeId, mountId, handleError],
+  );
+
+  const loadDirectory = useCallback(
+    async (path: string, after = "") => {
+      if (diskUsageMode && !after) await loadDiskUsage(path);
+      else await loadFiles(path, after);
+    },
+    [diskUsageMode, loadDiskUsage, loadFiles],
+  );
+
+  // Upload completion refreshes whichever view is active; a ref keeps that callback stable.
+  const loadDirectoryRef = useRef(loadDirectory);
   useEffect(() => {
-    loadFilesRef.current = loadFiles;
-  }, [loadFiles]);
+    loadDirectoryRef.current = loadDirectory;
+  }, [loadDirectory]);
 
   useEffect(() => {
     listingSequence.current++;
     searchSequence.current++;
     setFiles([]); setNextAfter(""); setSelectedEntries([]); setCurrentPath("");
+    setDiskUsageMode(false); setDiskUsage(null);
     setPreview(null); setEditor(null); setSharing(null); setTransfer(null); setSearchResult(null);
     if (!mount) return;
     let active = true;
@@ -171,7 +210,7 @@ export default function FileBrowserPage() {
 
   async function downloadEntry(entry: FileEntry) {
     if (entry.type === "directory") {
-      await loadFiles(entry.path);
+      await loadDirectory(entry.path);
     } else {
       if (!hasPermission(filePolicyPath, "read")) {
         toast.error("A policy atual não permite baixar arquivos desta pasta.");
@@ -179,6 +218,13 @@ export default function FileBrowserPage() {
       }
       window.location.href = api.downloadUrl(nodeId, mount!.mount_id, entry.path);
     }
+  }
+
+  async function changeDiskUsageMode(checked: boolean) {
+    setDiskUsageMode(checked);
+    setSelectedEntries([]);
+    if (checked) await loadDiskUsage(currentPath);
+    else await loadFiles(currentPath);
   }
 
   /** downloadArchive confirms the size first: a mistaken click on a multi-
@@ -340,7 +386,7 @@ export default function FileBrowserPage() {
                 {index > 0 && <BreadcrumbSeparator />}
                 <button
                   className="transition-colors hover:text-foreground"
-                  onClick={() => loadFiles(crumb.path)}
+                  onClick={() => void loadDirectory(crumb.path)}
                 >
                   {crumb.label}
                 </button>
@@ -350,7 +396,7 @@ export default function FileBrowserPage() {
         </Breadcrumb>
 
         <div className="flex items-center gap-2">
-          {canRead && files.length > 0 && (
+          {!diskUsageMode && canRead && files.length > 0 && (
             <Button
               variant="secondary"
               size="sm"
@@ -359,7 +405,7 @@ export default function FileBrowserPage() {
               <FolderArchive /> Baixar pasta (.zip)
             </Button>
           )}
-          {canCreate && (
+          {!diskUsageMode && canCreate && (
             <>
               <form className="flex gap-2" onSubmit={createDirectory}>
                 <Input
@@ -381,19 +427,34 @@ export default function FileBrowserPage() {
         </div>
       </div>
 
-      <FileSearchBar
-        // Remounting on folder change clears the query text, so the box never
-        // shows a stale term with no results beneath it.
-        key={currentPath}
-        scopeLabel={breadcrumbs[breadcrumbs.length - 1]?.label || "Mount"}
-        searching={searching}
-        result={searchResult}
-        onSearch={runSearch}
-        onClear={() => {
-          searchSequence.current += 1;
-          setSearchResult(null);
-        }}
-      />
+      <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+        <label className="flex items-center gap-2 text-sm font-medium">
+          <HardDrive className="size-4 text-muted-foreground" />
+          Uso de disco
+          <Switch
+            aria-label="Exibir uso de disco"
+            checked={diskUsageMode}
+            onCheckedChange={(checked) => void changeDiskUsageMode(checked)}
+          />
+        </label>
+        <span className="text-xs text-muted-foreground">Maiores itens primeiro</span>
+      </div>
+
+      {!diskUsageMode && (
+        <FileSearchBar
+          // Remounting on folder change clears the query text, so the box never
+          // shows a stale term with no results beneath it.
+          key={currentPath}
+          scopeLabel={breadcrumbs[breadcrumbs.length - 1]?.label || "Mount"}
+          searching={searching}
+          result={searchResult}
+          onSearch={runSearch}
+          onClear={() => {
+            searchSequence.current += 1;
+            setSearchResult(null);
+          }}
+        />
+      )}
 
       {recoveryError && <p role="status" className="text-sm text-destructive">{recoveryError} <Button variant="link" onClick={() => void refreshSessions()}>Tentar novamente</Button></p>}
       <UploadQueue
@@ -429,25 +490,29 @@ export default function FileBrowserPage() {
         </div>
       )}
 
-      <FileTable
-        files={visibleFiles}
-        loading={loading}
-        writable={writable}
-        filePolicyPath={filePolicyPath}
-        onDownload={downloadEntry}
-        onPreview={previewEntry}
-        onEdit={editEntry}
-        onShare={canRead ? (entry) => setSharing(entry) : undefined}
-        onArchive={canRead ? (entry) => downloadArchive([entry]) : undefined}
-        onTransferCopy={(entries) => setTransfer({ entries, operation: "copy" })}
-        onTransferMove={(entries) => setTransfer({ entries, operation: "move" })}
-        onRemove={removeEntry}
-        selectedPaths={selectedEntries.map((entry) => entry.path)}
-        selectionLimit={transferLimit}
-        onSelectionChange={setSelectedEntries}
-        onSelectionLimitReached={() => toast.error(`O limite de ${transferLimit} raízes selecionadas foi atingido. Remova uma seleção para adicionar outra.`)}
-      />
-      {!searchResult && nextAfter && <Button variant="outline" disabled={loading} onClick={() => void loadFiles(currentPath, nextAfter)}>{loading ? "Carregando…" : "Carregar mais"}</Button>}
+      {diskUsageMode ? (
+        <DiskUsageTable result={diskUsage} loading={loading} onOpen={downloadEntry} />
+      ) : (
+        <FileTable
+          files={visibleFiles}
+          loading={loading}
+          writable={writable}
+          filePolicyPath={filePolicyPath}
+          onDownload={downloadEntry}
+          onPreview={previewEntry}
+          onEdit={editEntry}
+          onShare={canRead ? (entry) => setSharing(entry) : undefined}
+          onArchive={canRead ? (entry) => downloadArchive([entry]) : undefined}
+          onTransferCopy={(entries) => setTransfer({ entries, operation: "copy" })}
+          onTransferMove={(entries) => setTransfer({ entries, operation: "move" })}
+          onRemove={removeEntry}
+          selectedPaths={selectedEntries.map((entry) => entry.path)}
+          selectionLimit={transferLimit}
+          onSelectionChange={setSelectedEntries}
+          onSelectionLimitReached={() => toast.error(`O limite de ${transferLimit} raízes selecionadas foi atingido. Remova uma seleção para adicionar outra.`)}
+        />
+      )}
+      {!diskUsageMode && !searchResult && nextAfter && <Button variant="outline" disabled={loading} onClick={() => void loadFiles(currentPath, nextAfter)}>{loading ? "Carregando…" : "Carregar mais"}</Button>}
       <MediaPreviewDialog
         entry={preview}
         url={

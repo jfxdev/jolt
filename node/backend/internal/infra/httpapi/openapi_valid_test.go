@@ -24,6 +24,7 @@ func TestOpenAPIDocumentsEveryFileRoute(t *testing.T) {
 		"/api/v1/mounts/{mountID}/files/archive",
 		"/api/v1/mounts/{mountID}/files/archive/plan",
 		"/api/v1/mounts/{mountID}/files/search",
+		"/api/v1/mounts/{mountID}/files/disk-usage",
 		"/api/v1/mounts/{mountID}/files/uploads",
 		"/api/v1/mounts/{mountID}/files/uploads/{uploadID}",
 		"/api/v1/mounts/{mountID}/files/uploads/{uploadID}/complete",
