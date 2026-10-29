@@ -34,6 +34,7 @@ func TestRecursiveMutationsRespectDescendantDenies(t *testing.T) {
 			}{
 				{"direct denied read", "GET", base + "/content?path=docs/private/secret.txt", nil, 403},
 				{"recursive archive protected", "GET", base + "/archive?path=docs", nil, 403},
+				{"recursive disk usage protected", "GET", base + "/disk-usage?path=docs", nil, 403},
 				{"recursive copy is denied", "POST", base + "/copy", map[string]any{"source_path": "docs", "destination_path": "copy"}, 403},
 				{"recursive move is denied", "POST", base + "/move", map[string]any{"source_path": "docs", "destination_path": "moved"}, 403},
 				{"recursive delete is denied", "DELETE", base + "?path=docs&recursive=true", nil, 403},

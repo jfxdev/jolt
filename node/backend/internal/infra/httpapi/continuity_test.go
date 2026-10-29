@@ -261,3 +261,38 @@ func TestJobItemPagePreservesMissingJobStatus(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body)
 	}
 }
+
+func TestDiskUsageEndpointReturnsAllocatedUsageInDescendingOrder(t *testing.T) {
+	storage, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	root := t.TempDir()
+	files := filesystem.New(storage)
+	mount, err := files.SaveMount(context.Background(), entities.Mount{Name: "files", LocalPath: root, Mode: "read_only", Enabled: true, Published: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "large"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "large", "payload.bin"), make([]byte, 64*1024), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "small.txt"), []byte("small"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	response := uploadCall(continuityHandler(storage), "GET", "/api/v1/mounts/"+mount.ID+"/files/disk-usage?path=.", "")
+	var result filesystem.DiskUsageResult
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &result) != nil {
+		t.Fatalf("disk usage: %d %s", response.Code, response.Body)
+	}
+	if result.Path != "" || len(result.Entries) != 2 || result.Entries[0].Name != "large" {
+		t.Fatalf("unexpected disk usage result: %+v", result)
+	}
+	if result.Entries[0].DiskUsage <= result.Entries[1].DiskUsage || result.TotalBytes < result.Entries[0].DiskUsage+result.Entries[1].DiskUsage {
+		t.Fatalf("invalid allocated usage: %+v", result)
+	}
+}

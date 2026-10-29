@@ -51,12 +51,12 @@ with a wildcard or a parent `**` rule instead.
 
 ### Whole-subtree reads and deny rules
 
-A ZIP of a folder and a recursive search both read an entire subtree from a
-single named root. Authorizing only that root would let the node read
-descendants the subject is denied, and the node cannot filter them itself
+A ZIP of a folder, a recursive search and a disk-usage scan all read an entire
+subtree from a single named root. Authorizing only that root would let the node
+read descendants the subject is denied, and the node cannot filter them itself
 because it does not know the subject's policies.
 
-Both operations are therefore refused with `deny_rule_within_scope` while any
+These operations are therefore refused with `deny_rule_within_scope` while any
 `deny` rule applies at or below the requested path, and the subject narrows the
 request to an allowed subfolder. Each `name=` selection is authorized on its
 own rather than riding on the base path's decision. The same check guards a
@@ -104,6 +104,23 @@ than implying the list is complete. Symlinks are never followed: a link back to
 an ancestor would make the walk loop, and a link out of the mount would expose
 paths the caller has no authorization for. Size filters exclude directories,
 whose reported size is filesystem bookkeeping rather than content.
+
+## Disk usage
+
+The explorer's **Uso de disco** switch calls
+`GET /api/v1/mounts/{mountID}/files/disk-usage?path=…`. Direct children are
+returned largest first, with `disk_usage` measured from allocated 512-byte
+blocks rather than apparent file size. Directory values include all descendants,
+and `total_bytes` also includes the scanned directory itself. Opening a folder
+keeps the disk-usage view active, so the largest consumers can be investigated
+like in `ncdu`.
+
+Hard-linked regular files are counted once per scan. Symlinks contribute only
+their own allocation and are never followed; in-flight Jolt partial files are
+excluded. Unreadable entries increment `read_errors`. `DISK_USAGE_MAX_ENTRIES`
+(default 1,000,000) and `DISK_USAGE_TIMEOUT` (default 2m) bound each scan, and a
+partial answer sets `truncated` with reason `entries` or `timeout`. The UI warns
+about either kind of incomplete result instead of presenting it as a full total.
 
 ## Directory pages and operational status
 

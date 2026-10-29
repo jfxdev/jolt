@@ -96,6 +96,7 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/archive", s.archive)
 	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/archive/plan", s.archivePlan)
 	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/search", s.search)
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/disk-usage", s.diskUsage)
 	mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/directories", s.mkdir)
 	mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/copy/plan", s.planCopy)
 	mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/copy", s.copy)
@@ -1901,6 +1902,19 @@ paths:
       responses:
         "200": {description: Matching entries plus scanned count and truncation state}
         "400": {description: No query or filter was supplied}
+  /api/v1/mounts/{mountID}/files/disk-usage:
+    get:
+      summary: Measures allocated disk usage recursively, largest entries first
+      description: >
+        Uses allocated blocks rather than apparent file size. Directory totals
+        include their descendants, hard links are counted once and symlinks are
+        never followed. Bounded by DISK_USAGE_MAX_ENTRIES and DISK_USAGE_TIMEOUT;
+        partial scans set truncated or read_errors.
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: query, name: path, schema: {type: string}}
+      responses:
+        "200": {description: Total allocated bytes, direct children and scan completeness}
   /api/v1/mounts/{mountID}/files/uploads:
     get:
       summary: Lists unfinished resumable uploads for a mount

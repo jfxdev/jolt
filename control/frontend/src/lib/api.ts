@@ -362,6 +362,10 @@ export const api = {
     request<import("./types").FilePage>(
       `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/files?path=${encodeURIComponent(path)}&after=${encodeURIComponent(after)}`,
     ),
+  diskUsage: (nodeId: string, mountId: string, path: string) =>
+    request<import("./types").DiskUsageResponse>(
+      `${mountFilesPath(nodeId, mountId)}/disk-usage?path=${encodeURIComponent(path)}`,
+    ),
   transferTargets: (
     sourceNodeId: string,
     source: { mount_id: string; paths: string[] },

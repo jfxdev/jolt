@@ -115,6 +115,7 @@ export interface FileEntry {
   path: string;
   type: FileEntryType;
   size?: number;
+  disk_usage?: number;
   modified_at?: string;
 }
 
@@ -403,6 +404,16 @@ export interface SearchResponse {
 	scanned: number;
 	truncated: boolean;
 	truncated_reason?: "results" | "entries" | "timeout";
+}
+
+export interface DiskUsageResponse {
+	path: string;
+	total_bytes: number;
+	entries: FileEntry[];
+	scanned: number;
+	read_errors: number;
+	truncated: boolean;
+	truncated_reason?: "entries" | "timeout";
 }
 
 export interface ArchivePlan {

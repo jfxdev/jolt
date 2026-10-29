@@ -2718,7 +2718,7 @@ func subtreeReadResource(resource string) bool {
 	if len(segments) < 4 || segments[0] != "mounts" || segments[2] != "files" {
 		return false
 	}
-	return segments[3] == "archive" || segments[3] == "search"
+	return segments[3] == "archive" || segments[3] == "search" || segments[3] == "disk-usage"
 }
 
 func mountIDFromResource(resource string) string {
@@ -2766,10 +2766,10 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 	if len(resolved.Paths) > 0 {
 		targets = resolved
 	}
-	// Archive and search read an entire subtree from one named root, so
-	// authorizing the root alone would let them reach descendants the subject
-	// is denied. Refuse while any deny rule applies inside the requested
-	// subtree; a narrower request on an allowed subfolder still works.
+	// Archives, searches and disk-usage scans read an entire subtree from one
+	// named root, so authorizing the root alone would let them reach descendants
+	// the subject is denied. Refuse while any deny rule applies inside the
+	// requested subtree; a narrower request on an allowed subfolder still works.
 	if subtreeReadResource(resource) && r.Method == http.MethodGet {
 		mountBase := "nodes/" + r.PathValue("nodeID") + "/files/mounts/" + mountIDFromResource(resource)
 		for _, scope := range fileScopes(mountBase, targets.all()) {
@@ -2781,7 +2781,7 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 			if denied {
 				s.audit(r, "read", scope, "denied")
 				writeError(w, r, http.StatusForbidden, "deny_rule_within_scope",
-					"Há regras de negação dentro desta pasta. Baixe ou pesquise em uma subpasta permitida.")
+					"Há regras de negação dentro desta pasta. Use uma subpasta permitida.")
 				return
 			}
 		}

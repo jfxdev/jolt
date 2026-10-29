@@ -23,6 +23,7 @@ type FileEntry struct {
 	Path       string    `json:"path" yaml:"path"`
 	Type       string    `json:"type" yaml:"type"`
 	Size       int64     `json:"size" yaml:"size"`
+	DiskUsage  int64     `json:"disk_usage,omitempty" yaml:"disk_usage,omitempty"`
 	ModifiedAt time.Time `json:"modified_at" yaml:"modified_at"`
 	Checksum   string    `json:"checksum,omitempty" yaml:"checksum"`
 }

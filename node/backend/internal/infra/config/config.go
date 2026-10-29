@@ -79,6 +79,8 @@ type Config struct {
 	SearchMaxResults         int           `yaml:"search_max_results"`
 	SearchMaxEntries         int           `yaml:"search_max_entries"`
 	SearchTimeout            time.Duration `yaml:"search_timeout"`
+	DiskUsageMaxEntries      int           `yaml:"disk_usage_max_entries"`
+	DiskUsageTimeout         time.Duration `yaml:"disk_usage_timeout"`
 	ArchiveMaxEntries        int           `yaml:"archive_max_entries"`
 	ArchiveMaxBytes          int64         `yaml:"archive_max_bytes"`
 	UploadSessionTTL         time.Duration `yaml:"upload_session_ttl"`
@@ -118,6 +120,8 @@ func Defaults() Config {
 		SearchMaxResults:         500,
 		SearchMaxEntries:         200_000,
 		SearchTimeout:            15 * time.Second,
+		DiskUsageMaxEntries:      1_000_000,
+		DiskUsageTimeout:         2 * time.Minute,
 		ArchiveMaxEntries:        50_000,
 		ArchiveMaxBytes:          100 << 30,
 		UploadSessionTTL:         24 * time.Hour}
@@ -233,6 +237,12 @@ func Read(file string) (Config, error) {
 	}
 	if c.SearchTimeout < time.Second || c.SearchTimeout > 5*time.Minute {
 		return c, fail("search_timeout", "value outside supported limits")
+	}
+	if c.DiskUsageMaxEntries < 1_000 || c.DiskUsageMaxEntries > 10_000_000 {
+		return c, fail("disk_usage_max_entries", "value outside supported limits")
+	}
+	if c.DiskUsageTimeout < time.Second || c.DiskUsageTimeout > 30*time.Minute {
+		return c, fail("disk_usage_timeout", "value outside supported limits")
 	}
 	if c.ArchiveMaxEntries < 1 || c.ArchiveMaxEntries > 1_000_000 {
 		return c, fail("archive_max_entries", "value outside supported limits")

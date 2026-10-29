@@ -129,6 +129,19 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) diskUsage(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := contextWithTimeout(r, s.config.DiskUsageTimeout)
+	defer cancel()
+	result, err := s.files.DiskUsage(ctx, r.PathValue("mountID"), r.URL.Query().Get("path"),
+		filesystem.DiskUsageOptions{MaxEntries: s.config.DiskUsageMaxEntries})
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, result)
+}
+
 func splitList(value string) []string {
 	parts := strings.Split(value, ",")
 	out := make([]string, 0, len(parts))
