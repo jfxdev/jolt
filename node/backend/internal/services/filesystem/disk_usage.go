@@ -71,7 +71,7 @@ func (s *Service) DiskUsage(ctx context.Context, mountID, relative string, optio
 		relativePath, err := filepath.Rel(root, current)
 		if err != nil {
 			result.ReadErrors++
-			return nil
+			return nil //nolint:nilerr // counted in ReadErrors; the scan continues
 		}
 		if relativePath == "." {
 			return nil

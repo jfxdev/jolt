@@ -293,10 +293,23 @@ test("disk usage switch sorts allocated sizes and navigates into large folders",
   await expect(page.getByRole("row").nth(1)).toContainText("media");
   await expect(page.getByRole("row").nth(1)).toContainText("75%");
   await expect(page.getByRole("row").nth(2)).toContainText("notes.txt");
+  await expect(page.getByRole("button", { name: "notes.txt", exact: true })).toBeDisabled();
   await page.getByRole("button", { name: "media", exact: true }).click();
   await expect(page.getByText("768 MB em disco", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "movie.mkv", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "movie.mkv", exact: true })).toBeDisabled();
   expect(state.usagePaths).toEqual(["", "media"]);
+});
+
+test("disk usage failure does not report an empty folder", async ({ page }) => {
+  await fixture(page);
+  await page.route("**/files/disk-usage*", (route) =>
+    route.fulfill({ status: 500, contentType: "application/json", body: "{}" }),
+  );
+  await page.goto("/nodes/a/mounts/media");
+  await page.getByRole("switch", { name: "Exibir uso de disco" }).click();
+  await expect(page.getByText("Sem dados de uso de disco", { exact: true })).toBeVisible();
+  await expect(page.getByText("Não foi possível analisar o uso de disco desta pasta.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Esta pasta está vazia.", { exact: true })).toHaveCount(0);
 });
 
 test("reload restores pending upload and rejects an equal-size different prefix", async ({

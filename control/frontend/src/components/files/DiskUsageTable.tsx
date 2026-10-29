@@ -31,12 +31,14 @@ export function DiskUsageTable({ result, loading, onOpen }: Props) {
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/30 px-4 py-3">
         <div>
           <p className="text-sm font-medium">
-            {result ? `${formatBytes(total)} em disco` : "Analisando espaço em disco…"}
+            {result ? `${formatBytes(total)} em disco` : loading ? "Analisando espaço em disco…" : "Sem dados de uso de disco"}
           </p>
           <p className="text-xs text-muted-foreground">
             {result
               ? `${result.scanned.toLocaleString("pt-BR")} ${result.scanned === 1 ? "item analisado" : "itens analisados"} · blocos alocados`
-              : "Somando arquivos e subpastas sem seguir links simbólicos"}
+              : loading
+                ? "Somando arquivos e subpastas sem seguir links simbólicos"
+                : "A análise não retornou dados"}
           </p>
         </div>
         {loading && <LoaderCircle className="size-4 animate-spin text-muted-foreground" aria-label="Atualizando análise" />}
@@ -68,19 +70,11 @@ export function DiskUsageTable({ result, loading, onOpen }: Props) {
               const usage = entry.disk_usage || 0;
               const share = total > 0 ? (usage / total) * 100 : 0;
               return (
-                <TableRow
-                  key={entry.path}
-                  className="cursor-pointer"
-                  tabIndex={0}
-                  aria-label={`Abrir ${entry.name}`}
-                  onDoubleClick={() => onOpen(entry)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") onOpen(entry);
-                  }}
-                >
+                <TableRow key={entry.path}>
                   <TableCell>
                     <button
-                      className="flex items-center gap-2 text-left hover:underline"
+                      className="flex items-center gap-2 text-left enabled:hover:underline disabled:cursor-default"
+                      disabled={entry.type !== "directory"}
                       onClick={() => onOpen(entry)}
                     >
                       <FileEntryIcon entry={entry} />
@@ -103,10 +97,17 @@ export function DiskUsageTable({ result, loading, onOpen }: Props) {
                 </TableRow>
               );
             })}
-            {!entries.length && !loading && (
+            {!entries.length && !loading && result && (
               <TableRow>
                 <TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">
                   Esta pasta está vazia.
+                </TableCell>
+              </TableRow>
+            )}
+            {!result && !loading && (
+              <TableRow>
+                <TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">
+                  Não foi possível analisar o uso de disco desta pasta.
                 </TableCell>
               </TableRow>
             )}
