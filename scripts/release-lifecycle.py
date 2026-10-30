@@ -4,6 +4,7 @@
 import argparse
 import base64
 import json
+import os
 from pathlib import Path
 import secrets
 import subprocess
@@ -126,7 +127,7 @@ class Lifecycle:
 
     def common(self):
         result = ["--detach", "--network", self.network, "--security-opt", "no-new-privileges:true",
-                  "--cap-drop", "ALL"]
+                  "--cap-drop", "ALL", "--env", f"PUID={os.getuid()}", "--env", f"PGID={os.getgid()}"]
         for capability in ("CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID"):
             result += ["--cap-add", capability]
         return result
@@ -176,7 +177,8 @@ class Lifecycle:
             self.names.remove(name)
 
     def offline_mounts(self, state, include_node=True):
-        result = ["--mount", f"type=bind,src={self.backup},dst=/backup"]
+        result = ["--env", f"PUID={os.getuid()}", "--env", f"PGID={os.getgid()}",
+                  "--mount", f"type=bind,src={self.backup},dst=/backup"]
         if include_node:
             result += [
                 "--mount", f"type=bind,src={state / 'node.yaml'},dst=/etc/jolt/node.yaml,readonly",

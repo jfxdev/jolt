@@ -30,9 +30,12 @@ Cada publicação cria uma **prerelease** com:
 - artifacts `native-inventory-*` e SBOM/provenance associados às imagens.
 
 A tag nunca é sobrescrita. Uma nova execução do mesmo commit reutiliza a versão
-associada, mesmo após mudança de data. Se uma colisão fizer a versão mudar entre
-`prepare` e `publish`, a execução falha em vez de publicar app e imagem com
-versões divergentes. Uma publicação já concluída não refaz builds.
+associada, mesmo após mudança de data. Se houver uma tag reservada sem Release
+concluída, o rerun também reutiliza os digests nela registrados e não refaz os
+builds; scan, smoke, browser e lifecycle validam novamente esses mesmos
+artefatos. Se uma colisão fizer a versão mudar entre `prepare` e `publish`, a
+execução falha em vez de publicar app e imagem com versões divergentes. Uma
+publicação já concluída não refaz builds.
 
 `govulncheck` não cobre C/SQLCipher. Trivy e o inventário não substituem a triagem
 nativa nem os gates externos registrados em [RELEASE_V1.md](RELEASE_V1.md).

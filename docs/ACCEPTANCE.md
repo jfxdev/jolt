@@ -9,12 +9,15 @@ The consolidated go/no-go record is [RELEASE_V1.md](RELEASE_V1.md). Besides the
 profiles below, the final dated images must pass:
 
 ```sh
-python3 scripts/container-smoke.py --expected-version YYYY-MM-DD
-python3 scripts/browser-integration.py --expected-version YYYY-MM-DD
+python3 scripts/container-smoke.py --expected-version VERSION
+python3 scripts/browser-integration.py --expected-version VERSION
 python3 scripts/release-lifecycle.py \
   --node-image ghcr.io/jfxdev/jolt-node@sha256:CANDIDATE \
   --control-image ghcr.io/jfxdev/jolt-control@sha256:CANDIDATE
 ```
+
+Replace `VERSION` with the exact allocated image version, `YYYY-MM-DD` or
+`YYYY-MM-DD.N` when a numeric collision suffix was allocated.
 
 Browser integration uses two real nodes, HTTPS and desktop/mobile journeys.
 Lifecycle covers snapshot, empty restore, diagnostics and operation; passing both

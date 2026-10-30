@@ -72,6 +72,12 @@ openssl rand -base64 32 > secrets/node_metrics_token
 chmod 600 secrets/*
 ```
 
+Todos os secrets devem ser legíveis pelo `PUID` selecionado, inclusive no node
+remoto. Se criá-los como root com `umask 077`, ajuste o owner sem abrir as
+permissões: com os padrões `PUID=1000` e `PGID=1000`, use
+`sudo chown 1000:1000 secrets/*`; substitua esses números quando personalizar o
+usuário de runtime. O `chmod 600` deve ser preservado.
+
 `control_db_key` e `node_state_key` devem decodificar para 32 bytes. Faça backup
 dessas chaves separadamente dos volumes e dos arquivos Compose. Perdê-las torna o
 estado irrecuperável; alterá-las não é uma rotação suportada.
@@ -151,6 +157,8 @@ Antes de mudar imagens, faça snapshots offline dos dois produtos e backup
 separado dos mounts e chaves. Anote versões, digests, `node_id` e fingerprints.
 Não atualize node e Control Tower para releases diferentes.
 
+No host do Control Tower e do node local, use `docker-compose.yml`:
+
 ```sh
 docker compose --env-file .env -f docker-compose.yml stop
 # execute os snapshots descritos em DISASTER_RECOVERY.md
@@ -159,6 +167,18 @@ docker compose --env-file .env -f docker-compose.yml config --quiet
 docker compose --env-file .env -f docker-compose.yml pull
 docker compose --env-file .env -f docker-compose.yml up -d
 curl --fail http://127.0.0.1:8090/readyz
+```
+
+Em cada node remoto, no diretório que contém o manifest copiado durante a
+instalação, use somente `docker-compose.node.yml` e atualize `JOLT_NODE_IMAGE`:
+
+```sh
+docker compose --env-file .env -f docker-compose.node.yml stop
+# execute o snapshot offline do node descrito em DISASTER_RECOVERY.md
+docker compose --env-file .env -f docker-compose.node.yml config --quiet
+docker compose --env-file .env -f docker-compose.node.yml pull
+docker compose --env-file .env -f docker-compose.node.yml up -d
+docker compose --env-file .env -f docker-compose.node.yml ps
 ```
 
 Depois confira versão/commit na UI, login, mounts, jobs, peers, um upload e uma

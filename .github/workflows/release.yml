@@ -15,6 +15,9 @@ jobs:
     outputs:
       already_published: ${{ steps.state.outputs.already_published }}
       version: ${{ steps.state.outputs.version }}
+      resume_tag: ${{ steps.state.outputs.resume_tag }}
+      node_digest: ${{ steps.state.outputs.node_digest }}
+      control_digest: ${{ steps.state.outputs.control_digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -27,7 +30,25 @@ jobs:
           export TZ=America/Sao_Paulo
           git fetch --force --tags origin
           version="$(python3 scripts/release_version.py allocate --day "$(date +%F)" --sha "$GITHUB_SHA")"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          resume_tag=false
+          node_digest=""
+          control_digest=""
+          if existing_sha="$(git rev-list -n 1 "$version" 2>/dev/null)" && [ "$existing_sha" = "$GITHUB_SHA" ]; then
+            tag_message="$(git cat-file -p "$version")"
+            node_digest="$(printf '%s\n' "$tag_message" | sed -n 's/^Node digest: //p')"
+            control_digest="$(printf '%s\n' "$tag_message" | sed -n 's/^Control digest: //p')"
+            if [ -z "$node_digest" ] || [ -z "$control_digest" ]; then
+              echo "release tag $version does not record both candidate digests" >&2
+              exit 1
+            fi
+            resume_tag=true
+          fi
+          {
+            echo "version=$version"
+            echo "resume_tag=$resume_tag"
+            echo "node_digest=$node_digest"
+            echo "control_digest=$control_digest"
+          } >> "$GITHUB_OUTPUT"
           if git rev-list -n 1 "$version" >/dev/null 2>&1 && \
               gh release view "$version" --json isDraft --jq '.isDraft' | grep -qx false; then
             echo "already_published=true" >> "$GITHUB_OUTPUT"
@@ -44,7 +65,7 @@ jobs:
       packages: write
     runs-on: ubuntu-latest
     outputs:
-      digest: ${{ steps.build.outputs.digest }}
+      digest: ${{ steps.digest.outputs.digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -53,6 +74,7 @@ jobs:
       - name: Authenticate to GHCR
         run: echo "${{ github.token }}" | docker login ghcr.io --username "${{ github.repository_owner }}" --password-stdin
       - id: build
+        if: needs.prepare.outputs.resume_tag != 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: node
@@ -72,6 +94,12 @@ jobs:
             org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha,scope=release-node
           cache-to: type=gha,scope=release-node,mode=max
+      - name: Resolve candidate digest
+        id: digest
+        env:
+          EXISTING_DIGEST: ${{ needs.prepare.outputs.node_digest }}
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+        run: echo "digest=${EXISTING_DIGEST:-$BUILD_DIGEST}" >> "$GITHUB_OUTPUT"
 
   candidate-control:
     name: Build control candidate
@@ -82,7 +110,7 @@ jobs:
       packages: write
     runs-on: ubuntu-latest
     outputs:
-      digest: ${{ steps.build.outputs.digest }}
+      digest: ${{ steps.digest.outputs.digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -91,6 +119,7 @@ jobs:
       - name: Authenticate to GHCR
         run: echo "${{ github.token }}" | docker login ghcr.io --username "${{ github.repository_owner }}" --password-stdin
       - id: build
+        if: needs.prepare.outputs.resume_tag != 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: control
@@ -110,6 +139,12 @@ jobs:
             org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha,scope=release-control
           cache-to: type=gha,scope=release-control,mode=max
+      - name: Resolve candidate digest
+        id: digest
+        env:
+          EXISTING_DIGEST: ${{ needs.prepare.outputs.control_digest }}
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+        run: echo "digest=${EXISTING_DIGEST:-$BUILD_DIGEST}" >> "$GITHUB_OUTPUT"
 
   scan:
     name: Scan ${{ matrix.name }} candidate
@@ -140,19 +175,25 @@ jobs:
       - name: Authenticate to GHCR
         run: echo "${{ github.token }}" | docker login ghcr.io --username "${{ github.repository_owner }}" --password-stdin
       - name: Pull exact candidate digest
-        run: docker pull "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-${{ matrix.name }}@${{ matrix.digest }}"
+        env:
+          COMPONENT: ${{ matrix.name }}
+          DIGEST: ${{ matrix.digest }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-$COMPONENT@$DIGEST"
+          echo "IMAGE_REF=$image" >> "$GITHUB_ENV"
+          docker pull "$image"
       - name: Block high and critical vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
-          image-ref: ghcr.io/${{ github.repository_owner }}/jolt-${{ matrix.name }}@${{ matrix.digest }}
+          image-ref: ${{ env.IMAGE_REF }}
           version: v0.70.0
           severity: HIGH,CRITICAL
           exit-code: 1
           format: table
       - name: Inventory Go and native runtime components
         env:
-          IMAGE: ghcr.io/${{ github.repository_owner }}/jolt-${{ matrix.name }}@${{ matrix.digest }}
+          IMAGE: ${{ env.IMAGE_REF }}
           BINARY: ${{ matrix.binary }}
           COMPONENT: ${{ matrix.name }}
         run: |
@@ -162,7 +203,7 @@ jobs:
           {
             echo "Image: $IMAGE"
             go version -m "$RUNNER_TEMP/jolt-binary"
-            docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'apk info -v; ldd "$1"' sh "$BINARY"
+            docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'apk info -v; ldd "$1" || echo "statically linked: no shared libraries"' sh "$BINARY"
             if [ "$COMPONENT" = control ]; then
               cd control
               go mod download github.com/mutecomm/go-sqlcipher/v4
@@ -304,9 +345,14 @@ jobs:
             echo "release tag $version already belongs to $existing_sha" >&2
             exit 1
           fi
+          git fetch --force --tags origin
           tag_message="$(git cat-file -p "$version")"
-          test "$(printf '%s\n' "$tag_message" | sed -n 's/^Node digest: //p')" = "$NODE_DIGEST"
-          test "$(printf '%s\n' "$tag_message" | sed -n 's/^Control digest: //p')" = "$CONTROL_DIGEST"
+          tagged_node="$(printf '%s\n' "$tag_message" | sed -n 's/^Node digest: //p')"
+          tagged_control="$(printf '%s\n' "$tag_message" | sed -n 's/^Control digest: //p')"
+          if [ "$tagged_node" != "$NODE_DIGEST" ] || [ "$tagged_control" != "$CONTROL_DIGEST" ]; then
+            echo "release tag $version records different digests; rerun the workflow to reuse its recorded artifacts" >&2
+            exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Authenticate to GHCR
         run: echo "${{ github.token }}" | docker login ghcr.io --username "${{ github.repository_owner }}" --password-stdin

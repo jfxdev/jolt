@@ -10,6 +10,7 @@ services:
       CONTROL_TOWER_TOKEN_FILE: /run/secrets/control_tower_token
       JOLT_STATE_ENCRYPTION_KEY_FILE: /run/secrets/node_state_key
       METRICS_TOKEN_FILE: /run/secrets/node_metrics_token
+      NODE_HEALTHCHECK_URL: ${NODE_HEALTHCHECK_URL:-http://127.0.0.1:8080/readyz}
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
       UMASK: ${UMASK:-002}

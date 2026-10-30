@@ -13,6 +13,21 @@ scripts. These capabilities are not a production certification: final
 container/browser/lifecycle execution, full-scale and two-host evidence remain
 explicit gates in RELEASE_V1.
 
+## Current progress
+
+### 2026-10-30 — bounded acceptance profiles
+
+- Capped the default `full` profile at 90 GiB of nominal source/destination
+  data: one 10 GiB file and one 35 GiB directory with 5,000 files. The remaining
+  10 GiB of its 100 GiB budget is reserved for partials and metadata.
+- Reduced the `half` profile to a 5 GiB file and a 25 GiB directory with 2,500
+  files, within a 60 GiB disk budget. The earlier 50 GiB run remains recorded as
+  evidence of the legacy configuration, not of the new default.
+- Passed `make acceptance-full` on a local macOS 27.0.1 ARM64/APFS host in
+  4,842.680 seconds, including interruption/resume, parallel directory copy and
+  checksum validation. Temporary data was cleaned; representative Linux/amd64
+  evidence remains pending.
+
 > **Historical inventory.** Everything below preserves the implementation review
 > dated 2026-07-26. Statements such as mount-only RBAC or pending resumable upload
 > chunks describe that review, not the current release contract. Current documents
@@ -42,22 +57,9 @@ Status legend:
 | Direct node-to-node file transfer | Implemented | Remote `ask` decisions and peer data-plane discovery |
 | Direct node-to-node directory transfer | Implemented | Peer data-plane discovery |
 | Control Tower authentication | Implemented | Extend route coverage as new resources are added |
-| Disaster recovery and hardening | Partial | Execute and record the full 10 GiB/35 GiB acceptance profile on target infrastructure |
+| Disaster recovery and hardening | Partial | Execute and record the full 10 GiB/100 GiB acceptance profile on target infrastructure |
 
 ## Recent progress
-
-### 2026-10-30 — bounded acceptance profiles
-
-- Capped the default `full` profile at 90 GiB of nominal source/destination
-  data: one 10 GiB file and one 35 GiB directory with 5,000 files. The remaining
-  10 GiB of its 100 GiB budget is reserved for partials and metadata.
-- Reduced the `half` profile to a 5 GiB file and a 25 GiB directory with 2,500
-  files, within a 60 GiB disk budget. The earlier 50 GiB run remains recorded as
-  evidence of the legacy configuration, not of the new default.
-- Passed `make acceptance-full` on a local macOS 27.0.1 ARM64/APFS host in
-  4,842.680 seconds, including interruption/resume, parallel directory copy and
-  checksum validation. Temporary data was cleaned; representative Linux/amd64
-  evidence remains pending.
 
 ### 2026-07-25 — transfer execution hardening
 

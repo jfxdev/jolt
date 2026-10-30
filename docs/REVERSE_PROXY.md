@@ -31,7 +31,7 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Request-ID $request_id;
+        proxy_set_header X-Correlation-ID $request_id;
     }
 }
 ```
