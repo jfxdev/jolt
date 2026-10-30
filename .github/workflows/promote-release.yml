@@ -53,9 +53,11 @@ jobs:
           test -n "$node_digest"
           test -n "$control_digest"
           git checkout --detach "$VERSION"
-          echo "commit=$recorded_commit" >> "$GITHUB_OUTPUT"
-          echo "node_digest=$node_digest" >> "$GITHUB_OUTPUT"
-          echo "control_digest=$control_digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "commit=$recorded_commit"
+            echo "node_digest=$node_digest"
+            echo "control_digest=$control_digest"
+          } >> "$GITHUB_OUTPUT"
       - name: Verify version tags still identify the approved digests
         env:
           VERSION: ${{ inputs.version }}
