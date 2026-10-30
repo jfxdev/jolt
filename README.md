@@ -254,8 +254,8 @@ make acceptance
 ```
 
 Use `make acceptance-half` or `make acceptance-full` only on a disposable host
-with sufficient time and disk space. They perform 5 GiB/50 GiB and
-10 GiB/100 GiB scenarios, respectively. See
+with sufficient time and disk space. They perform 5 GiB/25 GiB and
+10 GiB/35 GiB scenarios, respectively. See
 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) for profiles, overrides, and the fault
 matrix.
 

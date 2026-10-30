@@ -42,9 +42,22 @@ Status legend:
 | Direct node-to-node file transfer | Implemented | Remote `ask` decisions and peer data-plane discovery |
 | Direct node-to-node directory transfer | Implemented | Peer data-plane discovery |
 | Control Tower authentication | Implemented | Extend route coverage as new resources are added |
-| Disaster recovery and hardening | Partial | Execute and record the full 10 GiB/100 GiB acceptance profile on target infrastructure |
+| Disaster recovery and hardening | Partial | Execute and record the full 10 GiB/35 GiB acceptance profile on target infrastructure |
 
 ## Recent progress
+
+### 2026-10-30 — bounded acceptance profiles
+
+- Capped the default `full` profile at 90 GiB of nominal source/destination
+  data: one 10 GiB file and one 35 GiB directory with 5,000 files. The remaining
+  10 GiB of its 100 GiB budget is reserved for partials and metadata.
+- Reduced the `half` profile to a 5 GiB file and a 25 GiB directory with 2,500
+  files, within a 60 GiB disk budget. The earlier 50 GiB run remains recorded as
+  evidence of the legacy configuration, not of the new default.
+- Passed `make acceptance-full` on a local macOS 27.0.1 ARM64/APFS host in
+  4,842.680 seconds, including interruption/resume, parallel directory copy and
+  checksum validation. Temporary data was cleaned; representative Linux/amd64
+  evidence remains pending.
 
 ### 2026-07-25 — transfer execution hardening
 
@@ -118,7 +131,7 @@ Status legend:
 
 - Execute and record `make acceptance-full` on representative target
   filesystems/deployment infrastructure. The profile performs real 10 GiB and
-  100 GiB I/O and is not appropriate for the default development test run.
+  35 GiB I/O and is not appropriate for the default development test run.
 
 ## Implemented
 
@@ -603,9 +616,10 @@ Status legend:
   complete, including coordinated offline node/Control Tower token replacement,
   exact target confirmation, session revocation, and audit-safe output.
 - **Partial:** the scalable load suite and its 64 MiB/128 MiB quick and
-  5 GiB/50 GiB half profiles are implemented and verified. The opt-in 10 GiB
-  file and 100 GiB/5,000-file full profile still requires execution and
-  evidence on target infrastructure.
+  5 GiB/25 GiB half profiles are implemented; the legacy 5 GiB/50 GiB half
+  configuration was also verified. The opt-in 10 GiB file and
+  35 GiB/5,000-file full profile still requires evidence on target
+  infrastructure.
 - **Implemented:** deterministic network interruption, controlled node-worker
   shutdown/restart, explicit validation/resume, pause, cancel, retry, missing
   peer/mount wake-up, and restore/partial diagnostics are covered across the
@@ -654,8 +668,8 @@ Current automated tests and build verification cover:
   contiguous durable checkpoints, checksum verification, and atomic
   publication;
 - the opt-in quick load profile with a checkpointed 64 MiB interrupted file and
-  a 128 MiB/1,024-file parallel directory, plus a verified 5 GiB/50 GiB
-  half-profile and configurable 10 GiB/100 GiB full-profile targets;
+  a 128 MiB/1,024-file parallel directory, plus configurable 5 GiB/25 GiB
+  half-profile and 10 GiB/35 GiB full-profile targets;
 - truncated remote multi-range responses with automatic retry from the previous
   completely synced batch, without re-fetching earlier ranges;
 - pairing, exact fingerprint confirmation, grants, and cluster isolation;

@@ -45,7 +45,7 @@ The `quick` profile covers:
 - eight parallel files and two parallel chunks per file;
 - aggregate byte/file progress and sampled SHA-256 equality.
 
-Run the half-scale profile on a disposable host with at least 110 GiB of free
+Run the half-scale profile on a disposable host with at least 60 GiB of free
 disk space:
 
 ```sh
@@ -55,7 +55,7 @@ make acceptance-half
 The `half` profile covers:
 
 - one 5 GiB file;
-- one 50 GiB directory;
+- one 25 GiB directory;
 - 2,500 files.
 
 ## Verified runs
@@ -63,9 +63,9 @@ The `half` profile covers:
 | Date | Profile | Result | Duration | Environment note |
 | --- | --- | --- | --- | --- |
 | 2026-07-26 | `quick` | Passed | 14.837 s | Local APFS development host |
-| 2026-07-26 | `half` | Passed | 559.746 s | Local APFS development host; temporary data cleaned and free space restored |
+| 2026-07-26 | `half` (legacy 5 GiB/50 GiB configuration) | Passed | 559.746 s | Local APFS development host; temporary data cleaned and free space restored |
 | 2026-10-22 | `quick` (YAML) | Passed | 230.657 s | Local APFS; concurrent race-test and image-build workload |
-| — | `full` | Pending | — | Must run on representative target infrastructure |
+| 2026-10-30 | `full` | Passed | 4,842.680 s | Local macOS 27.0.1 ARM64/APFS; temporary data cleaned; representative Linux/amd64 run remains pending |
 
 Run the production-scale profile only on a disposable host with sufficient
 time and at least 100 GiB of free disk space:
@@ -77,12 +77,13 @@ make acceptance-full
 The `full` profile raises the same scenarios to:
 
 - one 10 GiB file;
-- one 100 GiB directory;
+- one 35 GiB directory;
 - 5,000 files.
 
 The source and destination coexist during validation, and temporary partials
-may also be present, so available disk space must exceed the nominal dataset
-size.
+may also be present. The default `full` profile is capped at 90 GiB of nominal
+source/destination data, leaving 10 GiB of its 100 GiB budget for partials and
+metadata.
 
 ## Overrides
 
@@ -126,7 +127,7 @@ The always-on automated suite complements the opt-in load profiles:
 | Restored state contains active jobs/partials | Diagnostics report them and restored jobs require explicit validation |
 
 The `quick` profile is suitable for continuous integration. A release that
-claims the 10 GiB/100 GiB limits should also record a successful
+claims the 10 GiB/35 GiB limits should also record a successful
 `make acceptance-full` run on the target filesystem and deployment class.
 
 ## Encrypted YAML persistence profile

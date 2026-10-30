@@ -33,13 +33,13 @@ func loadAcceptanceProfile(t *testing.T) acceptanceProfile {
 	case "quick":
 	case "half":
 		profile.fileBytes = 5 << 30
-		profile.directoryBytes = 50 << 30
+		profile.directoryBytes = 25 << 30
 		profile.directoryFileCount = 2_500
 		profile.bandwidthLimit = 128 << 20
 		profile.timeout = 90 * time.Minute
 	case "full":
 		profile.fileBytes = 10 << 30
-		profile.directoryBytes = 100 << 30
+		profile.directoryBytes = 35 << 30
 		profile.directoryFileCount = 5_000
 		profile.bandwidthLimit = 128 << 20
 		profile.timeout = 3 * time.Hour

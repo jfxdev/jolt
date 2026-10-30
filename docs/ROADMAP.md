@@ -353,7 +353,7 @@ e, futuramente, relay multi-hop respeitando trust bilateral em cada salto.
 ### P4.1 🟠 Executar e registrar o acceptance-full
 
 **Problema.** O perfil de aceitação `full` (arquivo 10 GiB, diretório
-100 GiB/5.000 arquivos) ainda não foi executado e evidenciado em infra alvo. É o
+35 GiB/5.000 arquivos) ainda não foi executado e evidenciado em infra alvo. É o
 único item marcado "Partial" restante em `docs/IMPLEMENTATION.md`.
 
 **Solução proposta.** Rodar `make acceptance-full` em host descartável

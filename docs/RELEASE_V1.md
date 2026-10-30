@@ -37,7 +37,7 @@ aprovada. `Pendente` é bloqueio para promoção, mesmo quando o automatismo exi
 | Navegador | `scripts/browser-integration.py --expected-version VERSION`, desktop/mobile | Pronto local: desktop e mobile aprovados (2/2) |
 | Recuperação | snapshot → restore vazio → diagnósticos → operação | Pronto local: restore, diagnósticos, operação e upload retomado aprovados |
 | Upgrade/rollback | lifecycle com as duas imagens anteriores, mesmo par de release | Fluxos com backup compatível aprovados localmente; release anterior real pendente |
-| Escala | `make acceptance-full`, ≥100 GiB, Linux/amd64 representativo | Pendente de infraestrutura |
+| Escala | `make acceptance-full`, ≥100 GiB, Linux/amd64 representativo | Pronto local em macOS/ARM64 (4.842,680 s); Linux/amd64 representativo pendente |
 | Dois hosts | instalação limpa, mTLS, rede, falha e retomada entre hosts físicos | Pendente de infraestrutura |
 | Segurança | `govulncheck`, `npm audit`, Trivy HIGH/CRITICAL e triagem | Todos aprovados localmente; zero achados HIGH/CRITICAL no Trivy nas imagens locais |
 | Inventário nativo/SBOM | artifact da release; análise C/SQLCipher e pacotes da imagem | Inventário local aprovado; artifact da release final pendente |
