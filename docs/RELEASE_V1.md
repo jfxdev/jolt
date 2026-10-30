@@ -32,17 +32,24 @@ aprovada. `Pendente` é bloqueio para promoção, mesmo quando o automatismo exi
 | --- | --- | --- |
 | Build, vet, testes e race | `make check`, race nos dois módulos, frontend | Pronto nesta working tree; teste ETag repetido 50 vezes com race |
 | Contratos | OpenAPI parseável, rotas cobertas e typecheck | Pronto nesta working tree |
-| Imagens amd64 | Build final, versão/commit e smoke por digest | Pendente; daemon Docker indisponível |
-| Smoke integrado | `scripts/container-smoke.py --expected-version VERSION` | Implementado; não executado nesta rodada |
-| Navegador | `scripts/browser-integration.py --expected-version VERSION`, desktop/mobile | Pareamento bilateral implementado; execução pendente |
-| Recuperação | snapshot → restore vazio → diagnósticos → operação | `scripts/release-lifecycle.py` implementado; não executado |
-| Upgrade/rollback | lifecycle com as duas imagens anteriores, mesmo par de release | Pendente de imagem anterior e execução |
+| Imagens amd64 | Build final, versão/commit e smoke por digest | Builds locais Linux/amd64 aprovados com versão `integration`; artefatos finais por digest pendentes |
+| Smoke integrado | `scripts/container-smoke.py --expected-version VERSION` | Pronto local: oito grupos aprovados nas imagens locais |
+| Navegador | `scripts/browser-integration.py --expected-version VERSION`, desktop/mobile | Pronto local: desktop e mobile aprovados (2/2) |
+| Recuperação | snapshot → restore vazio → diagnósticos → operação | Pronto local: restore, diagnósticos, operação e upload retomado aprovados |
+| Upgrade/rollback | lifecycle com as duas imagens anteriores, mesmo par de release | Fluxos com backup compatível aprovados localmente; release anterior real pendente |
 | Escala | `make acceptance-full`, ≥220 GiB, Linux/amd64 representativo | Pendente de infraestrutura |
 | Dois hosts | instalação limpa, mTLS, rede, falha e retomada entre hosts físicos | Pendente de infraestrutura |
-| Segurança | `govulncheck`, `npm audit`, Trivy HIGH/CRITICAL e triagem | `govulncheck` e `npm audit` aprovados; Trivy pendente |
-| Inventário nativo/SBOM | artifact da release; análise C/SQLCipher e pacotes da imagem | Inventário automatizado; análise final pendente |
+| Segurança | `govulncheck`, `npm audit`, Trivy HIGH/CRITICAL e triagem | Todos aprovados localmente; zero achados HIGH/CRITICAL no Trivy nas imagens locais |
+| Inventário nativo/SBOM | artifact da release; análise C/SQLCipher e pacotes da imagem | Inventário local aprovado; artifact da release final pendente |
 | Publicação | prerelease com tag→SHA→digests e evidências | Workflow implementado; nenhuma release criada localmente |
 | Promoção | URL de evidências, environment `production`, mesmo tag/SHA/digests, sem rebuild | Workflow implementado; aguarda todos os gates |
+
+Evidências locais de 2026-10-30: host macOS/arm64, Docker 29.9.1, imagens
+Linux/amd64 executadas sob emulação e tags locais `jolt-node:smoke` e
+`jolt-control:smoke`. O inventário confirmou Go 1.26.10, Alpine 3.22.7,
+SQLCipher 4.4.2 e SQLite 3.33.0. Esses resultados qualificam esta working tree,
+não os artefatos publicados, e não substituem a execução em Linux/amd64
+representativo.
 
 Resultados antigos em [ACCEPTANCE.md](ACCEPTANCE.md) são evidência histórica dos
 perfis indicados, não substituem a execução no SHA e nas imagens finais.
@@ -88,6 +95,7 @@ Há uma base funcional e controles de engenharia suficientes para um RC: estado
 durável/cifrado, autorização server-side, mTLS, limites de upload/disco,
 testes de falhas, recuperação offline, imagens rastreáveis e promoção imutável.
 Isso **não** é evidência suficiente para declarar a v1 production-ready enquanto
-os testes finais de containers/navegador/recovery, escala e dois hosts estiverem
-pendentes. A decisão final deve ser tomada sobre os artefatos e resultados acima,
+a qualificação dos artefatos publicados, o upgrade/rollback desde uma release
+anterior, a escala e o ensaio entre dois hosts estiverem pendentes. A decisão
+final deve ser tomada sobre os artefatos e resultados acima,
 não sobre a quantidade de funcionalidades ou o histórico de testes unitários.

@@ -169,6 +169,8 @@ test("real HTTPS browser journey with two nodes", async ({ page, browser }) => {
   const scope = `nodes/${nodeA}/files/mounts/files`;
   const policy = await page.request.post("/api/v1/control-tower/policies", {
     data: { name: `policy-${suffix}`, rules: [
+      { path: `nodes/${nodeA}`, capabilities: ["list"] },
+      { path: `nodes/${nodeA}/mounts`, capabilities: ["list"] },
       { path: `${scope}/**`, capabilities: ["read", "list"] },
       { path: `${scope}/${privateName}`, capabilities: ["deny"] },
     ] },

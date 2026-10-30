@@ -16,7 +16,7 @@ import urllib.request
 
 def docker(*args):
     return subprocess.check_output(
-        ["docker", *args], text=True, stderr=subprocess.STDOUT, timeout=120
+        ["docker", *args], text=True, timeout=120
     ).strip()
 
 
@@ -93,6 +93,8 @@ def extract(archive, destination):
             if member.issym() or member.islnk():
                 raise AssertionError("Snapshot links are not supported by this rehearsal")
         bundle.extractall(destination, filter="data")
+    for path in destination.rglob("*"):
+        path.chmod(0o700 if path.is_dir() else 0o600)
 
 
 class Lifecycle:
@@ -207,25 +209,30 @@ class Lifecycle:
         control_stage = self.root / (destination.name + "-control-extract")
         extract(archives[1], control_stage)
         (control_stage / "data").rename(destination / "control")
+        (control_stage / "manifest.json").unlink()
         control_stage.rmdir()
         if source_state != destination:
             destination.chmod(0o700)
         return destination
 
     def diagnose(self, state, image_node, image_control, manifest):
-        report = json.loads(docker(
-            "run", "--rm", *self.offline_mounts(state), image_node,
-            "/usr/local/bin/jolt-node", "restore-diagnostics", "--expected-node-id", manifest["node_id"],
-            "--expected-fingerprint", manifest["fingerprint"],
-        ))
-        if report["status"] == "error":
-            raise AssertionError("Node restore diagnostics failed")
-        report = json.loads(docker(
-            "run", "--rm", *self.offline_mounts(state, False), image_control,
-            "/usr/local/bin/jolt-control", "restore-diagnostics",
-        ))
-        if report["status"] == "error":
-            raise AssertionError("Control restore diagnostics failed")
+        result = subprocess.run(
+            ["docker", "run", "--rm", *self.offline_mounts(state), image_node,
+             "/usr/local/bin/jolt-node", "restore-diagnostics", "--expected-node-id", manifest["node_id"],
+             "--expected-fingerprint", manifest["fingerprint"]],
+            text=True, capture_output=True, timeout=120,
+        )
+        report = json.loads(result.stdout)
+        if result.returncode != 0 or report["status"] == "error":
+            raise AssertionError(f"Node restore diagnostics failed: {report}")
+        result = subprocess.run(
+            ["docker", "run", "--rm", *self.offline_mounts(state, False), image_control,
+             "/usr/local/bin/jolt-control", "restore-diagnostics"],
+            text=True, capture_output=True, timeout=120,
+        )
+        report = json.loads(result.stdout)
+        if result.returncode != 0 or report["status"] == "error":
+            raise AssertionError(f"Control restore diagnostics failed: {report}")
 
     def close(self):
         for name in reversed(self.names):

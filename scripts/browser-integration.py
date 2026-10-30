@@ -280,6 +280,7 @@ def main():
         for suffix in ("a", "b"):
             name = f"{network}-node-{suffix}"
             docker("restart", name)
+            bases[suffix] = "http://" + docker("port", name, "8080/tcp").splitlines()[0]
             wait_ready(bases[suffix])
 
         if args.expected_version:
