@@ -15,7 +15,7 @@ export function BuildVersion() {
     };
   }, []);
 
-  if (!build) return null;
+  if (!build?.version || !build.commit || !build.build_date) return null;
   const revision = build.commit !== "unknown" ? ` · ${build.commit.slice(0, 8)}` : "";
   return (
     <p
