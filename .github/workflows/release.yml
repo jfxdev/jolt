@@ -24,11 +24,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          export TZ=America/Sao_Paulo
           git fetch --force --tags origin
-          version="$(git tag --points-at "$GITHUB_SHA" --list '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*' | sort -V | tail -n 1)"
-          if [ -n "$version" ] && gh release view "$version" --json isDraft --jq '.isDraft' | grep -qx false; then
+          version="$(python3 scripts/release_version.py allocate --day "$(date +%F)" --sha "$GITHUB_SHA")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git rev-list -n 1 "$version" >/dev/null 2>&1 && \
+              gh release view "$version" --json isDraft --jq '.isDraft' | grep -qx false; then
             echo "already_published=true" >> "$GITHUB_OUTPUT"
-            echo "version=$version" >> "$GITHUB_OUTPUT"
           else
             echo "already_published=false" >> "$GITHUB_OUTPUT"
           fi
@@ -56,11 +58,16 @@ jobs:
           context: node
           platforms: linux/amd64
           push: true
+          build-args: |
+            JOLT_VERSION=${{ needs.prepare.outputs.version }}
+            JOLT_COMMIT=${{ github.sha }}
+            JOLT_BUILD_DATE=${{ github.event.head_commit.timestamp }}
           provenance: mode=max
           sbom: true
           tags: ghcr.io/${{ github.repository_owner }}/jolt-node:sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha,scope=release-node
@@ -89,19 +96,90 @@ jobs:
           context: control
           platforms: linux/amd64
           push: true
+          build-args: |
+            JOLT_VERSION=${{ needs.prepare.outputs.version }}
+            JOLT_COMMIT=${{ github.sha }}
+            JOLT_BUILD_DATE=${{ github.event.head_commit.timestamp }}
           provenance: mode=max
           sbom: true
           tags: ghcr.io/${{ github.repository_owner }}/jolt-control:sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha,scope=release-control
           cache-to: type=gha,scope=release-control,mode=max
 
+  scan:
+    name: Scan ${{ matrix.name }} candidate
+    needs: [prepare, candidate-node, candidate-control]
+    if: needs.prepare.outputs.already_published != 'true'
+    permissions:
+      contents: read
+      packages: read
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: node
+            digest: ${{ needs.candidate-node.outputs.digest }}
+            binary: /usr/local/bin/jolt-node
+          - name: control
+            digest: ${{ needs.candidate-control.outputs.digest }}
+            binary: /usr/local/bin/jolt-control
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 1.26.10
+          cache: false
+      - name: Authenticate to GHCR
+        run: echo "${{ github.token }}" | docker login ghcr.io --username "${{ github.repository_owner }}" --password-stdin
+      - name: Pull exact candidate digest
+        run: docker pull "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-${{ matrix.name }}@${{ matrix.digest }}"
+      - name: Block high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ghcr.io/${{ github.repository_owner }}/jolt-${{ matrix.name }}@${{ matrix.digest }}
+          version: v0.70.0
+          severity: HIGH,CRITICAL
+          exit-code: 1
+          format: table
+      - name: Inventory Go and native runtime components
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/jolt-${{ matrix.name }}@${{ matrix.digest }}
+          BINARY: ${{ matrix.binary }}
+          COMPONENT: ${{ matrix.name }}
+        run: |
+          container="$(docker create "$IMAGE")"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          docker cp "$container:$BINARY" "$RUNNER_TEMP/jolt-binary"
+          {
+            echo "Image: $IMAGE"
+            go version -m "$RUNNER_TEMP/jolt-binary"
+            docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'apk info -v; ldd "$1"' sh "$BINARY"
+            if [ "$COMPONENT" = control ]; then
+              cd control
+              go mod download github.com/mutecomm/go-sqlcipher/v4
+              module_dir="$(go list -m -f '{{.Dir}}' github.com/mutecomm/go-sqlcipher/v4)"
+              sed -n '/^#define SQLITE_VERSION /p;/^#define SQLITE_VERSION_NUMBER /p' "$module_dir/sqlite3.h"
+            fi
+          } > "$RUNNER_TEMP/native-inventory.txt"
+      - name: Publish native component inventory
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-inventory-${{ matrix.name }}-${{ needs.prepare.outputs.version }}
+          path: ${{ runner.temp }}/native-inventory.txt
+          if-no-files-found: error
+
   smoke:
     name: Smoke published candidates
-    needs: [prepare, candidate-node, candidate-control]
+    needs: [prepare, candidate-node, candidate-control, scan]
     if: needs.prepare.outputs.already_published != 'true'
     permissions:
       contents: read
@@ -122,16 +200,68 @@ jobs:
           docker pull "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-control@$CONTROL_DIGEST"
       - name: Exercise actual container APIs
         env:
+          VERSION: ${{ needs.prepare.outputs.version }}
           NODE_DIGEST: ${{ needs.candidate-node.outputs.digest }}
           CONTROL_DIGEST: ${{ needs.candidate-control.outputs.digest }}
         run: |
           python3 scripts/container-smoke.py \
             --node-image "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-node@$NODE_DIGEST" \
+            --control-image "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-control@$CONTROL_DIGEST" \
+            --expected-version "$VERSION"
+      - name: Rehearse snapshot and empty restore with candidates
+        env:
+          NODE_DIGEST: ${{ needs.candidate-node.outputs.digest }}
+          CONTROL_DIGEST: ${{ needs.candidate-control.outputs.digest }}
+        run: |
+          python3 scripts/release-lifecycle.py \
+            --node-image "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-node@$NODE_DIGEST" \
             --control-image "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-control@$CONTROL_DIGEST"
 
+  browser-integration:
+    name: Real HTTPS browser integration
+    needs: [prepare, candidate-node, candidate-control, scan]
+    if: needs.prepare.outputs.already_published != 'true'
+    permissions:
+      contents: read
+      packages: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: control/frontend/package-lock.json
+      - name: Install browser dependencies
+        working-directory: control/frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Authenticate to GHCR
+        run: echo "${{ github.token }}" | docker login ghcr.io --username "${{ github.repository_owner }}" --password-stdin
+      - name: Pull exact candidate digests
+        env:
+          NODE_DIGEST: ${{ needs.candidate-node.outputs.digest }}
+          CONTROL_DIGEST: ${{ needs.candidate-control.outputs.digest }}
+        run: |
+          docker pull "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-node@$NODE_DIGEST"
+          docker pull "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-control@$CONTROL_DIGEST"
+      - name: Exercise two nodes through desktop and mobile browsers
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          NODE_DIGEST: ${{ needs.candidate-node.outputs.digest }}
+          CONTROL_DIGEST: ${{ needs.candidate-control.outputs.digest }}
+        run: |
+          python3 scripts/browser-integration.py \
+            --node-image "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-node@$NODE_DIGEST" \
+            --control-image "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jolt-control@$CONTROL_DIGEST" \
+            --expected-version "$VERSION"
+
   publish:
-    name: Create tag and GitHub Release
-    needs: [prepare, candidate-node, candidate-control, smoke]
+    name: Create dated prerelease
+    needs: [prepare, candidate-node, candidate-control, scan, smoke, browser-integration]
     if: needs.prepare.outputs.already_published != 'true'
     permissions:
       contents: write
@@ -150,35 +280,34 @@ jobs:
       - name: Resolve or reserve a dated annotated tag
         id: version
         env:
+          PREPARE_VERSION: ${{ needs.prepare.outputs.version }}
           NODE_DIGEST: ${{ needs.candidate-node.outputs.digest }}
           CONTROL_DIGEST: ${{ needs.candidate-control.outputs.digest }}
           GH_TOKEN: ${{ github.token }}
         run: |
           export TZ=America/Sao_Paulo
-          release_day="$(date +%F)"
           git fetch --force --tags origin
-          retries=20
-          while [ "$retries" -gt 0 ]; do
-            retries=$((retries - 1))
-            version="$(python3 scripts/release_version.py allocate --day "$release_day" --sha "$GITHUB_SHA")"
-            existing_sha="$(git rev-list -n 1 "$version" 2>/dev/null || true)"
-            if [ "$existing_sha" = "$GITHUB_SHA" ]; then
-              tag_message="$(git cat-file -p "$version")"
-              test "$(printf '%s\n' "$tag_message" | sed -n 's/^Node digest: //p')" = "$NODE_DIGEST"
-              test "$(printf '%s\n' "$tag_message" | sed -n 's/^Control digest: //p')" = "$CONTROL_DIGEST"
-              echo "version=$version" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
+          version="$(python3 scripts/release_version.py allocate --day "$(date +%F)" --sha "$GITHUB_SHA")"
+          if [ "$version" != "$PREPARE_VERSION" ]; then
+            echo "release version changed from $PREPARE_VERSION to $version; rerun the workflow to rebuild matching artifacts" >&2
+            exit 1
+          fi
+          existing_sha="$(git rev-list -n 1 "$version" 2>/dev/null || true)"
+          if [ -z "$existing_sha" ]; then
             message="$(printf 'Jolt release %s\n\nCommit: %s\nNode digest: %s\nControl digest: %s' "$version" "$GITHUB_SHA" "$NODE_DIGEST" "$CONTROL_DIGEST")"
             tag_object="$(gh api --method POST "repos/$GITHUB_REPOSITORY/git/tags" -f tag="$version" -f message="$message" -f object="$GITHUB_SHA" -f type=commit --jq .sha)"
-            if gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$version" -f sha="$tag_object" >/dev/null; then
-              echo "version=$version" >> "$GITHUB_OUTPUT"
-              exit 0
+            if ! gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$version" -f sha="$tag_object" >/dev/null; then
+              echo "release tag collision; rerun the workflow to allocate and build a new version" >&2
+              exit 1
             fi
-            git fetch --force --tags origin
-          done
-          echo "could not reserve a release tag after 20 attempts" >&2
-          exit 1
+          elif [ "$existing_sha" != "$GITHUB_SHA" ]; then
+            echo "release tag $version already belongs to $existing_sha" >&2
+            exit 1
+          fi
+          tag_message="$(git cat-file -p "$version")"
+          test "$(printf '%s\n' "$tag_message" | sed -n 's/^Node digest: //p')" = "$NODE_DIGEST"
+          test "$(printf '%s\n' "$tag_message" | sed -n 's/^Control digest: //p')" = "$CONTROL_DIGEST"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Authenticate to GHCR
         run: echo "${{ github.token }}" | docker login ghcr.io --username "${{ github.repository_owner }}" --password-stdin
       - name: Promote the tested digests
@@ -205,7 +334,7 @@ jobs:
               exit 1
             }
           done
-      - name: Create or update the draft release
+      - name: Create or update the prerelease
         env:
           VERSION: ${{ steps.version.outputs.version }}
           NODE_DIGEST: ${{ needs.candidate-node.outputs.digest }}
@@ -215,14 +344,9 @@ jobs:
           notes="$RUNNER_TEMP/release-notes.md"
           gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$VERSION" -f target_commitish="$GITHUB_SHA" --jq .body > "$notes"
           # shellcheck disable=SC2016
-          printf '\n\n## Artefatos\n\n- Commit: `%s`\n- Node: `ghcr.io/%s/jolt-node@%s`\n- Control: `ghcr.io/%s/jolt-control@%s`\n- Execução: %s/%s/actions/runs/%s\n' "$GITHUB_SHA" "${GITHUB_REPOSITORY_OWNER,,}" "$NODE_DIGEST" "${GITHUB_REPOSITORY_OWNER,,}" "$CONTROL_DIGEST" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> "$notes"
+          printf '\n\n## Artefatos\n\n- Commit: `%s`\n- Node: `ghcr.io/%s/jolt-node@%s`\n- Control: `ghcr.io/%s/jolt-control@%s`\n- Execução: %s/%s/actions/runs/%s\n- Estado: candidata; promover somente após os gates em docs/RELEASE_V1.md.\n' "$GITHUB_SHA" "${GITHUB_REPOSITORY_OWNER,,}" "$NODE_DIGEST" "${GITHUB_REPOSITORY_OWNER,,}" "$CONTROL_DIGEST" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> "$notes"
           if gh release view "$VERSION" >/dev/null 2>&1; then
-            gh release edit "$VERSION" --title "Jolt $VERSION" --notes-file "$notes"
+            gh release edit "$VERSION" --draft=false --prerelease=true --title "Jolt $VERSION RC" --notes-file "$notes"
           else
-            gh release create "$VERSION" --verify-tag --draft --title "Jolt $VERSION" --notes-file "$notes"
+            gh release create "$VERSION" --verify-tag --prerelease --title "Jolt $VERSION RC" --notes-file "$notes"
           fi
-      - name: Publish the verified release
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          GH_TOKEN: ${{ github.token }}
-        run: gh release edit "$VERSION" --draft=false

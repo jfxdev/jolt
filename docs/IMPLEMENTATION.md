@@ -1,14 +1,24 @@
 # Implementation status
 
-Node persistence and resource management now follow [NODE_YAML.md](NODE_YAML.md):
-mandatory versioned configuration, restart application, read-only mounts/grants,
-encrypted journal/snapshots, no node SQL runtime and no legacy conversion.
+Current operational and release references are [PRODUCTION.md](PRODUCTION.md),
+[OPERATIONS.md](OPERATIONS.md), [RELEASE_V1.md](RELEASE_V1.md) and
+[openapi/control.yaml](openapi/control.yaml). Node persistence follows
+[NODE_YAML.md](NODE_YAML.md): versioned immutable configuration, encrypted
+journal/snapshots, no SQL runtime and no legacy node conversion.
 
-Current release assessment and remediation status:
-[`RELEASE_0.1.0.md`](RELEASE_0.1.0.md). The dated inventory below predates
-resumable uploads, subpath RBAC, public shares, metrics and the release hardening.
+The v1 implementation includes build metadata and OCI labels, liveness/readiness,
+secret files, production Compose manifests, resumable upload sessions, subpath
+RBAC, public shares, metrics, upload/disk budgets and integrated qualification
+scripts. These capabilities are not a production certification: final
+container/browser/lifecycle execution, full-scale and two-host evidence remain
+explicit gates in RELEASE_V1.
 
-Last updated: 2026-07-26.
+> **Historical inventory.** Everything below preserves the implementation review
+> dated 2026-07-26. Statements such as mount-only RBAC or pending resumable upload
+> chunks describe that review, not the current release contract. Current documents
+> above take precedence; use this material for traceability, not installation.
+
+Last historical inventory update: 2026-07-26.
 
 Status legend:
 

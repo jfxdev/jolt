@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jfxdev/jolt/control/internal/buildinfo"
 	"github.com/jfxdev/jolt/control/internal/config"
 	"github.com/jfxdev/jolt/control/internal/metrics"
 	"github.com/jfxdev/jolt/control/internal/rbac"
@@ -126,12 +127,15 @@ func newHandler(cfg config.Config, storage *store.Store, logger *slog.Logger, cl
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
+	mux.HandleFunc("GET /livez", s.health)
+	mux.HandleFunc("GET /readyz", s.ready)
 	if cfg.MetricsToken != "" {
 		mux.HandleFunc("GET /metrics", s.metricsHandler)
 	}
 	mux.HandleFunc("POST /api/v1/control-tower/auth/login", s.login)
 	mux.Handle("POST /api/v1/control-tower/auth/logout", s.auth(http.HandlerFunc(s.logout)))
 	mux.Handle("GET /api/v1/control-tower/auth/me", s.auth(http.HandlerFunc(s.me)))
+	mux.Handle("GET /api/v1/control-tower/about", s.auth(http.HandlerFunc(s.about)))
 	mux.Handle("POST /api/v1/control-tower/auth/permissions", s.auth(http.HandlerFunc(s.permissions)))
 	mux.Handle("GET /api/v1/control-tower/users", s.auth(http.HandlerFunc(s.listUsers)))
 	mux.Handle("POST /api/v1/control-tower/users", s.auth(http.HandlerFunc(s.createUser)))
@@ -300,6 +304,20 @@ func (s *Server) recover(next http.Handler) http.Handler {
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := s.store.Ready(ctx); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) about(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, buildinfo.Current())
 }
 
 type loginRequest struct {

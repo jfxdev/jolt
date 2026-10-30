@@ -75,22 +75,29 @@ Two products, one boundary:
 
 ### Documentation
 
-- [`docs/RELEASE_0.1.0.md`](docs/RELEASE_0.1.0.md) — current release assessment, blockers, validation evidence, and delivery plan for 0.1.0.
-- [`docs/CICD.md`](docs/CICD.md) — PR validation, dated releases, and published container images.
-- [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) — product requirements.
-- [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) — implementation status.
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — findings, gaps, and prioritized roadmap.
-- [`docs/REMEDIATION.md`](docs/REMEDIATION.md) — code-level fixes for findings.
-- [`docs/DISCOVERY.md`](docs/DISCOVERY.md) — analysis backlog for the next pass.
-- [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) — attack surface and unauthenticated threat analysis.
-- [`docs/ACCESS_CENTER.md`](docs/ACCESS_CENTER.md) — design for a dedicated authorization/access page.
-- [`docs/TRANSFERS_API.md`](docs/TRANSFERS_API.md) — public logical API for durable transfers between nodes.
-- [`docs/SHARING_AND_BROWSING.md`](docs/SHARING_AND_BROWSING.md) — subpath RBAC, ZIP downloads, search, resumable uploads, share links, metrics.
-- [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md) — load and fault-injection profiles.
-- [`docs/DISASTER_RECOVERY.md`](docs/DISASTER_RECOVERY.md),
-  [`docs/REVERSE_PROXY.md`](docs/REVERSE_PROXY.md) — operations.
+Current production contract:
 
-## Start both services
+- [`docs/PRODUCTION.md`](docs/PRODUCTION.md) — supported Linux/amd64 installation, networking, secrets, upgrades and rollback.
+- [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — routines, Prometheus alerts, Grafana panels and incident response.
+- [`docs/RELEASE_V1.md`](docs/RELEASE_V1.md) — current maturity decision and go/no-go evidence.
+- [`docs/openapi/control.yaml`](docs/openapi/control.yaml) — Control Tower API; the node also serves its authenticated OpenAPI at `/openapi.yaml`.
+- [`docs/CICD.md`](docs/CICD.md) — CI, dated prereleases and stable promotion without rebuild.
+- [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) — current trust boundaries, residual risks and private reporting.
+- [`docs/DISASTER_RECOVERY.md`](docs/DISASTER_RECOVERY.md), [`docs/REVERSE_PROXY.md`](docs/REVERSE_PROXY.md) — recovery and HTTPS proxying.
+- [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md) — load, fault-injection and integrated qualification.
+
+Product and historical references:
+
+- [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md), [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md), [`docs/ROADMAP.md`](docs/ROADMAP.md).
+- [`docs/REMEDIATION.md`](docs/REMEDIATION.md), [`docs/DISCOVERY.md`](docs/DISCOVERY.md), [`docs/RELEASE_0.1.0.md`](docs/RELEASE_0.1.0.md) — historical analysis; where they conflict, the current documents above prevail.
+- [`docs/TRANSFERS_API.md`](docs/TRANSFERS_API.md), [`docs/SHARING_AND_BROWSING.md`](docs/SHARING_AND_BROWSING.md), [`docs/ACCESS_CENTER.md`](docs/ACCESS_CENTER.md).
+
+**Production status:** mature for a release candidate, not yet declared
+production-ready while the final container/browser/recovery, full-scale and
+two-host gates remain open. Use the dated images and procedure in PRODUCTION.md;
+the root Compose file below is for development only.
+
+## Start both services for development
 
 Create a `.env` file or export four secrets:
 

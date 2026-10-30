@@ -1,0 +1,1082 @@
+openapi: 3.1.0
+info:
+  title: Jolt Control Tower API
+  version: 1.0.0
+  description: |
+    Authenticated Control Tower API and public read-only shares. This contract
+    version is independent of the dated application release. The /api/v1 prefix
+    is stable and does not identify the container release.
+    Browser callers use the jolt_control_session cookie. Automation uses an API
+    key as Authorization: Bearer <token>; service accounts also require an active
+    access group and effective RBAC grants. Errors use code, message and an
+    optional correlation_id. Send X-Correlation-ID to correlate audit records.
+    Unless explicitly public, every operation requires authentication.
+  contact:
+    url: https://github.com/jfxdev/jolt
+servers:
+  - url: /
+tags:
+  - {name: System}
+  - {name: Authentication}
+  - {name: Administration}
+  - {name: Nodes}
+  - {name: Transfers}
+  - {name: Shares}
+  - {name: Node proxy}
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Legacy liveness endpoint
+      security: []
+      responses:
+        '200': {$ref: '#/components/responses/Health'}
+  /livez:
+    get:
+      tags: [System]
+      summary: Process liveness
+      description: Does not check database, mounts or peers.
+      security: []
+      responses:
+        '200': {$ref: '#/components/responses/Health'}
+  /readyz:
+    get:
+      tags: [System]
+      summary: Local readiness
+      description: Checks local state/database. Does not require all nodes, mounts or peers to be available.
+      security: []
+      responses:
+        '200': {$ref: '#/components/responses/Health'}
+        '503': {$ref: '#/components/responses/Health'}
+  /metrics:
+    get:
+      tags: [System]
+      summary: Prometheus metrics
+      description: Registered only when CONTROL_TOWER_METRICS_TOKEN is configured. Uses a dedicated token, not an operator credential.
+      security: [{metricsBearer: []}]
+      responses:
+        '200':
+          description: Prometheus text exposition
+          content:
+            text/plain:
+              schema: {type: string}
+        '401': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/auth/login:
+    post:
+      tags: [Authentication]
+      summary: Create a browser session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LoginRequest'}
+      responses:
+        '200':
+          description: Session created; the HttpOnly cookie is set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: {$ref: '#/components/schemas/User'}
+        '401': {$ref: '#/components/responses/Error'}
+        '429':
+          description: Persisted login lockout; honor Retry-After
+          headers:
+            Retry-After: {schema: {type: integer, minimum: 1}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/control-tower/auth/logout:
+    post:
+      tags: [Authentication]
+      summary: Revoke the current browser session
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '401': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/auth/me:
+    get:
+      tags: [Authentication]
+      summary: Current actor
+      responses:
+        '200':
+          description: Current user or service-account identity
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: {$ref: '#/components/schemas/User'}
+                  actor_type: {type: string, enum: [user, service_account]}
+        '401': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/auth/permissions:
+    post:
+      tags: [Authentication]
+      summary: Evaluate effective permissions for up to 100 Node Paths
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PermissionsRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/about:
+    get:
+      tags: [System]
+      summary: Application build information
+      responses:
+        '200':
+          description: Dated application version and source build metadata
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BuildInfo'}
+  /api/v1/control-tower/users:
+    get:
+      tags: [Administration]
+      summary: List users
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+    post:
+      tags: [Administration]
+      summary: Create a user
+      requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
+      responses:
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/users/{userID}:
+    parameters: [{$ref: '#/components/parameters/UserID'}]
+    patch:
+      tags: [Administration]
+      summary: Update role, enabled state or password
+      requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [Administration]
+      summary: Delete a user while preserving audit history
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/service-accounts:
+    get:
+      tags: [Administration]
+      summary: List service accounts
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+    post:
+      tags: [Administration]
+      summary: Create a service account and optionally its first API key
+      description: A plaintext API key is returned only at issuance. Store it immediately.
+      requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
+      responses:
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/service-accounts/{serviceAccountID}:
+    parameters: [{$ref: '#/components/parameters/ServiceAccountID'}]
+    patch:
+      tags: [Administration]
+      summary: Update a service account
+      requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [Administration]
+      summary: Delete a service account and revoke its keys
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/service-accounts/{serviceAccountID}/tokens:
+    parameters: [{$ref: '#/components/parameters/ServiceAccountID'}]
+    get:
+      tags: [Administration]
+      summary: List API-key metadata, never token hashes or plaintext
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+    post:
+      tags: [Administration]
+      summary: Issue or rotate an API key
+      description: The new plaintext credential is returned once. Existing keys can be independently revoked.
+      requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
+      responses:
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/service-accounts/{serviceAccountID}/tokens/{tokenID}:
+    parameters:
+      - {$ref: '#/components/parameters/ServiceAccountID'}
+      - {$ref: '#/components/parameters/TokenID'}
+    delete:
+      tags: [Administration]
+      summary: Revoke one API key immediately
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/access-groups:
+    get:
+      tags: [Administration]
+      summary: List reusable node and policy access groups
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+    post:
+      tags: [Administration]
+      summary: Create an access group
+      requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
+      responses:
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/access-groups/{groupID}:
+    parameters: [{$ref: '#/components/parameters/GroupID'}]
+    patch:
+      tags: [Administration]
+      summary: Update an access group
+      requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [Administration]
+      summary: Delete an access group
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/access-groups/{groupID}/nodes:
+    parameters: [{$ref: '#/components/parameters/GroupID'}]
+    get:
+      tags: [Administration]
+      summary: List nodes allowed by an access group
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+    put:
+      tags: [Administration]
+      summary: Replace the node allow-list
+      requestBody: {$ref: '#/components/requestBodies/StringIDs'}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/access-groups/{groupID}/policies:
+    parameters: [{$ref: '#/components/parameters/GroupID'}]
+    get:
+      tags: [Administration]
+      summary: List policies assigned to an access group
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+    put:
+      tags: [Administration]
+      summary: Replace policy assignments
+      requestBody: {$ref: '#/components/requestBodies/StringIDs'}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/policies:
+    get:
+      tags: [Administration]
+      summary: List Node Path RBAC policies
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+    post:
+      tags: [Administration]
+      summary: Create an RBAC policy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PolicyInput'}
+      responses:
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/policies/{policyID}:
+    parameters: [{$ref: '#/components/parameters/PolicyID'}]
+    patch:
+      tags: [Administration]
+      summary: Update an RBAC policy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PolicyInput'}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [Administration]
+      summary: Delete an RBAC policy
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/roles:
+    get:
+      tags: [Administration]
+      summary: List roles
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+    post:
+      tags: [Administration]
+      summary: Create a role containing policies
+      requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
+      responses:
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/roles/{roleID}:
+    parameters: [{$ref: '#/components/parameters/RoleID'}]
+    patch:
+      tags: [Administration]
+      summary: Update a role
+      requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [Administration]
+      summary: Delete a role
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/users/{userID}/policies:
+    parameters: [{$ref: '#/components/parameters/UserID'}]
+    get:
+      tags: [Administration]
+      summary: List direct user policy assignments
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+    put:
+      tags: [Administration]
+      summary: Replace direct user policy assignments
+      requestBody: {$ref: '#/components/requestBodies/StringIDs'}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/users/{userID}/roles:
+    parameters: [{$ref: '#/components/parameters/UserID'}]
+    get:
+      tags: [Administration]
+      summary: List user role assignments
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+    put:
+      tags: [Administration]
+      summary: Replace user role assignments
+      requestBody: {$ref: '#/components/requestBodies/StringIDs'}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/service-accounts/{serviceAccountID}/policies:
+    parameters: [{$ref: '#/components/parameters/ServiceAccountID'}]
+    get:
+      tags: [Administration]
+      summary: List direct service-account policy assignments
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+    put:
+      tags: [Administration]
+      summary: Replace direct service-account policy assignments
+      requestBody: {$ref: '#/components/requestBodies/StringIDs'}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/service-accounts/{serviceAccountID}/groups:
+    parameters: [{$ref: '#/components/parameters/ServiceAccountID'}]
+    get:
+      tags: [Administration]
+      summary: List service-account access groups
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+    put:
+      tags: [Administration]
+      summary: Replace service-account access groups
+      description: A service account without an active group fails closed during authentication.
+      requestBody: {$ref: '#/components/requestBodies/StringIDs'}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/audit:
+    get:
+      tags: [Administration]
+      summary: Query audit events with cursor pagination
+      parameters:
+        - {name: before_id, in: query, schema: {type: integer, format: int64, minimum: 1}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+        - {name: actor_type, in: query, schema: {type: string, enum: [user, service_account]}}
+        - {name: action, in: query, schema: {type: string}}
+        - {name: result, in: query, schema: {type: string, enum: [allowed, denied]}}
+        - {name: correlation_id, in: query, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/nodes:
+    get:
+      tags: [Nodes]
+      summary: List nodes visible to the caller
+      description: Registration states are refreshed from the nodes. Tokens are never returned.
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+    post:
+      tags: [Nodes]
+      summary: Register a node and verify its operational token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NodeRegistration'}
+      responses:
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/nodes/{nodeID}:
+    parameters: [{$ref: '#/components/parameters/NodeID'}]
+    delete:
+      tags: [Nodes]
+      summary: Remove only the Control Tower registration
+      description: Does not delete files, mounts, jobs, peers or grants on the node.
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/nodes/{nodeID}/rotate-token:
+    post:
+      tags: [Nodes]
+      summary: Coordinate two-phase operational-token rotation
+      parameters: [{$ref: '#/components/parameters/NodeID'}]
+      requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/nodes/{nodeID}/rotate-identity:
+    post:
+      tags: [Nodes]
+      summary: Rotate stable identity after exact fingerprint confirmation
+      parameters: [{$ref: '#/components/parameters/NodeID'}]
+      requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/nodes/{nodeID}/distribute-identity-handovers:
+    post:
+      tags: [Nodes]
+      summary: Replay signed identity handovers to registered peers
+      parameters: [{$ref: '#/components/parameters/NodeID'}]
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/nodes/{nodeID}/distribute-mtls-rotation:
+    post:
+      tags: [Nodes]
+      summary: Distribute prepared mTLS public certificate rotation
+      description: Private key material never leaves the source node.
+      parameters: [{$ref: '#/components/parameters/NodeID'}]
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/nodes/{nodeID}/trust:
+    get:
+      tags: [Nodes]
+      summary: Inspect both sides of node trust relationships
+      parameters: [{$ref: '#/components/parameters/NodeID'}]
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/connections:
+    get:
+      tags: [Nodes]
+      summary: List pairing orchestration requests
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+    post:
+      tags: [Nodes]
+      summary: Create an expiring pairing request between registered nodes
+      requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
+      responses:
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/connections/{requestID}/approve:
+    post:
+      tags: [Nodes]
+      summary: Approve pairing with exact human fingerprint confirmation
+      parameters: [{$ref: '#/components/parameters/RequestID'}]
+      requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/connections/{requestID}/reconcile:
+    post:
+      tags: [Nodes]
+      summary: Repair a partially completed pairing
+      parameters: [{$ref: '#/components/parameters/RequestID'}]
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '409': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/connections/{requestID}/reject:
+    post:
+      tags: [Nodes]
+      summary: Reject pairing and revoke its one-time invite
+      parameters: [{$ref: '#/components/parameters/RequestID'}]
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/connections/{requestID}/revoke:
+    post:
+      tags: [Nodes]
+      summary: Revoke trust on both nodes
+      parameters: [{$ref: '#/components/parameters/RequestID'}]
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/transfers/targets:
+    post:
+      tags: [Transfers]
+      summary: Discover compatible destinations for a source selection
+      description: Grant IDs are never accepted or returned by this logical API.
+      parameters: [{$ref: '#/components/parameters/NodeID'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operation, source]
+              properties:
+                operation: {type: string, enum: [copy, move]}
+                source: {$ref: 'transfers.yaml#/components/schemas/Source'}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/transfers/plan:
+    post:
+      tags: [Transfers]
+      summary: Preview a logical transfer without creating a job
+      parameters: [{$ref: '#/components/parameters/NodeID'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: 'transfers.yaml#/components/schemas/LogicalTransfer'}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/transfers:
+    post:
+      tags: [Transfers]
+      summary: Create an idempotent durable logical transfer
+      description: |
+        Idempotency-Key is required (1–512 characters). Repeating the same key
+        and logical payload returns the existing job. Reusing the key with a
+        different payload returns 409 idempotency_conflict. Records are durable;
+        clients must not assume an expiration window.
+      parameters:
+        - {$ref: '#/components/parameters/NodeID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: 'transfers.yaml#/components/schemas/LogicalTransfer'}
+      responses:
+        '202':
+          description: Job accepted; Location identifies the destination-node job resource
+          headers:
+            Location: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: 'transfers.yaml#/components/schemas/Job'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/shares:
+    get:
+      tags: [Shares]
+      summary: List shares owned by the caller, or all for share administrators
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+    post:
+      tags: [Shares]
+      summary: Create a read-only public share
+      description: The token is returned exactly once. Every later access re-evaluates the creator's RBAC on the shared path.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateShare'}
+      responses:
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/shares/{shareID}/revoke:
+    post:
+      tags: [Shares]
+      summary: Revoke a public share immediately
+      parameters: [{$ref: '#/components/parameters/ShareID'}]
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/shares/{shareID}:
+    parameters: [{$ref: '#/components/parameters/ShareID'}]
+    delete:
+      tags: [Shares]
+      summary: Delete share metadata after authorization
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/public/shares/{token}:
+    parameters: [{$ref: '#/components/parameters/ShareToken'}]
+    get:
+      tags: [Shares]
+      summary: Public share metadata without revealing node, mount or backing path
+      security: []
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/public/shares/{token}/unlock:
+    parameters: [{$ref: '#/components/parameters/ShareToken'}]
+    post:
+      tags: [Shares]
+      summary: Unlock one password-protected share with a scoped cookie
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: {type: string, format: password}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /api/v1/public/shares/{token}/list:
+    parameters: [{$ref: '#/components/parameters/ShareToken'}]
+    get:
+      tags: [Shares]
+      summary: List within a public directory share
+      security: []
+      parameters:
+        - {name: path, in: query, schema: {type: string, default: .}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/public/shares/{token}/content:
+    parameters: [{$ref: '#/components/parameters/ShareToken'}]
+    get:
+      tags: [Shares]
+      summary: Download public shared content
+      description: Every content request, including Range requests, consumes download budget. A zero max_downloads means no download-count limit.
+      security: []
+      parameters:
+        - {name: path, in: query, schema: {type: string}}
+        - {name: Range, in: header, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/Binary'}
+        '206': {$ref: '#/components/responses/Binary'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '410': {$ref: '#/components/responses/Error'}
+        '416': {$ref: '#/components/responses/Error'}
+  /api/v1/public/shares/{token}/archive:
+    parameters: [{$ref: '#/components/parameters/ShareToken'}]
+    get:
+      tags: [Shares]
+      summary: Stream a ZIP for an archive-enabled public share
+      security: []
+      parameters:
+        - {name: path, in: query, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/Binary'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '410': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/mounts/{mountID}/files/uploads:
+    parameters:
+      - {$ref: '#/components/parameters/NodeID'}
+      - {$ref: '#/components/parameters/MountID'}
+    get:
+      tags: [Node proxy]
+      summary: List resumable upload sessions visible to the caller
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+    post:
+      tags: [Node proxy]
+      summary: Open a resumable upload session
+      description: The Control Tower authorizes the persisted mount and destination. Chunk offsets are durable on the node; the browser must reselect the same source file after reload.
+      requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
+      responses:
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '507': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/mounts/{mountID}/files/uploads/{uploadID}:
+    parameters:
+      - {$ref: '#/components/parameters/NodeID'}
+      - {$ref: '#/components/parameters/MountID'}
+      - {$ref: '#/components/parameters/UploadID'}
+    get:
+      tags: [Node proxy]
+      summary: Read the persisted upload offset and destination
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    patch:
+      tags: [Node proxy]
+      summary: Append one chunk at the durable offset
+      description: Send Content-Range with the exact current offset. Authorization is resolved from the persisted session, not a client-supplied path.
+      parameters:
+        - {name: Content-Range, in: header, required: true, schema: {type: string, example: 'bytes 0-16777215/33554432'}}
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '416': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [Node proxy]
+      summary: Abort a resumable upload and remove its partial
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/mounts/{mountID}/files/uploads/{uploadID}/complete:
+    parameters:
+      - {$ref: '#/components/parameters/NodeID'}
+      - {$ref: '#/components/parameters/MountID'}
+      - {$ref: '#/components/parameters/UploadID'}
+    post:
+      tags: [Node proxy]
+      summary: Verify and atomically publish a completed upload
+      description: The destination is the one persisted with the session. A repeat may return the durable completion receipt; it must not require reupload.
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/jobs/events:
+    parameters: [{$ref: '#/components/parameters/NodeID'}]
+    get:
+      tags: [Node proxy]
+      summary: Stream durable job events with resumable SSE
+      description: Heartbeats are comment frames. Reconnect with Last-Event-ID or the after query parameter; the Control Tower streams rather than buffering this response.
+      parameters:
+        - {name: job_id, in: query, schema: {type: string}}
+        - {name: after, in: query, schema: {type: integer, format: int64, minimum: 0}}
+        - {name: Last-Event-ID, in: header, schema: {type: string}}
+      responses:
+        '200':
+          description: Server-sent event stream
+          content:
+            text/event-stream:
+              schema: {type: string, example: "id: 42\nevent: job\ndata: {\"job_id\":\"job_...\",\"state\":\"running\"}\n\n"}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/{resource}:
+    parameters:
+      - {$ref: '#/components/parameters/NodeID'}
+      - name: resource
+        in: path
+        required: true
+        description: Remaining node API resource path, including nested segments; represented as a wildcard by x-jolt-wildcard.
+        schema: {type: string, example: mounts/files/files}
+    x-jolt-wildcard: true
+    x-jolt-resources: [node, mounts, jobs, pairing, peers, grants, transfers, crypto, fs]
+    get:
+      tags: [Node proxy]
+      summary: Authorized GET proxy to the node API
+      description: The exact node OpenAPI is available from the authenticated node at /openapi.yaml. The proxy validates resource and RBAC before forwarding and injects the operational token only server-side.
+      responses:
+        '200': {$ref: '#/components/responses/ProxyResult'}
+        '206': {$ref: '#/components/responses/Binary'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+    post:
+      tags: [Node proxy]
+      summary: Authorized POST proxy to the node API
+      requestBody: {$ref: '#/components/requestBodies/ProxyBody'}
+      responses:
+        '200': {$ref: '#/components/responses/ProxyResult'}
+        '201': {$ref: '#/components/responses/ProxyResult'}
+        '202': {$ref: '#/components/responses/ProxyResult'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+    put:
+      tags: [Node proxy]
+      summary: Authorized PUT/streaming-upload proxy to the node API
+      requestBody: {$ref: '#/components/requestBodies/ProxyBody'}
+      responses:
+        '200': {$ref: '#/components/responses/ProxyResult'}
+        '201': {$ref: '#/components/responses/ProxyResult'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+    patch:
+      tags: [Node proxy]
+      summary: Authorized PATCH/chunk proxy to the node API
+      requestBody: {$ref: '#/components/requestBodies/ProxyBody'}
+      responses:
+        '200': {$ref: '#/components/responses/ProxyResult'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '416': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [Node proxy]
+      summary: Authorized DELETE proxy to the node API
+      responses:
+        '200': {$ref: '#/components/responses/ProxyResult'}
+        '204': {$ref: '#/components/responses/NoContent'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: jolt_control_session
+    serviceBearer:
+      type: http
+      scheme: bearer
+      description: API key issued to a service account; not the node operational or metrics token.
+    metricsBearer:
+      type: http
+      scheme: bearer
+      description: Dedicated CONTROL_TOWER_METRICS_TOKEN.
+  parameters:
+    UserID: {name: userID, in: path, required: true, schema: {type: string}}
+    ServiceAccountID: {name: serviceAccountID, in: path, required: true, schema: {type: string}}
+    TokenID: {name: tokenID, in: path, required: true, schema: {type: string}}
+    GroupID: {name: groupID, in: path, required: true, schema: {type: string}}
+    PolicyID: {name: policyID, in: path, required: true, schema: {type: string}}
+    RoleID: {name: roleID, in: path, required: true, schema: {type: string}}
+    NodeID: {name: nodeID, in: path, required: true, schema: {type: string}}
+    MountID: {name: mountID, in: path, required: true, schema: {type: string}}
+    UploadID: {name: uploadID, in: path, required: true, schema: {type: string}}
+    RequestID: {name: requestID, in: path, required: true, schema: {type: string}}
+    ShareID: {name: shareID, in: path, required: true, schema: {type: string}}
+    ShareToken: {name: token, in: path, required: true, schema: {type: string}}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 512}
+  requestBodies:
+    JSONObjectRequired:
+      required: true
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/JSONObject'}
+    StringIDs:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            description: Assignment object; use node_ids, policy_ids, role_ids or group_ids as appropriate for the route.
+            additionalProperties:
+              type: array
+              items: {type: string}
+            example: {policy_ids: [pol_reader]}
+    ProxyBody:
+      required: false
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/JSONObject'}
+        application/octet-stream:
+          schema: {type: string, format: binary}
+  schemas:
+    JSONObject:
+      type: object
+      additionalProperties: true
+    BuildInfo:
+      type: object
+      required: [version, commit, build_date]
+      properties:
+        version: {type: string, example: '2026-10-29'}
+        commit: {type: string, example: 0123456789abcdef0123456789abcdef01234567}
+        build_date: {type: string, example: '2026-10-29T12:00:00Z'}
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, enum: [ok, unavailable]}
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code; use this rather than parsing the localized message.
+              examples: [permission_denied, invalid_json, idempotency_conflict, resource_not_found]
+            message: {type: string}
+            correlation_id: {type: string}
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: {type: string}
+        password: {type: string, format: password}
+    User:
+      type: object
+      properties:
+        user_id: {type: string}
+        username: {type: string}
+        role: {type: string, enum: [admin, operator, service_account]}
+        enabled: {type: boolean}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    PermissionsRequest:
+      type: object
+      required: [paths]
+      properties:
+        paths:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: {type: string, examples: ['nodes/node-a/files/mounts/files/public/**']}
+    NodeRegistration:
+      type: object
+      required: [name, endpoint, token]
+      properties:
+        name: {type: string}
+        endpoint: {type: string, format: uri, examples: ['https://node-a.internal.example:8080']}
+        token: {type: string, format: password, writeOnly: true}
+    PolicyInput:
+      type: object
+      required: [name, rules]
+      properties:
+        name: {type: string}
+        description: {type: string}
+        rules:
+          type: array
+          items:
+            type: object
+            required: [path, capabilities]
+            properties:
+              path:
+                type: string
+                description: '* matches one segment; trailing ** matches the path and descendants. deny has global precedence.'
+              capabilities:
+                type: array
+                minItems: 1
+                uniqueItems: true
+                items:
+                  type: string
+                  enum: [read, list, create, update, delete, write, execute, sudo, deny]
+    CreateShare:
+      type: object
+      required: [node_id, mount_id, path]
+      properties:
+        node_id: {type: string}
+        mount_id: {type: string}
+        path: {type: string, description: Mount-relative file or directory path}
+        kind: {type: string, enum: [file, directory], default: file}
+        password: {type: string, format: password, minLength: 8, writeOnly: true}
+        allow_archive: {type: boolean}
+        max_downloads: {type: integer, format: int64, minimum: 0, default: 0}
+        expires_in_seconds: {type: integer, format: int64, minimum: 0, maximum: 31536000, default: 0}
+  responses:
+    Health:
+      description: Health status
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Health'}
+    Error:
+      description: Structured API error
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    JSONObject:
+      description: JSON response; route-specific fields are preserved
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/JSONObject'}
+    Binary:
+      description: Binary response; headers may include ETag, Content-Range and Content-Disposition
+      content:
+        application/octet-stream:
+          schema: {type: string, format: binary}
+    ProxyResult:
+      description: Proxied JSON, binary or event-stream response
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/JSONObject'}
+        application/octet-stream:
+          schema: {type: string, format: binary}
+        text/event-stream:
+          schema: {type: string}
+    NoContent:
+      description: Operation completed without a response body
+security:
+  - sessionCookie: []
+  - serviceBearer: []

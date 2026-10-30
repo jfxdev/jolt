@@ -5,6 +5,28 @@ parallel-file, and parallel-chunk paths used in production. It is opt-in so the
 normal unit-test suite remains fast and does not unexpectedly consume large
 amounts of disk space.
 
+The consolidated go/no-go record is [RELEASE_V1.md](RELEASE_V1.md). Besides the
+profiles below, the final dated images must pass:
+
+```sh
+python3 scripts/container-smoke.py --expected-version YYYY-MM-DD
+python3 scripts/browser-integration.py --expected-version YYYY-MM-DD
+python3 scripts/release-lifecycle.py \
+  --node-image ghcr.io/jfxdev/jolt-node@sha256:CANDIDATE \
+  --control-image ghcr.io/jfxdev/jolt-control@sha256:CANDIDATE
+```
+
+Browser integration uses two real nodes, HTTPS and desktop/mobile journeys.
+Lifecycle covers snapshot, empty restore, diagnostics and operation; passing both
+`--previous-node-image` and `--previous-control-image` also covers upgrade and
+rollback with the previous version's snapshot. These scripts were added for this
+release, but their final-container evidence remains pending until explicitly
+recorded in RELEASE_V1. Do not infer a pass from compilation or CI wiring.
+
+A production claim also requires `make acceptance-full` on representative
+Linux/amd64 infrastructure and a separate two-host transfer/failure rehearsal.
+Two containers on one development machine do not replace that rehearsal.
+
 ## Profiles
 
 Run the CI/development profile:

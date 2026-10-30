@@ -15,6 +15,7 @@ import { usePermissions } from "@/context/PermissionsContext";
 import { cn } from "@/lib/utils";
 import { AddNodeDialog } from "@/components/node/AddNodeDialog";
 import { AuditDialog } from "@/components/admin/AuditDialog";
+import { BuildVersion } from "@/components/layout/BuildVersion";
 import {
   Sidebar,
   SidebarContent,
@@ -226,6 +227,7 @@ export function AppSidebar() {
         </SidebarContent>
 
         <SidebarFooter>
+          <BuildVersion />
           <SidebarMenu>
             <SidebarMenuItem>
               <DropdownMenu>

@@ -6,6 +6,7 @@ import type {
   AuditEvent,
   AuditResponse,
   AuthUser,
+  BuildInfo,
   Grant,
   IdentityState,
   Job,
@@ -109,6 +110,8 @@ async function requestText(path: string): Promise<string> {
 export const api = {
   me: () =>
     request<{ user: AuthUser }>("/api/v1/control-tower/auth/me"),
+  about: () =>
+    request<BuildInfo>("/api/v1/control-tower/about"),
   permissions: (paths: string[]) =>
     request<PermissionsResponse>("/api/v1/control-tower/auth/permissions", {
       method: "POST",

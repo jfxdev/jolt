@@ -71,10 +71,14 @@ def login(base, username, password):
     return response[2]["Set-Cookie"].split(";", 1)[0]
 
 
-def exercise(node_base, control_base, node_name, node_token, password):
+def exercise(node_base, control_base, node_name, node_token, password, expected_version=None):
     wait_ready(node_base)
     wait_ready(control_base)
     admin = login(control_base, "admin", password)
+    if expected_version:
+        about = expect(request(control_base, "GET", "/api/v1/control-tower/about", cookie=admin), 200)
+        if about["version"] != expected_version:
+            raise AssertionError(f"Control build version {about['version']} != {expected_version}")
 
     def control(method, path, body=None, cookie=admin, **kwargs):
         return request(control_base, method, path, body, cookie=cookie, **kwargs)
@@ -88,6 +92,8 @@ def exercise(node_base, control_base, node_name, node_token, password):
     node_id = registered["node_id"]
     metadata = expect(node("GET", "/api/v1/node"), 200)
     assert metadata["configuration"]["source"] == "yaml"
+    if expected_version and metadata["build"]["version"] != expected_version:
+        raise AssertionError(f"Node build version {metadata['build']['version']} != {expected_version}")
     mount = expect(node("GET", "/api/v1/mounts/files"), 200)
     mount_id = mount["mount_id"]
     for method, path in [("POST", "/api/v1/mounts"), ("PUT", "/api/v1/mounts/files"),
@@ -225,6 +231,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--node-image", default="jolt-node:smoke")
     parser.add_argument("--control-image", default="jolt-control:smoke")
+    parser.add_argument("--expected-version")
     args = parser.parse_args()
     network = "jolt-smoke-" + secrets.token_hex(8)
     names = []
@@ -270,7 +277,7 @@ transfer_grants: []
         names.append(control_name)
         node_base = "http://" + docker("port", node_name, "8080/tcp").splitlines()[0]
         control_base = "http://" + docker("port", control_name, "8090/tcp").splitlines()[0]
-        exercise(node_base, control_base, node_name, node_token, password)
+        exercise(node_base, control_base, node_name, node_token, password, args.expected_version)
     except Exception:
         for name in names:
             print(docker("logs", "--tail", "25", name).replace(node_token, "[redacted]").replace(password, "[redacted]"))

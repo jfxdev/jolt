@@ -192,7 +192,7 @@ func runSnapshot(arguments []string) error {
 	if err != nil {
 		return err
 	}
-	encryptionKey, err := config.ParseEncryptionKey(os.Getenv("CONTROL_TOWER_DB_ENCRYPTION_KEY"))
+	encryptionKey, err := config.LoadEncryptionKey()
 	if err != nil {
 		return err
 	}
@@ -211,7 +211,7 @@ func runRestoreDiagnostics(arguments []string) error {
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
-	encryptionKey, err := config.ParseEncryptionKey(os.Getenv("CONTROL_TOWER_DB_ENCRYPTION_KEY"))
+	encryptionKey, err := config.LoadEncryptionKey()
 	if err != nil {
 		return err
 	}
@@ -249,11 +249,14 @@ func runRecoverAdmin(arguments []string) error {
 	if !validRecoveryUsername(*username) {
 		return errors.New("username must be 3-64 characters using letters, numbers, dot, underscore, or hyphen")
 	}
-	password := os.Getenv("CONTROL_TOWER_RECOVERY_ADMIN_PASSWORD")
+	password, err := config.SecretValue("CONTROL_TOWER_RECOVERY_ADMIN_PASSWORD")
+	if err != nil {
+		return err
+	}
 	if len(password) < 12 {
 		return errors.New("CONTROL_TOWER_RECOVERY_ADMIN_PASSWORD must contain at least 12 characters")
 	}
-	encryptionKey, err := config.ParseEncryptionKey(os.Getenv("CONTROL_TOWER_DB_ENCRYPTION_KEY"))
+	encryptionKey, err := config.LoadEncryptionKey()
 	if err != nil {
 		return err
 	}
@@ -323,11 +326,14 @@ func runRecoverNodeToken(arguments []string) error {
 	if *nodeID == "" || *confirmation != *nodeID {
 		return errors.New("--node-id and an exact matching --confirm-node-id are required")
 	}
-	token := strings.TrimSpace(os.Getenv("CONTROL_TOWER_RECOVERY_NODE_TOKEN"))
+	token, err := config.SecretValue("CONTROL_TOWER_RECOVERY_NODE_TOKEN")
+	if err != nil {
+		return err
+	}
 	if len(token) < 32 {
 		return errors.New("CONTROL_TOWER_RECOVERY_NODE_TOKEN must contain at least 32 characters")
 	}
-	encryptionKey, err := config.ParseEncryptionKey(os.Getenv("CONTROL_TOWER_DB_ENCRYPTION_KEY"))
+	encryptionKey, err := config.LoadEncryptionKey()
 	if err != nil {
 		return err
 	}
@@ -390,7 +396,7 @@ func runEncryptDatabase(arguments []string) error {
 	if *confirmation != "encrypt-control-database" {
 		return errors.New(`--confirm encrypt-control-database is required`)
 	}
-	encryptionKey, err := config.ParseEncryptionKey(os.Getenv("CONTROL_TOWER_DB_ENCRYPTION_KEY"))
+	encryptionKey, err := config.LoadEncryptionKey()
 	if err != nil {
 		return err
 	}

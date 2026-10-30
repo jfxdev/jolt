@@ -1,0 +1,16 @@
+# Example for deploy/docker-compose.node.yml on a second host.
+version: 1
+node_name: node-b
+api_address: ":8080"
+mtls_address: ":8443"
+mtls_public_endpoint: https://node-b.example.com:8443
+data_dir: /var/lib/jolt
+keys_dir: /var/lib/jolt-keys
+mounts:
+  - id: files
+    name: Files
+    local_path: /mnt/files
+    mode: read_write
+    published: true
+    enabled: true
+transfer_grants: []

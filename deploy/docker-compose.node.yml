@@ -1,0 +1,49 @@
+name: jolt-remote-node
+
+services:
+  jolt-node:
+    image: ${JOLT_NODE_IMAGE:?Set JOLT_NODE_IMAGE to a release tag or digest}
+    restart: unless-stopped
+    init: true
+    environment:
+      JOLT_CONFIG_FILE: /etc/jolt/node.yaml
+      CONTROL_TOWER_TOKEN_FILE: /run/secrets/control_tower_token
+      JOLT_STATE_ENCRYPTION_KEY_FILE: /run/secrets/node_state_key
+      METRICS_TOKEN_FILE: /run/secrets/node_metrics_token
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      UMASK: ${UMASK:-002}
+      JOLT_OWNED_PATHS: ${JOLT_OWNED_PATHS:-}
+    ports:
+      - "${NODE_PEER_BIND:-0.0.0.0}:${NODE_PEER_PORT:-8443}:8443"
+    volumes:
+      - ./node.remote.yaml:/etc/jolt/node.yaml:ro
+      - node-data:/var/lib/jolt
+      - node-keys:/var/lib/jolt-keys
+      - ${JOLT_MOUNT_PATH:?Set JOLT_MOUNT_PATH}:/mnt/files:rw
+      - ./secrets/control_tower_token:/run/secrets/control_tower_token:ro
+      - ./secrets/node_state_key:/run/secrets/node_state_key:ro
+      - ./secrets/node_metrics_token:/run/secrets/node_metrics_token:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
+    deploy:
+      resources:
+        limits:
+          pids: 512
+          cpus: "${NODE_CPU_LIMIT:-2}"
+          memory: ${NODE_MEMORY_LIMIT:-2g}
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -qO- \"$${NODE_HEALTHCHECK_URL:-http://127.0.0.1:8080/readyz}\" >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  node-data:
+  node-keys:

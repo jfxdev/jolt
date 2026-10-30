@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jfxdev/jolt/backend/internal/buildinfo"
 	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/entities"
 	"github.com/jfxdev/jolt/backend/internal/infra/config"
@@ -79,6 +80,8 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
+	mux.HandleFunc("GET /livez", s.health)
+	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("GET /openapi.yaml", s.openapi)
 	mux.HandleFunc("GET /docs", s.swagger)
 	mux.HandleFunc("GET /api/v1/node", s.node)
@@ -171,7 +174,7 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/health" && s.config.PublicHealth {
+		if s.config.PublicHealth && (r.URL.Path == "/health" || r.URL.Path == "/livez" || r.URL.Path == "/readyz") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -333,11 +336,23 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "node_id": s.identity.NodeID})
 }
 
+func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	store, ok := s.store.(interface{ Ready(context.Context) error })
+	if !ok || store.Ready(ctx) != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "unavailable", "node_id": s.identity.NodeID})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "node_id": s.identity.NodeID})
+}
+
 func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"configuration": map[string]any{"source": "yaml", "apply_mode": "restart", "mounts_mutable": false, "grants_mutable": false},
 		"node_id":       s.identity.NodeID, "name": s.config.NodeName, "fingerprint": s.identity.Fingerprint,
 		"identity_epoch": s.identity.Epoch, "public_key": s.identity.PublicKey,
+		"build":                     buildinfo.Current(),
 		"mtls_endpoint":             s.config.MTLSPublicEndpoint,
 		"upload_max_bytes":          s.config.UploadMaxBytes,
 		"upload_max_sessions":       s.config.UploadMaxSessions,

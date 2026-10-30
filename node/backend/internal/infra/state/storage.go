@@ -368,6 +368,11 @@ func (s *Store) Close() error {
 	}
 	return nil
 }
+
+func (s *Store) Ready(ctx context.Context) error {
+	return s.view(ctx, func() error { return nil })
+}
+
 func (s *Store) available(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err

@@ -6,6 +6,39 @@ Keep `JOLT_STATE_ENCRYPTION_KEY` (or its external key file) separately. The key
 file must be outside the state and identity directories. See [node YAML](NODE_YAML.md).
 The Control Tower continues to use SQLCipher.
 
+## Release artifacts and environment
+
+Run the Compose commands below from `deploy/` in the release checkout. They use
+`JOLT_NODE_IMAGE` and `JOLT_CONTROL_IMAGE` from `.env`; pin both services to the
+same dated release, preferably by digest. On a remote-node-only host, replace
+`docker-compose.yml` with `docker-compose.node.yml`. The manifests already mount
+secrets read-only and set the corresponding `*_FILE` variables. Do not also set a
+non-empty inline equivalent: dual configuration is rejected. The optional
+`-e NAME` lines support a legacy inline-secret development installation and can
+be omitted when the deployment uses only `*_FILE`.
+
+The v1 compatibility contract is the same dated node/Control Tower pair. It does
+not promise rolling mixed versions, HA, online snapshots or arbitrary downgrades.
+Create snapshots with the currently installed version before upgrading. For
+rollback, restore the snapshot created by the previous version and then start the
+previous images; never assume that changing an image tag reverts persisted state.
+
+For a disposable end-to-end rehearsal, build or select candidate images and run
+this command from the root of the release checkout (unlike the Compose commands
+above, which run from `deploy/`):
+
+```sh
+python3 scripts/release-lifecycle.py \
+  --node-image ghcr.io/jfxdev/jolt-node@sha256:CANDIDATE \
+  --control-image ghcr.io/jfxdev/jolt-control@sha256:CANDIDATE
+```
+
+The script covers snapshot, restore into empty volumes, diagnostics and actual
+operation. Supply `--previous-node-image` and `--previous-control-image`
+together to add upgrade and rollback; it uses the previous images' snapshot for
+rollback. This automation is release evidence only after a successful run and
+does not replace a restore rehearsal on representative storage.
+
 ## Encrypting an existing Control Tower database
 
 New Control Tower databases are created as SQLCipher databases and require the
@@ -16,7 +49,7 @@ been migrated offline.
 Create and verify a backup first, stop the Control Tower, then run:
 
 ```sh
-docker compose run --rm --no-deps \
+docker compose --env-file .env -f docker-compose.yml run --rm --no-deps \
   -e CONTROL_TOWER_DB_ENCRYPTION_KEY \
   jolt-control \
   /usr/local/bin/jolt-control encrypt-database \
@@ -41,8 +74,8 @@ volumes:
 
 ```sh
 mkdir -p backups
-docker compose stop jolt-node
-docker compose run --rm --no-deps \
+docker compose --env-file .env -f docker-compose.yml stop jolt-node
+docker compose --env-file .env -f docker-compose.yml run --rm --no-deps \
   -e JOLT_STATE_ENCRYPTION_KEY \
   -v "$PWD/backups:/backup" \
   jolt-node \
@@ -50,7 +83,7 @@ docker compose run --rm --no-deps \
   --data-dir /var/lib/jolt \
   --keys-dir /var/lib/jolt-keys \
   --output /backup/jolt-node.tar.gz
-docker compose start jolt-node
+docker compose --env-file .env -f docker-compose.yml start jolt-node
 ```
 
 The command:
@@ -84,14 +117,14 @@ Stop the Control Tower before running:
 
 ```sh
 mkdir -p backups
-docker compose stop jolt-control
-docker compose run --rm --no-deps \
+docker compose --env-file .env -f docker-compose.yml stop jolt-control
+docker compose --env-file .env -f docker-compose.yml run --rm --no-deps \
   -v "$PWD/backups:/backup" \
   jolt-control \
   /usr/local/bin/jolt-control snapshot \
   --data-dir /var/lib/jolt-control \
   --output /backup/jolt-control.tar.gz
-docker compose start jolt-control
+docker compose --env-file .env -f docker-compose.yml start jolt-control
 ```
 
 The Control Tower snapshot contains its consistent encrypted SQLCipher database and other
@@ -114,7 +147,7 @@ beside the database archive. The manifest records
 Before starting a restored node, run:
 
 ```sh
-docker compose run --rm --no-deps \
+docker compose --env-file .env -f docker-compose.yml run --rm --no-deps \
   jolt-node \
   /usr/local/bin/jolt-node restore-diagnostics \
   --data-dir /var/lib/jolt \
@@ -144,7 +177,7 @@ Before starting a restored Control Tower, provide the external key through its
 normal environment variable and run:
 
 ```sh
-docker compose run --rm --no-deps \
+docker compose --env-file .env -f docker-compose.yml run --rm --no-deps \
   jolt-control \
   /usr/local/bin/jolt-control restore-diagnostics \
   --data-dir /var/lib/jolt-control
@@ -188,7 +221,7 @@ offline commands:
 read -r -s JOLT_RECOVERY_OPERATIONAL_TOKEN
 export JOLT_RECOVERY_OPERATIONAL_TOKEN
 
-docker compose run --rm --no-deps \
+docker compose --env-file .env -f docker-compose.yml run --rm --no-deps \
   -e JOLT_RECOVERY_OPERATIONAL_TOKEN \
   jolt-node \
   /usr/local/bin/jolt-node recover-operational-token \
@@ -196,7 +229,7 @@ docker compose run --rm --no-deps \
   --confirm replace-operational-token
 
 export CONTROL_TOWER_RECOVERY_NODE_TOKEN="$JOLT_RECOVERY_OPERATIONAL_TOKEN"
-docker compose run --rm --no-deps \
+docker compose --env-file .env -f docker-compose.yml run --rm --no-deps \
   -e CONTROL_TOWER_DB_ENCRYPTION_KEY \
   -e CONTROL_TOWER_RECOVERY_NODE_TOKEN \
   jolt-control \
@@ -228,7 +261,7 @@ characters:
 read -r -s CONTROL_TOWER_RECOVERY_ADMIN_PASSWORD
 export CONTROL_TOWER_RECOVERY_ADMIN_PASSWORD
 
-docker compose run --rm --no-deps \
+docker compose --env-file .env -f docker-compose.yml run --rm --no-deps \
   -e CONTROL_TOWER_DB_ENCRYPTION_KEY \
   -e CONTROL_TOWER_RECOVERY_ADMIN_PASSWORD \
   jolt-control \

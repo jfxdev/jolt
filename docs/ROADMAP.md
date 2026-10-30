@@ -1,11 +1,16 @@
 # Roadmap
 
-Plano corrente de release: [`RELEASE_0.1.0.md`](RELEASE_0.1.0.md), com análise de
-2026-10-21, problemas reproduzidos, critérios de aceite e sequência de entrega.
-Para decidir a publicação da 0.1.0, esse levantamento prevalece sobre as
-prioridades históricas abaixo.
+O gate corrente da primeira versão estável é [`RELEASE_V1.md`](RELEASE_V1.md), e
+as prioridades operacionais atuais estão em [`PRODUCTION.md`](PRODUCTION.md) e
+[`OPERATIONS.md`](OPERATIONS.md). A distribuição usa versões datadas, não a
+numeração `0.1.0` dos planos antigos.
 
-Última atualização: 2026-10-11.
+> **Registro histórico.** O restante deste arquivo preserva análises e correções
+> anteriores. Itens de observabilidade, probes, segredos e qualificação já
+> entregues não devem ser reabertos com base na redação antiga. Limitações ainda
+> vigentes estão consolidadas em RELEASE_V1 e THREAT_MODEL.
+
+Última atualização do inventário histórico: 2026-10-11.
 
 ## Resolvido em 2026-10-11
 
