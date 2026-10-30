@@ -46,6 +46,21 @@ func (s *delayedCompletionStore) UpdateJob(ctx context.Context, job entities.Job
 	return nil
 }
 
+type completionGateStore struct {
+	contracts.JobStore
+	release chan struct{}
+}
+
+func (s *completionGateStore) UpdateJob(ctx context.Context, job entities.Job) error {
+	if err := s.JobStore.UpdateJob(ctx, job); err != nil {
+		return err
+	}
+	if job.State == "completed" {
+		<-s.release
+	}
+	return nil
+}
+
 func TestParallelDirectoryProgressSurvivesDelayedCompletionCheckpoint(t *testing.T) {
 	service, files, mountID := testService(t)
 	service.store = &delayedCompletionStore{JobStore: service.store, full: make(chan struct{})}
