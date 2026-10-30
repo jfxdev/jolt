@@ -68,7 +68,7 @@ The `half` profile covers:
 | — | `full` | Pending | — | Must run on representative target infrastructure |
 
 Run the production-scale profile only on a disposable host with sufficient
-time and at least 220 GiB of free disk space:
+time and at least 100 GiB of free disk space:
 
 ```sh
 make acceptance-full
