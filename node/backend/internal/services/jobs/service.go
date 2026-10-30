@@ -374,15 +374,11 @@ func (s *Service) Complete(ctx context.Context, job *entities.Job, bytes int64, 
 		job.State, job.Phase, job.Error = "completed", "finalization", ""
 	}
 	job.ETASeconds, job.ETAConfidence = nil, ""
-	if err := s.store.UpdateJob(ctx, *job); err != nil {
-		return err
-	}
 	eventType := "job.completed"
 	if operationErr != nil {
 		eventType = "job.failed"
 	}
-	s.recordEvent(ctx, *job, eventType, job.Error)
-	return nil
+	return s.store.UpdateJobWithEvent(ctx, *job, s.newJobEvent(*job, eventType, job.Error))
 }
 
 func (s *Service) List(ctx context.Context, limit int) ([]entities.Job, error) {
@@ -1763,11 +1759,8 @@ func (s *Service) finish(job entities.Job, operationErr error, bytes int64) {
 		}
 	}
 	current.ETASeconds, current.ETAConfidence = nil, ""
-	if err := s.store.UpdateJob(ctx, current); err == nil {
-		s.recordEvent(ctx, current, eventType, current.Error)
-		if current.State == "canceled" {
-			s.cleanupJobPartials(ctx, current)
-		}
+	if err := s.store.UpdateJobWithEvent(ctx, current, s.newJobEvent(current, eventType, current.Error)); err == nil && current.State == "canceled" {
+		s.cleanupJobPartials(ctx, current)
 	}
 }
 
@@ -1812,14 +1805,18 @@ func (s *Service) recordEvent(ctx context.Context, job entities.Job, eventType, 
 	if eventType == "" {
 		return
 	}
-	_, _ = s.store.RecordJobEvent(ctx, entities.JobEvent{
+	_, _ = s.store.RecordJobEvent(ctx, s.newJobEvent(job, eventType, message))
+}
+
+func (s *Service) newJobEvent(job entities.Job, eventType, message string) entities.JobEvent {
+	return entities.JobEvent{
 		JobID: job.ID, Type: eventType, State: job.State, Phase: job.Phase,
 		BytesTotal: job.BytesTotal, BytesCompleted: job.BytesCompleted,
 		BytesPerSecond: job.BytesPerSecond, ETASeconds: job.ETASeconds,
 		ETAConfidence: job.ETAConfidence, Message: message,
 		FilesTotal: job.FilesTotal, FilesCompleted: job.FilesCompleted, FilesFailed: job.FilesFailed,
 		CorrelationID: job.CorrelationID, CreatedAt: s.now(),
-	})
+	}
 }
 
 func (s *Service) ListEvents(ctx context.Context, after int64, jobID string, limit int) ([]entities.JobEvent, error) {

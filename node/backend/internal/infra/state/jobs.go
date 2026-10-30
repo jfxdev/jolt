@@ -88,6 +88,24 @@ func (s *Store) UpdateJob(ctx context.Context, j entities.Job) error {
 		return tx.put("jobs", j.ID, j.PeerNodeID, order(j.CreatedAt), j)
 	})
 }
+func (s *Store) UpdateJobWithEvent(ctx context.Context, j entities.Job, event entities.JobEvent) error {
+	return s.update(ctx, func(tx *transaction) error {
+		if event.JobID != j.ID {
+			return errors.New("job event does not belong to job")
+		}
+		old, e := get[entities.Job](s, "jobs", j.ID)
+		if e != nil {
+			return e
+		}
+		j.CreatedAt = old.CreatedAt
+		if err := tx.put("jobs", j.ID, j.PeerNodeID, order(j.CreatedAt), j); err != nil {
+			return err
+		}
+		event.ID = int64(s.sequence + 1)
+		key := fmt.Sprintf("%020d", event.ID)
+		return tx.put("events", key, event.JobID, key, event)
+	})
+}
 func (s *Store) GetJob(ctx context.Context, id string) (v entities.Job, err error) {
 	err = s.view(ctx, func() error { v, err = get[entities.Job](s, "jobs", id); return err })
 	return

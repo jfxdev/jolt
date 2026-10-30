@@ -31,6 +31,7 @@ type JobStore interface {
 	CreateJobWithItemsHashed(context.Context, entities.Job, []entities.JobItem, string, string) (entities.Job, bool, error)
 	FindJobByIdempotency(context.Context, string) (entities.Job, string, bool, error)
 	UpdateJob(context.Context, entities.Job) error
+	UpdateJobWithEvent(context.Context, entities.Job, entities.JobEvent) error
 	ListJobs(context.Context, int) ([]entities.Job, error)
 	ListJobsByPeer(context.Context, string) ([]entities.Job, error)
 	GetJob(context.Context, string) (entities.Job, error)

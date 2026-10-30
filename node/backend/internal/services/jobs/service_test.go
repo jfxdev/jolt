@@ -63,6 +63,9 @@ func testService(t *testing.T) (*Service, *filesystem.Service, string) {
 
 func TestWorkerExecutesPersistentCopy(t *testing.T) {
 	service, files, mountID := testService(t)
+	release := make(chan struct{})
+	service.store = &completionGateStore{JobStore: service.store, release: release}
+	t.Cleanup(func() { close(release) })
 	mount, err := files.GetMount(context.Background(), mountID)
 	if err != nil {
 		t.Fatal(err)
