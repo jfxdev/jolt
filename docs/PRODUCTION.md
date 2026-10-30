@@ -116,9 +116,10 @@ disponibilidade de todos os nodes ou mounts.
 ## 5. Node adicional em outro host
 
 Copie somente `docker-compose.node.yml`, `node.remote.yaml`, `.env.example` e o
-esquema de secrets para o segundo host. Use a mesma release e crie **novos**
-`node_state_key`, token operacional e tokens de métricas; nunca clone identidade
-ou volumes do primeiro node.
+esquema de secrets para o segundo host. Execute `cp .env.example .env` nesse host
+e edite `.env` com a imagem da mesma release, mount, `PUID`/`PGID` e bindings
+apropriados. Crie **novos** `node_state_key`, token operacional e tokens de
+métricas; nunca clone identidade ou volumes do primeiro node.
 
 Em `node.remote.yaml`, use outro `node_name` e um endpoint peer alcançável pelos
 demais nodes. O Compose remoto mantém a API fora das portas publicadas por

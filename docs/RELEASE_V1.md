@@ -59,7 +59,7 @@ perfis indicados, não substituem a execução no SHA e nas imagens finais.
 1. Congelar o SHA candidato e concluir os gates pré-publicação de código,
    testes, contratos e segurança. Manter como pendentes os gates que dependem
    dos artefatos finais ou de infraestrutura representativa.
-2. Publicar pela workflow `Release` uma **prerelease** datada. Ela aloca a versão
+2. Publicar pelo workflow `Release` uma **prerelease** datada. Ele aloca a versão
    antes dos builds, executa scans, browser integration e lifecycle e só então
    cria a Release com digests e artifact de inventário.
 3. Conferir as evidências de scan, inventário, browser e lifecycle dos mesmos

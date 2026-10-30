@@ -102,6 +102,7 @@ class Lifecycle:
     def __init__(self, args):
         self.args = args
         self.network = "jolt-lifecycle-" + secrets.token_hex(8)
+        self.network_created = False
         self.names = []
         self.temporary = tempfile.TemporaryDirectory(prefix="jolt-lifecycle-")
         self.root = Path(self.temporary.name)
@@ -110,7 +111,8 @@ class Lifecycle:
         self.backup.mkdir(mode=0o777)
         self.backup.chmod(0o777)
         self.secrets = self.root / "secrets"
-        self.secrets.mkdir(mode=0o755)
+        self.secrets.mkdir(mode=0o700)
+        self.secrets.chmod(0o700)
         self.node_token = secrets.token_hex(32)
         self.password = secrets.token_hex(24)
         values = {
@@ -123,7 +125,7 @@ class Lifecycle:
         for name, value in values.items():
             path = self.secrets / name
             path.write_text(value + "\n")
-            path.chmod(0o444)
+            path.chmod(0o400)
 
     def common(self):
         result = ["--detach", "--network", self.network, "--security-opt", "no-new-privileges:true",
@@ -135,7 +137,6 @@ class Lifecycle:
     def start(self, state, node_image, control_image):
         node_name = self.network + "-" + state.name + "-node"
         control_name = self.network + "-" + state.name + "-control"
-        self.names += [node_name, control_name]
         config = state / "node.yaml"
         docker(
             "run", *self.common(), "--name", node_name, "--network-alias", "node-lifecycle",
@@ -153,6 +154,7 @@ class Lifecycle:
             "--mount", f"type=bind,src={self.secrets / 'empty'},dst=/run/secrets/empty,readonly",
             node_image,
         )
+        self.names.append(node_name)
         docker(
             "run", *self.common(), "--name", control_name, "--publish", "127.0.0.1::8090",
             "--env", "CONTROL_TOWER_ADMIN_PASSWORD_FILE=/run/secrets/admin-password",
@@ -165,6 +167,7 @@ class Lifecycle:
             "--mount", f"type=bind,src={self.secrets / 'empty'},dst=/run/secrets/empty,readonly",
             control_image,
         )
+        self.names.append(control_name)
         node_base = "http://" + docker("port", node_name, "8080/tcp").splitlines()[0]
         control_base = "http://" + docker("port", control_name, "8090/tcp").splitlines()[0]
         wait_ready(node_base)
@@ -238,8 +241,17 @@ class Lifecycle:
 
     def close(self):
         for name in reversed(self.names):
-            docker("rm", "--force", name)
-        docker("network", "rm", self.network)
+            try:
+                docker("rm", "--force", name)
+            except subprocess.CalledProcessError:
+                pass
+        self.names.clear()
+        if self.network_created:
+            try:
+                docker("network", "rm", self.network)
+            except subprocess.CalledProcessError:
+                pass
+            self.network_created = False
         self.temporary.cleanup()
 
 
@@ -291,6 +303,7 @@ def main():
     (original / "node.yaml").write_text(configuration())
     try:
         docker("network", "create", life.network)
+        life.network_created = True
         node_name, control_name, node_base, control_base = life.start(original, previous_node, previous_control)
         metadata = expect(request(node_base, "GET", "/api/v1/node", token=life.node_token), 200)
         node_id = metadata["node_id"]
@@ -333,7 +346,10 @@ def main():
         print("PASS: rollback uses previous images with their compatible backup")
     except Exception:
         for name in life.names:
-            logs = docker("logs", "--tail", "40", name)
+            try:
+                logs = docker("logs", "--tail", "40", name)
+            except subprocess.CalledProcessError:
+                continue
             print(logs.replace(life.node_token, "[redacted]").replace(life.password, "[redacted]"))
         raise
     finally:
