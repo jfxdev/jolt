@@ -140,6 +140,30 @@ func TestEncryptionKeySources(t *testing.T) {
 	}
 }
 
+func TestSecretValueSources(t *testing.T) {
+	const key = "JOLT_TEST_SECRET"
+	t.Setenv(key, " environment-secret \n")
+	t.Setenv(key+"_FILE", "")
+	value, err := SecretValue(key)
+	if err != nil || value != "environment-secret" {
+		t.Fatalf("environment secret = %q, %v", value, err)
+	}
+	file := writeConfig(t, " file-secret\n")
+	t.Setenv(key+"_FILE", file)
+	if _, err := SecretValue(key); err == nil {
+		t.Fatal("ambiguous secret source accepted")
+	}
+	t.Setenv(key, "")
+	value, err = SecretValue(key)
+	if err != nil || value != "file-secret" {
+		t.Fatalf("file secret = %q, %v", value, err)
+	}
+	t.Setenv(key+"_FILE", filepath.Join(t.TempDir(), "missing"))
+	if _, err := SecretValue(key); err == nil {
+		t.Fatal("missing secret file accepted")
+	}
+}
+
 func TestSymlinkedStateAndIdentityDirectoriesMustRemainSeparate(t *testing.T) {
 	root := t.TempDir()
 	alias := filepath.Join(t.TempDir(), "alias")

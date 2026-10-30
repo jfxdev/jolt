@@ -1,188 +1,130 @@
-# Modelo de ameaça
+# Modelo de ameaça — estado atual
 
-> Registro histórico da análise inicial. O estado corrente e a qualificação da
-> primeira release estão em [`RELEASE_0.1.0.md`](RELEASE_0.1.0.md). O código atual
-> tem lockout de login, RBAC por subpasta, banco do node cifrado e rotas públicas
-> de compartilhamento em `/s/{token}` e `/api/v1/public/shares/{token}/*`.
-> Abaixo, afirmações de ausência desses controles descrevem a análise antiga.
-> As correções de release bloqueiam symlinks no acesso a conteúdo, validam os
-> caminhos efetivos das operações e contam toda requisição Range na cota pública.
+Este documento descreve a arquitetura atual e os limites de confiança da primeira
+versão. A análise histórica e os achados reproduzidos permanecem em
+[ROADMAP.md](ROADMAP.md), [REMEDIATION.md](REMEDIATION.md) e
+[RELEASE_0.1.0.md](RELEASE_0.1.0.md); afirmações antigas de ausência de lockout,
+RBAC por subpath ou criptografia no node não descrevem o código atual.
 
-Análise da superfície de ataque para acesso ao **filesystem** do node e do
-Control Tower. Foca no atacante **remoto não autenticado** e cita agravantes de
-posição de rede e de host. Referências de achados em
-[`docs/ROADMAP.md`](ROADMAP.md); correções em
-[`docs/REMEDIATION.md`](REMEDIATION.md).
+## Ativos e adversários
 
-## Escopo e ativos
+Ativos principais: bytes dos mounts, identidade privada Ed25519, certificados,
+tokens operacionais e de service accounts, sessões, chaves externas, estado de
+jobs/grants e banco SQLCipher do Control Tower.
 
-- **Ativo primário:** conteúdo dos mounts (FS do node) e o banco do Control
-  Tower (usuários, sessões, tokens de node cifrados, auditoria).
-- **Ativos de credencial:** token operacional do node, chave privada Ed25519 de
-  identidade, certificados mTLS, senha de admin, chave de criptografia do banco.
+Consideramos atacante remoto anônimo, visitante com link público, usuário/operator
+ou service account autenticado, peer pareado, atacante on-path e comprometimento
+do host/container. Não prometemos conter root no host, um admin malicioso ou um
+processo que já possa escrever arbitrariamente nos mounts fora da API.
 
-## Perfis de atacante
+## Superfície e fronteiras
 
-1. **Remoto não autenticado** — só alcança as portas de rede expostas. Foco
-   principal deste documento.
-2. **On-path / mesma rede** — consegue observar/interceptar tráfego (relevante
-   sem TLS).
-3. **Local no host/container** — já tem execução ou leitura no host (pós-
-   comprometimento); usado para contextualizar defesas em profundidade.
+| Entrada | Controle atual | Exposição exigida |
+| --- | --- | --- |
+| Control Tower TCP 8090 | Cookie HttpOnly/SameSite ou bearer de service account; RBAC server-side | proxy HTTPS; backend em loopback |
+| Node API TCP 8080 | bearer operacional de alta entropia; TLS e client CA opcionais | somente rede privada/VPN do Control Tower |
+| Node peer TCP 8443 | TLS 1.3 mTLS e certificado vinculado ao peer/fingerprint exatos | somente peers autorizados por firewall |
+| `/metrics` | bearer dedicado e independente | somente Prometheus/rede de observabilidade |
+| `/livez`, `/readyz`, `/health` | sem dados de arquivos; readiness local | rede de infraestrutura |
+| Login e shares públicos | lockout persistido; shares somente leitura | somente através do Control Tower HTTPS |
 
-## Superfície exposta
+`/openapi.yaml` e `/docs` do node permanecem autenticados. O Control Tower injeta
+o token do node apenas no proxy server-side; navegador e service account não o
+recebem. Transferências entre nodes são pull no destino e os bytes não passam
+pelo Control Tower.
 
-| Porta | Serviço | Autenticação | Rotas públicas |
-| --- | --- | --- | --- |
-| 8080 | Node API | Bearer (`CONTROL_TOWER_TOKEN`) — envolve todo o mux | só `/health` (se `PUBLIC_HEALTHCHECK`) |
-| 8443 | Node mTLS/peer | Certificado cliente identity-pinned (TLS 1.3) | nenhuma sem cert confiável |
-| 8090 | Control Tower | Sessão por cookie ou bearer de service account | `/health`, assets estáticos, `POST /auth/login` |
+## Controles implementados
 
-Evidências: node `auth` envolve o mux inteiro
-(`node/backend/internal/infra/httpapi/server.go` — `s.auth(mux)`), com bypass
-apenas de `/health`; mTLS usa `certificateManager.TLSConfig()`
-(`RequireAnyClientCert` + `VerifyPeerCertificate`) em
-`node/backend/cmd/jolt-node/main.go:128-142`; rotas do Control Tower são
-individualmente embrulhadas em `s.auth(...)`, exceto `login`/`health`
-(`control/internal/httpapi/server.go:68-72`).
+### Autenticação e autorização
 
-## As três "portas" para o FS (atacante remoto não autenticado)
+- Senhas de usuários usam Argon2id. Login e desbloqueio de share possuem lockout
+  persistido com `Retry-After`; cookies de sessão são revogáveis e Secure por
+  padrão. O IP considerado é o peer TCP, não um `X-Forwarded-For` falsificável.
+- Admins possuem acesso amplo. Operators usam policies diretas e roles; service
+  accounts precisam de policy **e** membership do node em access group ativo.
+  Sem grupo ativo, a autenticação falha fechado.
+- Node Paths suportam subpaths, `*` por segmento, `**` recursivo no final e
+  precedência global de `deny`. A autorização ocorre antes do proxy e considera
+  os caminhos efetivos de seleção, uploads persistidos e transferências.
+- A capability `sudo` em recursos administrativos é equivalente a conceder
+  administração. Não a delegue como permissão ordinária; não há separação entre
+  gerir policies e conceder privilégios.
+- RBAC é reavaliada em novas chamadas, mas alteração de policy não cancela um job
+  já admitido. Para contenção, cancele o job ou revogue grant/peer.
 
-### Porta 1 — Node API (8080) · dificuldade: MUITO ALTA
+### Arquivos, jobs e compartilhamentos
 
-- **Barreira:** todo acesso a FS exige `Authorization: Bearer` igual ao token
-  operacional, comparado em tempo constante (`secureEqual`), aceitando também os
-  hashes staged/active (`acceptOperationalToken`, `server.go:148-170`).
-- **Brute-force:** o node **não** tem rate-limit de auth, mas o token é segredo
-  de alta entropia; espaço de busca inviável (~2¹²⁸+).
-- **Via realista:** roubo do token (Porta 3 ou comprometimento de host), não
-  ataque online.
+- A API usa caminhos relativos, contenção de mount e operações por descritores
+  com no-follow. Partial files são internos e a publicação é atômica;
+  `overwrite=false` usa operação de não substituição do kernel nas plataformas
+  suportadas. Remover/mover um symlink não remove/move seu alvo.
+- Jobs possuem checkpoints duráveis, revalidação de mount/peer/grants, ETag e
+  publicação somente após batches sincronizados. Restarts podem exigir validação
+  explícita. Limites de banda e paralelismo reduzem exaustão, mas não garantem
+  justiça entre jobs.
+- Uploads têm teto por arquivo, limite de sessões, reserva de bytes e margem de
+  disco. Isso não substitui quotas e alertas do filesystem.
+- Shares são read-only, com senha opcional, expiração, cota e revogação. Cada
+  requisição de conteúdo/ZIP, inclusive Range, conta tentativa de download.
+  Cada acesso reavalia a RBAC do criador e o confinamento impede symlink fora do
+  escopo. Token desconhecido e revogado têm resposta indistinguível.
+- O desbloqueio de share gera ticket HMAC próprio, com validade limitada e
+  ligação ao hash da senha; revogação e perda de acesso do criador impedem acesso.
 
-### Porta 2 — Node mTLS (8443) · dificuldade: MUITO ALTA (criptográfica)
+### Criptografia e segredos
 
-- **Barreira:** o handshake TLS 1.3 exige certificado cliente assinado pela
-  chave Ed25519 de um peer **confiável exato**. `VerifyPeerCertificate` valida a
-  assinatura sobre `RawTBSCertificate`, deriva a fingerprint da chave embutida e
-  exige match de `node_id` + fingerprint no registry de peers
-  (`certificates.go:533-588`). Sem cert válido, o atacante nem chega ao HTTP
-  (inclusive `/peer/v1/heartbeat`).
-- **Via realista:** obter a **chave privada de um peer confiável**. Sem ela,
-  impossível.
+- O node mantém journal/snapshots YAML com AES-256-GCM e identidade/chaves em
+  diretório separado. Não contém SQLite/SQLCipher.
+- O Control Tower usa SQLCipher de página inteira e AES-256-GCM adicional para
+  tokens de node e convites pendentes. A chave externa não fica no banco nem nos
+  snapshots.
+- Use chaves Base64 aleatórias de 32 bytes. O caminho alternativo de passphrase
+  do Control Tower deriva SHA-256 uma única vez e não oferece KDF lento; a chave
+  mestra também é usada para derivação/proteção de campos, sem subchaves HKDF
+  independentes. Isso reforça a exigência de alta entropia e controle de acesso.
+- Todos os segredos operacionais relevantes aceitam `NOME` ou `NOME_FILE`, com
+  erro fechado se ambos estiverem preenchidos ou o arquivo falhar. Arquivos
+  read-only evitam exposição via `docker inspect`, mas root no host ainda lê os
+  secrets e a memória do processo.
+- Snapshots são offline, com lock exclusivo, integridade, manifest SHA-256 e modo
+  `0600`. O snapshot do node contém chaves privadas; nenhum snapshot inclui os
+  arquivos dos mounts ou a chave externa correspondente.
 
-### Porta 3 — Control Tower (8090) · dificuldade: MÉDIA · **elo mais fraco**
+## Riscos residuais e compensações
 
-- **Superfície não autenticada:** apenas `/health`, assets estáticos e
-  `POST /api/v1/control-tower/auth/login`.
-- **Fraqueza:** o login **não tem rate-limit, lockout nem MFA** (achado
-  **P0.2**). A única defesa é a força da senha do admin (mínimo 12 caracteres,
-  Argon2id ~dezenas de ms/tentativa). Sem lockout, brute-force/spray online é
-  viável com tempo se a senha for fraca ou adivinhável.
-- **Consequência:** sessão de admin → proxy autenticado dos nodes → **FS
-  completo** (o Control Tower detém o token do node cifrado e o injeta apenas
-  server-side).
-- **Via realista:** este é o **único vetor prático** para um atacante puramente
-  remoto. A dificuldade colapsa para a força da senha do admin.
+| Risco/limite | Tratamento necessário |
+| --- | --- |
+| Sem MFA e sessões de 12 h, sem console de dispositivos | HTTPS, senha única, menor número de admins e recuperação offline |
+| Lockout pode ser usado para indisponibilizar uma conta e não é rate limit distribuído | Control Tower single-instance, proxy/firewall e alertas de falhas |
+| Peer confiável com grant amplo pode ler/escrever dentro desse grant | grants mínimos, paths específicos, revogação e auditoria |
+| Admin ou `sudo` delegado tem privilégio elevado | não delegar gestão a operators comuns |
+| Node token comprometido contorna a RBAC do Control Tower | API privada/TLS, rotação coordenada e recuperação offline |
+| Root no host ou escritor externo no mount está fora da contenção completa | hardening do host, permissions, quotas e mounts dedicados |
+| Backup exige parada; sem HA ou backup online | janela de manutenção, snapshots e restores periódicos |
+| Sem tracing/API de logs/configuração mutável | coletor externo de logs/métricas e acesso operacional ao host |
+| UI não recupera o arquivo após reload sem reseleção | documentar e testar resume por reseleção |
+| Fingerprint humana truncada é uma âncora de confiança com margem menor que hash completo | confirmar fingerprint por canal independente e proteger handovers |
 
-## Atacante autenticado não-admin (operator / service account)
+## Supply chain e evidências
 
-Modelo de privilégio verificado no código:
+A distribuição injeta versão/commit/data nos binários e labels OCI, publica
+SBOM/provenance por Buildx, imagens por tag/digest e inventário nativo. A
+promoção preserva tag, SHA e digests da prerelease, sem rebuild.
 
-- **operator** (usuário não-admin) — confinado **exclusivamente às suas
-  policies**. `evaluateAuthorization` resolve policies diretas + de roles e aplica
-  `rbac.Evaluate` com precedência de `deny` (`server.go:574-600`). Não possui o
-  token operacional do node: **todo** acesso a FS passa pela RBAC do proxy do
-  Control Tower.
-- **admin** (`role == "admin"`) — **bypass total** da RBAC (`server.go:575`).
-- **service account** — dupla trava: policy **e** pertencimento do node a um
-  access-group (`server.go:582-593`, fail-closed se não for membro).
+Inventário de referência: Go `1.26.10`, Node `24` no build do frontend, Alpine
+`3.22`, binding `github.com/mutecomm/go-sqlcipher/v4 v4.4.2` e amalgamation
+SQLite `3.33.0` (`SQLITE_VERSION_NUMBER 3033000`). O artifact da candidata é a
+fonte da versão efetivamente publicada.
 
-O mapeamento rota→(Node Path, capability) do proxy é **por-método e preciso**
-(`nodeAuthorizationRequirements`): GET content/metadata → `read`, GET listagem →
-`list`, PUT → `create`, DELETE → `delete`, copy → `read`+`create`+jobs, move →
-`update`+jobs. Sem confusão read→write.
+`govulncheck` avalia vulnerabilidades Go alcançáveis; não cobre C/SQLCipher.
+Trivy bloqueia HIGH/CRITICAL na imagem, mas scan não é prova de ausência de
+vulnerabilidades. A camada C e advisories sem cobertura do scanner exigem triagem
+manual registrada no gate [RELEASE_V1.md](RELEASE_V1.md).
 
-**Confinamento (bom).** Sem `sudo` de gestão, um operator não escala: não fala
-direto com o node (sem token), não enumera usuários/policies/auditoria
-(`requireAdmin`), e a RBAC é avaliada server-side. Burlar exigiria quebrar a
-própria RBAC (match por segmento exato, sem `..`/wildcard, deny global — revisada
-como sólida).
+## Reporte de vulnerabilidades
 
-**Riscos reais (configuração/granularidade), não bypass de código:**
-
-### E1 🟡 Granularidade de arquivo é por-mount, não por-subpath
-
-A decisão de RBAC de arquivo usa `nodes/{node}/files/mounts/{mount}` e **não
-inclui o caminho relativo**. Um operator com `read` num mount lê o **mount
-inteiro**; não há como restringir a um subdiretório via policy (apenas *grants* e
-*transfers* escopam subpath). Intenções de "dar acesso só a `/M/projetoA`" não
-são expressáveis → sobre-exposição dentro do mount concedido.
-*Evidência:* `nodeAuthorizationRequirements` (`filePath := prefix +
-"/files/mounts/" + mountID`).
-*Solução:* estender a RBAC de arquivo para considerar um prefixo de subpath
-opcional na policy, ou orientar o uso de mounts mais granulares.
-
-### E2 🟠 Escalada por delegação de `sudo` em `control-tower/*`
-
-`requireAdmin` não é uma flag de role — exige a capability **`sudo`** no Node
-Path `control-tower/<recurso>` (`server.go:484-491`). Delegar `sudo` em
-`control-tower/users`, `/policies`, `/roles`, `/access-groups` ou
-`/service-accounts` a um operator permite que ele **crie uma policy e a atribua a
-si mesmo**, ou **defina o próprio `role=admin`** (`updateUser` protege apenas
-contra *remover* o próprio admin, não contra *promover*). Não há separação entre
-"gerir objetos de policy" e "o poder que esses objetos conferem": delegar
-qualquer gestão do Control Tower equivale a conceder admin.
-*Solução:* separar a capability de administração de objetos da capacidade de
-concedê-los; impedir que um subject atribua a si mesmo policies/roles ou eleve o
-próprio papel; exigir um segundo admin para promoções.
-
-## Agravantes
-
-- **Sem TLS por padrão** — `CONTROL_TOWER_SECURE_COOKIES=false` (achado **C10**)
-  e HTTP simples. Sem um proxy HTTPS, um atacante **on-path** captura a senha do
-  admin e/ou o cookie de sessão em texto claro, dispensando o brute-force.
-- **Segredos em variáveis de ambiente** (achado **C8**) — token, senha e chave de
-  criptografia ficam visíveis via `docker inspect`/`/proc/<pid>/environ` para um
-  atacante que já tenha leitura no host.
-- **Banco do node em texto claro** (achado **P0.3**) — mounts, grants e
-  identidades de peers legíveis com acesso ao FS do host; sem paridade com o
-  SQLCipher do Control Tower.
-
-## Propriedades positivas (contra o não autenticado)
-
-- Nenhum endpoint devolve bytes ou listagem de arquivo sem autenticação.
-- `/docs` e `/openapi.yaml` **exigem token** (sem vazamento de schema da API).
-- Erro de login genérico (`"Usuário ou senha inválidos."`) — sem enumeração de
-  usuário.
-- Cookies `HttpOnly`, `SameSite=Strict`; CSP `default-src 'self'`;
-  `X-Frame-Options: DENY`; `nosniff`.
-- Token do node nunca chega ao navegador; proxy copia só um allow-list de
-  headers.
-
-## Veredito
-
-Para um atacante **remoto e não autenticado**, a API do node e o plano mTLS são
-**fortes** (protegidos por segredo de alta entropia e por criptografia de
-identidade). O **único vetor prático** é o brute-force do login do Control Tower,
-cuja dificuldade depende **exclusivamente** da força da senha do admin, por causa
-da ausência de rate-limit.
-
-### Correções que fecham quase toda a exposição remota
-
-1. **P0.2** — rate-limit + lockout + MFA no login
-   ([`REMEDIATION.md#p02`](REMEDIATION.md#p02)).
-2. **C10** — `SECURE_COOKIES=true` por padrão e HTTPS obrigatório em produção.
-3. Reforço operacional: senha de admin forte e única; nunca expor 8080/8443
-   fora da rede confiável; **C8** (segredos via `*_FILE`) e **P0.3**
-   (cripto do banco do node) para reduzir o impacto de comprometimento de host.
-
-### Matriz resumida
-
-| Vetor | Pré-requisito | Dificuldade | Mitigação |
-| --- | --- | --- | --- |
-| Node API 8080 | token operacional | Muito alta | segredo de alta entropia (ok) |
-| Node mTLS 8443 | chave privada de peer confiável | Muito alta | cripto de identidade (ok) |
-| Login 8090 | senha do admin | **Média** | **P0.2** + senha forte |
-| Sniffing on-path | posição de rede + sem TLS | Baixa (se sem TLS) | **C10** + HTTPS |
-| Leitura de host | comprometimento prévio do host | — | **C8**, **P0.3** |
-| Operator → mount inteiro | policy de arquivo num mount | Média (sobre-exposição) | **E1** (subpath na RBAC) |
-| Operator → admin | `sudo` de gestão delegado | Baixa (se delegado) | **E2** (separar gestão de concessão) |
+Use uma GitHub Security Advisory privada em
+`https://github.com/jfxdev/jolt/security/advisories/new`. Não abra issue pública
+com exploit, token, arquivos pessoais ou segredos. Informe versão/SHA/digest,
+arquitetura, configuração redigida, impacto e reprodução mínima. Não há SLA de
+resposta declarado neste repositório.

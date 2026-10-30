@@ -368,6 +368,24 @@ func (s *Store) Close() error {
 	}
 	return nil
 }
+
+func (s *Store) Ready(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for !s.mu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+	defer s.mu.Unlock()
+	return s.available(ctx)
+}
+
 func (s *Store) available(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err

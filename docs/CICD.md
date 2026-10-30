@@ -1,42 +1,70 @@
 # CI/CD e releases datadas
 
-Toda alteração em `main` deve chegar por pull request. A CI executa validação de
-workflows e formatação, build, vet e testes Go com race, testes e build do
-frontend, cenários Playwright desktop/mobile, aceitação rápida, `govulncheck` e
-smoke real entre os dois containers. O check **PR Gate** só passa quando todos
-os validadores passam.
+Toda alteração em `main` deve chegar por pull request. A CI valida workflows e
+formatação, build/vet/testes Go com race, frontend e Playwright desktop/mobile,
+aceitação rápida, `govulncheck`, build das imagens e smoke real entre containers.
+O check **PR Gate** exige todos esses validadores.
 
-Após um merge, a execução na `main` cria imagens candidatas amd64 com a tag
-`sha-<commit>`, executa o smoke pelos digests publicados e promove esses mesmos
-digests para a versão pública. Nenhuma implantação é feita.
+## Candidata e artefatos
 
-## Versões e artefatos
+Após merge em `main`, a workflow de release aloca a versão **antes** dos builds,
+em data de São Paulo: `YYYY-MM-DD`, depois `.1`, `.2` etc. Não há SemVer nem
+prefixo `v`. App, labels OCI, imagens, tag e GitHub Release usam exatamente essa
+versão. `/api/v1` e `info.version` dos contratos são independentes.
 
-As versões usam a data de São Paulo: `YYYY-MM-DD`, depois `.1`, `.2` e assim
-por diante no mesmo dia. Tags são anotadas, nunca sobrescritas, e registram o
-commit e os digests publicados. Uma nova execução do mesmo commit reutiliza a
-tag já associada a ele, mesmo se cruzar a meia-noite; uma publicação já
-concluída não refaz builds nem altera artefatos. Uma execução parcialmente
-concluída pode continuar sem gerar outra versão.
+São construídas imagens `linux/amd64` com provenance/SBOM e tag candidata
+`sha-<commit>`. Os gates de publicação executam:
 
-Cada publicação entrega:
+- pull pelos digests e Trivy, bloqueando HIGH/CRITICAL;
+- inventário de módulos Go, pacotes Alpine, bibliotecas ligadas e SQLite nativo;
+- smoke HTTP real com `--expected-version`;
+- snapshot/restore vazio/diagnósticos/operação pelo lifecycle;
+- jornada real com dois nodes, proxy HTTPS e Playwright desktop/mobile.
 
-- `ghcr.io/jfxdev/jolt-node:<versão>`
-- `ghcr.io/jfxdev/jolt-control:<versão>`
-- uma GitHub Release com notas, commit, digests e vínculo para a execução
+Cada publicação cria uma **prerelease** com:
 
-As imagens são públicas e atendem `linux/amd64`. Para instalar uma versão,
-prefira o digest indicado na release: ele identifica exatamente a imagem testada.
+- `ghcr.io/jfxdev/jolt-node:<versão>`;
+- `ghcr.io/jfxdev/jolt-control:<versão>`;
+- tag anotada com commit e digests;
+- notas e vínculo para a execução;
+- artifacts `native-inventory-*` e SBOM/provenance associados às imagens.
 
-Os pacotes ligados a este repositório público herdam sua visibilidade e são
-verificados por pull anônimo durante a publicação. Se essa verificação falhar,
-altere uma vez a visibilidade de `jolt-node` e `jolt-control` para **Public**
-em GitHub Packages e reexecute a publicação; o GitHub não oferece API para essa
-alteração, e a tag e os digests serão reutilizados.
+A tag nunca é sobrescrita. Uma nova execução do mesmo commit reutiliza a versão
+associada, mesmo após mudança de data. Se houver uma tag reservada sem Release
+concluída, o rerun também reutiliza os digests nela registrados e não refaz os
+builds; scan, smoke, browser e lifecycle validam novamente esses mesmos
+artefatos. Se uma colisão fizer a versão mudar entre `prepare` e `publish`, a
+execução falha em vez de publicar app e imagem com versões divergentes. Uma
+publicação já concluída não refaz builds.
 
-## Operação
+`govulncheck` não cobre C/SQLCipher. Trivy e o inventário não substituem a triagem
+nativa nem os gates externos registrados em [RELEASE_V1.md](RELEASE_V1.md).
 
-Use **Re-run jobs** na execução de publicação para retomar uma falha. Não crie,
-mova nem apague tags de release manualmente. Para investigar uma divergência,
-compare o SHA da tag anotada e os digests da release; a publicação interrompe a
-promoção se o digest publicado não corresponder ao candidato testado.
+## Promoção estável sem rebuild
+
+A prerelease não é automaticamente declarada production-ready. Depois de concluir
+os gates de escala, dois hosts, upgrade/rollback e demais evidências, execute
+manualmente **Promote dated release** com versão e URL de evidências. O job exige
+aprovação do environment `production` e:
+
+1. confirma que a Release é prerelease e resolve a tag anotada;
+2. verifica que as tags de imagem ainda apontam para os digests aprovados;
+3. faz pull por digest e repete smoke com a versão esperada;
+4. marca a mesma Release como estável e anexa a evidência.
+
+Tag, SHA e digests permanecem idênticos; nenhum rebuild ocorre. A primeira
+versão não tem automaticamente uma imagem anterior: o gate de upgrade/rollback
+precisa ser exercido com o par anterior explicitamente fornecido ao lifecycle
+quando essa versão existir.
+
+## Operação e incidentes de publicação
+
+Use **Re-run jobs** para retomar falhas. Não crie, mova ou apague tags de release
+manualmente. Para divergência, compare SHA da tag anotada e digests da Release;
+a promoção falha fechado se eles não corresponderem ao candidato testado.
+
+Os pacotes precisam permitir pull anônimo, verificado na publicação. Se falhar,
+altere uma vez `jolt-node` e `jolt-control` para **Public** em GitHub Packages e
+reexecute; tag e digests são reutilizados. Proteção de branch, rulesets,
+permissions de actions e reviewers do environment `production` são configuração
+externa obrigatória e devem ser auditadas antes da primeira publicação.

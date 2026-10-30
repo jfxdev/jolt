@@ -13,10 +13,21 @@ COPY go.mod go.sum* ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
+ARG JOLT_VERSION=development
+ARG JOLT_COMMIT=unknown
+ARG JOLT_BUILD_DATE=unknown
 RUN CGO_ENABLED=1 CGO_CFLAGS="-D_LARGEFILE64_SOURCE" GOOS=linux \
-    go build -trimpath -ldflags="-s -w" -o /out/jolt-control ./cmd/jolt-control
+    go build -trimpath \
+    -ldflags="-s -w -X github.com/jfxdev/jolt/control/internal/buildinfo.Version=${JOLT_VERSION} -X github.com/jfxdev/jolt/control/internal/buildinfo.Commit=${JOLT_COMMIT} -X github.com/jfxdev/jolt/control/internal/buildinfo.Date=${JOLT_BUILD_DATE}" \
+    -o /out/jolt-control ./cmd/jolt-control
 
 FROM alpine:3.22
+ARG JOLT_VERSION=development
+ARG JOLT_COMMIT=unknown
+ARG JOLT_BUILD_DATE=unknown
+LABEL org.opencontainers.image.version="${JOLT_VERSION}" \
+      org.opencontainers.image.revision="${JOLT_COMMIT}" \
+      org.opencontainers.image.created="${JOLT_BUILD_DATE}"
 RUN apk add --no-cache ca-certificates libgcc su-exec
 COPY --from=backend /out/jolt-control /usr/local/bin/jolt-control
 COPY --from=frontend /src/dist /opt/jolt-control/frontend

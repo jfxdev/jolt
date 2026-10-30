@@ -1,10 +1,15 @@
-# Plano de release — Jolt 0.1.0
+# Plano histórico de release — Jolt 0.1.0
+
+> **Documento histórico.** O gate atual é [RELEASE_V1.md](RELEASE_V1.md). A
+> distribuição usa exclusivamente versões datadas `YYYY-MM-DD[.N]`, sem SemVer ou
+> prefixo `v`; referências abaixo a `0.1.0`, `v0.1.0` e RC SemVer não são o plano
+> atual. O diagnóstico continua útil para rastrear correções, mas seus resultados
+> não substituem a validação das imagens datadas finais.
 
 Análise realizada em **2026-10-21**, sobre `main` no commit
 `1f9bc4c406039826cd9bf83184d9a9258aa945d1`, igual ao `main` remoto consultado.
-Este documento preserva o diagnóstico do commit auditado e planeja a entrega.
-A seção seguinte registra as correções preparadas após a análise. Nenhuma tag,
-imagem pública ou release foi criada.
+Este documento preserva o diagnóstico do commit auditado e o plano da época.
+A seção seguinte registra as correções preparadas após a análise.
 
 ## Correções preparadas neste PR
 

@@ -1,9 +1,16 @@
-# Guia de correção
+# Guia de correção — registro histórico
 
-Correções detalhadas, em nível de código, para os achados de `docs/ROADMAP.md`.
-Cada seção traz: **objetivo**, **mudança proposta** (com trechos de código),
-**arquivos afetados**, **risco/migração** e **como validar**.
+Este arquivo preserva propostas e trechos associados a `docs/ROADMAP.md`; não é
+uma lista atual de bloqueadores nem código pronto para aplicar. Várias propostas
+já foram implementadas de outra forma: lockout persistido, segredos `*_FILE` com
+falha fechada, hardening do Compose, probes, RBAC por subpath e upload/disco.
 
+Para o estado atual, use [THREAT_MODEL.md](THREAT_MODEL.md),
+[RELEASE_V1.md](RELEASE_V1.md), [PRODUCTION.md](PRODUCTION.md) e o código/testes.
+Não aplique patches deste documento sobre uma instalação ou branch atual sem
+reavaliar compatibilidade, migração e segurança.
+
+Cada seção histórica traz objetivo, mudança proposta, arquivos, risco e validação.
 Comentários de código em inglês para casar com o restante do repositório.
 
 Índice:

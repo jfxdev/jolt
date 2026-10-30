@@ -325,7 +325,10 @@ func TestParallelPullRejectsChangedETagBeforePublication(t *testing.T) {
 	trustPeer(t, source, destination, "https://destination.invalid:8443")
 	baseHandler := mtlsapi.New(source.identity, "source", source.transfers)
 	var changed atomic.Bool
+	var handlers sync.WaitGroup
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlers.Add(1)
+		defer handlers.Done()
 		if r.Header.Get("Range") != "" && changed.CompareAndSwap(false, true) {
 			replacement := append([]byte(nil), content...)
 			replacement[0] ^= 0xff
@@ -360,6 +363,7 @@ func TestParallelPullRejectsChangedETagBeforePublication(t *testing.T) {
 		t.Fatal(err)
 	}
 	written, err := destination.transfers.ExecutePull(context.Background(), job, func(int64, int64) error { return nil })
+	handlers.Wait()
 	if !errors.Is(err, filesystem.ErrSourceChanged) || written != 0 {
 		t.Fatalf("changed ETag was not rejected at the batch checkpoint: written=%d err=%v", written, err)
 	}

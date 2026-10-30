@@ -1,0 +1,101 @@
+name: jolt
+
+services:
+  jolt-node:
+    image: ${JOLT_NODE_IMAGE:?Set JOLT_NODE_IMAGE to a release tag or digest}
+    restart: unless-stopped
+    init: true
+    environment:
+      JOLT_CONFIG_FILE: /etc/jolt/node.yaml
+      CONTROL_TOWER_TOKEN_FILE: /run/secrets/control_tower_token
+      JOLT_STATE_ENCRYPTION_KEY_FILE: /run/secrets/node_state_key
+      METRICS_TOKEN_FILE: /run/secrets/node_metrics_token
+      NODE_HEALTHCHECK_URL: ${NODE_HEALTHCHECK_URL:-http://127.0.0.1:8080/readyz}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      UMASK: ${UMASK:-002}
+      # Empty is safe. Setting paths here recursively chowns them at startup.
+      JOLT_OWNED_PATHS: ${JOLT_OWNED_PATHS:-}
+    expose:
+      - "8080"
+    ports:
+      - "${NODE_PEER_BIND:-0.0.0.0}:${NODE_PEER_PORT:-8443}:8443"
+    volumes:
+      - ./node.yaml:/etc/jolt/node.yaml:ro
+      - node-data:/var/lib/jolt
+      - node-keys:/var/lib/jolt-keys
+      - ${JOLT_MOUNT_PATH:?Set JOLT_MOUNT_PATH}:/mnt/files:rw
+      - ./secrets/control_tower_token:/run/secrets/control_tower_token:ro
+      - ./secrets/node_state_key:/run/secrets/node_state_key:ro
+      - ./secrets/node_metrics_token:/run/secrets/node_metrics_token:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
+    deploy:
+      resources:
+        limits:
+          pids: 512
+          cpus: "${NODE_CPU_LIMIT:-2}"
+          memory: ${NODE_MEMORY_LIMIT:-2g}
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -qO- \"$${NODE_HEALTHCHECK_URL:-http://127.0.0.1:8080/readyz}\" >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  jolt-control:
+    image: ${JOLT_CONTROL_IMAGE:?Set JOLT_CONTROL_IMAGE to a release tag or digest}
+    restart: unless-stopped
+    init: true
+    depends_on:
+      jolt-node:
+        condition: service_healthy
+    environment:
+      CONTROL_TOWER_ADDRESS: :8090
+      CONTROL_TOWER_DATA_DIR: /var/lib/jolt-control
+      CONTROL_TOWER_STATIC_DIR: /opt/jolt-control/frontend
+      CONTROL_TOWER_ADMIN_USERNAME: ${CONTROL_TOWER_ADMIN_USERNAME:-admin}
+      CONTROL_TOWER_ADMIN_PASSWORD_FILE: /run/secrets/control_admin_password
+      CONTROL_TOWER_DB_ENCRYPTION_KEY_FILE: /run/secrets/control_db_key
+      CONTROL_TOWER_METRICS_TOKEN_FILE: /run/secrets/control_metrics_token
+      CONTROL_TOWER_SECURE_COOKIES: "true"
+      CONTROL_TOWER_PUBLIC_BASE_URL: ${CONTROL_TOWER_PUBLIC_BASE_URL:?Set the public HTTPS URL}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      UMASK: "077"
+    ports:
+      - "${CONTROL_HTTP_BIND:-127.0.0.1}:${CONTROL_HTTP_PORT:-8090}:8090"
+    volumes:
+      - control-data:/var/lib/jolt-control
+      - ./secrets/control_admin_password:/run/secrets/control_admin_password:ro
+      - ./secrets/control_db_key:/run/secrets/control_db_key:ro
+      - ./secrets/control_metrics_token:/run/secrets/control_metrics_token:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
+    deploy:
+      resources:
+        limits:
+          pids: 512
+          cpus: "${CONTROL_CPU_LIMIT:-2}"
+          memory: ${CONTROL_MEMORY_LIMIT:-2g}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8090/readyz >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  node-data:
+  node-keys:
+  control-data:

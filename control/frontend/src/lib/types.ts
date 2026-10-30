@@ -21,6 +21,12 @@ export interface AuthUser {
 
 export interface User extends AuthUser {}
 
+export interface BuildInfo {
+  version: string;
+  commit: string;
+  build_date: string;
+}
+
 export interface ServiceAccount {
   service_account_id: string;
   name: string;

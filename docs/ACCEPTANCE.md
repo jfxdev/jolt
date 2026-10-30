@@ -5,6 +5,31 @@ parallel-file, and parallel-chunk paths used in production. It is opt-in so the
 normal unit-test suite remains fast and does not unexpectedly consume large
 amounts of disk space.
 
+The consolidated go/no-go record is [RELEASE_V1.md](RELEASE_V1.md). Besides the
+profiles below, the final dated images must pass:
+
+```sh
+python3 scripts/container-smoke.py --expected-version VERSION
+python3 scripts/browser-integration.py --expected-version VERSION
+python3 scripts/release-lifecycle.py \
+  --node-image ghcr.io/jfxdev/jolt-node@sha256:CANDIDATE \
+  --control-image ghcr.io/jfxdev/jolt-control@sha256:CANDIDATE
+```
+
+Replace `VERSION` with the exact allocated image version, `YYYY-MM-DD` or
+`YYYY-MM-DD.N` when a numeric collision suffix was allocated.
+
+Browser integration uses two real nodes, HTTPS and desktop/mobile journeys.
+Lifecycle covers snapshot, empty restore, diagnostics and operation; passing both
+`--previous-node-image` and `--previous-control-image` also covers upgrade and
+rollback with the previous version's snapshot. These scripts were added for this
+release, but their final-container evidence remains pending until explicitly
+recorded in RELEASE_V1. Do not infer a pass from compilation or CI wiring.
+
+A production claim also requires `make acceptance-full` on representative
+Linux/amd64 infrastructure and a separate two-host transfer/failure rehearsal.
+Two containers on one development machine do not replace that rehearsal.
+
 ## Profiles
 
 Run the CI/development profile:
@@ -23,7 +48,7 @@ The `quick` profile covers:
 - eight parallel files and two parallel chunks per file;
 - aggregate byte/file progress and sampled SHA-256 equality.
 
-Run the half-scale profile on a disposable host with at least 110 GiB of free
+Run the half-scale profile on a disposable host with at least 60 GiB of free
 disk space:
 
 ```sh
@@ -33,7 +58,7 @@ make acceptance-half
 The `half` profile covers:
 
 - one 5 GiB file;
-- one 50 GiB directory;
+- one 25 GiB directory;
 - 2,500 files.
 
 ## Verified runs
@@ -41,12 +66,12 @@ The `half` profile covers:
 | Date | Profile | Result | Duration | Environment note |
 | --- | --- | --- | --- | --- |
 | 2026-07-26 | `quick` | Passed | 14.837 s | Local APFS development host |
-| 2026-07-26 | `half` | Passed | 559.746 s | Local APFS development host; temporary data cleaned and free space restored |
+| 2026-07-26 | `half` (legacy 5 GiB/50 GiB configuration) | Passed | 559.746 s | Local APFS development host; temporary data cleaned and free space restored |
 | 2026-10-22 | `quick` (YAML) | Passed | 230.657 s | Local APFS; concurrent race-test and image-build workload |
-| — | `full` | Pending | — | Must run on representative target infrastructure |
+| 2026-10-30 | `full` | Passed | 4,842.680 s | Local macOS 27.0.1 ARM64/APFS; temporary data cleaned; representative Linux/amd64 run remains pending |
 
 Run the production-scale profile only on a disposable host with sufficient
-time and at least 220 GiB of free disk space:
+time and at least 100 GiB of free disk space:
 
 ```sh
 make acceptance-full
@@ -55,12 +80,13 @@ make acceptance-full
 The `full` profile raises the same scenarios to:
 
 - one 10 GiB file;
-- one 100 GiB directory;
+- one 35 GiB directory;
 - 5,000 files.
 
 The source and destination coexist during validation, and temporary partials
-may also be present, so available disk space must exceed the nominal dataset
-size.
+may also be present. The default `full` profile is capped at 90 GiB of nominal
+source/destination data, leaving 10 GiB of its 100 GiB budget for partials and
+metadata.
 
 ## Overrides
 
@@ -104,7 +130,7 @@ The always-on automated suite complements the opt-in load profiles:
 | Restored state contains active jobs/partials | Diagnostics report them and restored jobs require explicit validation |
 
 The `quick` profile is suitable for continuous integration. A release that
-claims the 10 GiB/100 GiB limits should also record a successful
+claims the 10 GiB/35 GiB limits should also record a successful
 `make acceptance-full` run on the target filesystem and deployment class.
 
 ## Encrypted YAML persistence profile

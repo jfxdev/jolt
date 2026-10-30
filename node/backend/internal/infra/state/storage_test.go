@@ -29,6 +29,24 @@ func openTest(t *testing.T) (*Store, string) {
 func sampleJob(id string) entities.Job {
 	return entities.Job{ID: id, Type: "copy_local", MountID: "files", State: "queued", Phase: "validation", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), MaxAttempts: 3}
 }
+func TestReadyRespectsContextWhileLocked(t *testing.T) {
+	s, _ := openTest(t)
+	s.mu.Lock()
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Ready(ctx) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("ready error = %v, want context deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		s.mu.Unlock()
+		t.Fatal("readiness did not respect its context while the store was locked")
+	}
+	s.mu.Unlock()
+}
 func TestDurabilityBoundaries(t *testing.T) {
 	for _, point := range []string{"before_file_sync", "after_file_sync", "after_rename", "after_directory_sync"} {
 		t.Run(point, func(t *testing.T) {

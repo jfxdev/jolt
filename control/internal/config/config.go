@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -33,14 +34,19 @@ func Load() (Config, error) {
 		DataDir:                value("CONTROL_TOWER_DATA_DIR", "./.jolt-control"),
 		StaticDir:              value("CONTROL_TOWER_STATIC_DIR", "./frontend/dist"),
 		AdminUsername:          value("CONTROL_TOWER_ADMIN_USERNAME", "admin"),
-		AdminPassword:          os.Getenv("CONTROL_TOWER_ADMIN_PASSWORD"),
 		SecureCookies:          boolValue("CONTROL_TOWER_SECURE_COOKIES", true),
 		TransferMaxSourcePaths: intValue("TRANSFER_MAX_SOURCE_PATHS", 1000),
 		NodeCAFile:             value("CONTROL_TOWER_NODE_CA_FILE", ""),
 		NodeClientCertFile:     value("CONTROL_TOWER_NODE_CLIENT_CERT_FILE", ""),
 		NodeClientKeyFile:      value("CONTROL_TOWER_NODE_CLIENT_KEY_FILE", ""),
 		PublicBaseURL:          strings.TrimRight(value("CONTROL_TOWER_PUBLIC_BASE_URL", ""), "/"),
-		MetricsToken:           strings.TrimSpace(os.Getenv("CONTROL_TOWER_METRICS_TOKEN")),
+	}
+	var err error
+	if cfg.AdminPassword, err = SecretValue("CONTROL_TOWER_ADMIN_PASSWORD"); err != nil {
+		return Config{}, err
+	}
+	if cfg.MetricsToken, err = SecretValue("CONTROL_TOWER_METRICS_TOKEN"); err != nil {
+		return Config{}, err
 	}
 	if cfg.MetricsToken != "" && len(cfg.MetricsToken) < 16 {
 		return Config{}, errors.New("CONTROL_TOWER_METRICS_TOKEN must contain at least 16 characters")
@@ -72,18 +78,40 @@ func Load() (Config, error) {
 	if cfg.TransferMaxSourcePaths < 1 || cfg.TransferMaxSourcePaths > 100000 {
 		return Config{}, errors.New("TRANSFER_MAX_SOURCE_PATHS must be between 1 and 100000")
 	}
-	rawKey := strings.TrimSpace(os.Getenv("CONTROL_TOWER_DB_ENCRYPTION_KEY"))
-	encryptionKey, err := ParseEncryptionKey(rawKey)
+	cfg.EncryptionKey, err = LoadEncryptionKey()
 	if err != nil {
 		return Config{}, err
 	}
-	cfg.EncryptionKey = encryptionKey
 	absolute, err := filepath.Abs(cfg.DataDir)
 	if err != nil {
 		return Config{}, err
 	}
 	cfg.DataDir = absolute
 	return cfg, nil
+}
+
+func SecretValue(key string) (string, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	file := strings.TrimSpace(os.Getenv(key + "_FILE"))
+	if raw != "" && file != "" {
+		return "", errors.New("set only one of " + key + " and " + key + "_FILE")
+	}
+	if file == "" {
+		return raw, nil
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return "", fmt.Errorf("read %s_FILE: %w", key, err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func LoadEncryptionKey() ([]byte, error) {
+	rawKey, err := SecretValue("CONTROL_TOWER_DB_ENCRYPTION_KEY")
+	if err != nil {
+		return nil, err
+	}
+	return ParseEncryptionKey(rawKey)
 }
 
 func ParseEncryptionKey(rawKey string) ([]byte, error) {

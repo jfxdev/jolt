@@ -139,11 +139,17 @@ func Load(paths ...string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	c.ControlTowerToken = strings.TrimSpace(os.Getenv("CONTROL_TOWER_TOKEN"))
+	c.ControlTowerToken, err = SecretValue("CONTROL_TOWER_TOKEN")
+	if err != nil {
+		return Config{}, err
+	}
 	if c.ControlTowerToken == "" {
 		return Config{}, errors.New("CONTROL_TOWER_TOKEN is required")
 	}
-	c.MetricsToken = strings.TrimSpace(os.Getenv("METRICS_TOKEN"))
+	c.MetricsToken, err = SecretValue("METRICS_TOKEN")
+	if err != nil {
+		return Config{}, err
+	}
 	if c.MetricsToken != "" && len(c.MetricsToken) < 16 {
 		return Config{}, errors.New("METRICS_TOKEN must contain at least 16 characters")
 	}
@@ -440,24 +446,40 @@ func (c Config) Resources() ([]entities.Mount, []entities.TransferPathGrant) {
 
 func (c Config) ProtectedPaths() []string {
 	paths := []string{c.DataDir, c.KeysDir, c.FilePath}
-	for _, secret := range []string{os.Getenv("JOLT_STATE_ENCRYPTION_KEY_FILE"), c.APITLSKeyFile} {
+	for _, secret := range []string{
+		os.Getenv("CONTROL_TOWER_TOKEN_FILE"),
+		os.Getenv("METRICS_TOKEN_FILE"),
+		os.Getenv("JOLT_STATE_ENCRYPTION_KEY_FILE"),
+		os.Getenv("JOLT_RECOVERY_OPERATIONAL_TOKEN_FILE"),
+		c.APITLSKeyFile,
+	} {
 		if strings.TrimSpace(secret) != "" {
 			paths = append(paths, secret)
 		}
 	}
 	return paths
 }
-func LoadEncryptionKey() ([]byte, error) {
-	raw, file := strings.TrimSpace(os.Getenv("JOLT_STATE_ENCRYPTION_KEY")), strings.TrimSpace(os.Getenv("JOLT_STATE_ENCRYPTION_KEY_FILE"))
+
+func SecretValue(key string) (string, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	file := strings.TrimSpace(os.Getenv(key + "_FILE"))
 	if raw != "" && file != "" {
-		return nil, errors.New("set only one of JOLT_STATE_ENCRYPTION_KEY and JOLT_STATE_ENCRYPTION_KEY_FILE")
+		return "", errors.New("set only one of " + key + " and " + key + "_FILE")
 	}
-	if file != "" {
-		data, err := os.ReadFile(file)
-		if err != nil {
-			return nil, fmt.Errorf("read state encryption key: %w", err)
-		}
-		raw = string(data)
+	if file == "" {
+		return raw, nil
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return "", fmt.Errorf("read %s_FILE: %w", key, err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func LoadEncryptionKey() ([]byte, error) {
+	raw, err := SecretValue("JOLT_STATE_ENCRYPTION_KEY")
+	if err != nil {
+		return nil, err
 	}
 	return ParseEncryptionKey(raw)
 }

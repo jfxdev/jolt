@@ -459,7 +459,10 @@ func runRecoverOperationalToken(arguments []string) error {
 	if *confirmation != "replace-operational-token" {
 		return errors.New(`--confirm replace-operational-token is required`)
 	}
-	token := strings.TrimSpace(os.Getenv("JOLT_RECOVERY_OPERATIONAL_TOKEN"))
+	token, err := config.SecretValue("JOLT_RECOVERY_OPERATIONAL_TOKEN")
+	if err != nil {
+		return err
+	}
 	if len(token) < 32 {
 		return errors.New("JOLT_RECOVERY_OPERATIONAL_TOKEN must contain at least 32 characters")
 	}
