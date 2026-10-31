@@ -109,7 +109,7 @@ pelo Control Tower.
 
 A distribuição injeta versão/commit/data nos binários e labels OCI, publica
 SBOM/provenance por Buildx, imagens por tag/digest e inventário nativo. A
-promoção preserva tag, SHA e digests da prerelease, sem rebuild.
+publicação estável preserva a correspondência entre tag, SHA e digests, sem rebuild.
 
 Inventário de referência: Go `1.26.10`, Node `24` no build do frontend, Alpine
 `3.22`, binding `github.com/mutecomm/go-sqlcipher/v4 v4.4.2` e amalgamation
