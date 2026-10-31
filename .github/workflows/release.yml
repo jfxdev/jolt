@@ -301,7 +301,7 @@ jobs:
             --expected-version "$VERSION"
 
   publish:
-    name: Create dated prerelease
+    name: Create dated release
     needs: [prepare, candidate-node, candidate-control, scan, smoke, browser-integration]
     if: needs.prepare.outputs.already_published != 'true'
     permissions:
@@ -380,7 +380,7 @@ jobs:
               exit 1
             }
           done
-      - name: Create or update the prerelease
+      - name: Create or update the stable release
         env:
           VERSION: ${{ steps.version.outputs.version }}
           NODE_DIGEST: ${{ needs.candidate-node.outputs.digest }}
@@ -390,9 +390,9 @@ jobs:
           notes="$RUNNER_TEMP/release-notes.md"
           gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$VERSION" -f target_commitish="$GITHUB_SHA" --jq .body > "$notes"
           # shellcheck disable=SC2016
-          printf '\n\n## Artefatos\n\n- Commit: `%s`\n- Node: `ghcr.io/%s/jolt-node@%s`\n- Control: `ghcr.io/%s/jolt-control@%s`\n- Execução: %s/%s/actions/runs/%s\n- Estado: candidata; promover somente após os gates em docs/RELEASE_V1.md.\n' "$GITHUB_SHA" "${GITHUB_REPOSITORY_OWNER,,}" "$NODE_DIGEST" "${GITHUB_REPOSITORY_OWNER,,}" "$CONTROL_DIGEST" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> "$notes"
+          printf '\n\n## Artefatos\n\n- Commit: `%s`\n- Node: `ghcr.io/%s/jolt-node@%s`\n- Control: `ghcr.io/%s/jolt-control@%s`\n- Execução: %s/%s/actions/runs/%s\n- Estado: estável; publicada automaticamente após os gates da CI.\n' "$GITHUB_SHA" "${GITHUB_REPOSITORY_OWNER,,}" "$NODE_DIGEST" "${GITHUB_REPOSITORY_OWNER,,}" "$CONTROL_DIGEST" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> "$notes"
           if gh release view "$VERSION" >/dev/null 2>&1; then
-            gh release edit "$VERSION" --draft=false --prerelease=true --title "Jolt $VERSION RC" --notes-file "$notes"
+            gh release edit "$VERSION" --draft=false --prerelease=false --latest --title "Jolt $VERSION" --notes-file "$notes"
           else
-            gh release create "$VERSION" --verify-tag --prerelease --title "Jolt $VERSION RC" --notes-file "$notes"
+            gh release create "$VERSION" --verify-tag --latest --title "Jolt $VERSION" --notes-file "$notes"
           fi

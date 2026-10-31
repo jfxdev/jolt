@@ -5,6 +5,10 @@ produção**. A primeira distribuição usa versões datadas `YYYY-MM-DD[.N]`, s
 prefixo `v` e sem SemVer. O diagnóstico histórico de `0.1.0` permanece em
 [RELEASE_0.1.0.md](RELEASE_0.1.0.md); esta página é o gate corrente.
 
+A marcação **Latest** identifica a distribuição mais recente e é atribuída
+automaticamente após os gates da CI. Ela não substitui a decisão de maturidade
+para produção registrada nesta página.
+
 ## Contrato da v1
 
 Escopo suportado: administração de arquivos, uploads retomáveis, jobs duráveis,
@@ -26,7 +30,8 @@ cancela retroativamente jobs já admitidos; cancele-os ou revogue grant/peer.
 ## Gates e evidências
 
 `Pronto` significa código/documentação entregues e verificação correspondente
-aprovada. `Pendente` é bloqueio para promoção, mesmo quando o automatismo existe.
+aprovada. `Pendente` é bloqueio para uso em produção, mesmo quando o automatismo
+de publicação existe.
 
 | Gate | Evidência exigida | Estado |
 | --- | --- | --- |
@@ -41,8 +46,8 @@ aprovada. `Pendente` é bloqueio para promoção, mesmo quando o automatismo exi
 | Dois hosts | instalação limpa, mTLS, rede, falha e retomada entre hosts físicos | Pendente de infraestrutura |
 | Segurança | `govulncheck`, `npm audit`, Trivy HIGH/CRITICAL e triagem | Todos aprovados localmente; zero achados HIGH/CRITICAL no Trivy nas imagens locais |
 | Inventário nativo/SBOM | artifact da release; análise C/SQLCipher e pacotes da imagem | Inventário local aprovado; artifact da release final pendente |
-| Publicação | prerelease com tag→SHA→digests e evidências | Workflow implementado; nenhuma release criada localmente |
-| Promoção | URL de evidências, environment `production`, mesmo tag/SHA/digests, sem rebuild | Workflow implementado; aguarda todos os gates |
+| Publicação | release estável Latest com tag→SHA→digests e evidências | Automatizada após merge e gates da CI |
+| Qualificação de produção | URL de evidências e aprovação dos gates pendentes | Aguarda todos os gates |
 
 Evidências locais de 2026-10-30: host macOS/arm64, Docker 29.9.1, imagens
 Linux/amd64 executadas sob emulação e tags locais `jolt-node:smoke` e
@@ -59,21 +64,23 @@ perfis indicados, não substituem a execução no SHA e nas imagens finais.
 1. Congelar o SHA candidato e concluir os gates pré-publicação de código,
    testes, contratos e segurança. Manter como pendentes os gates que dependem
    dos artefatos finais ou de infraestrutura representativa.
-2. Publicar pelo workflow `Release` uma **prerelease** datada. Ele aloca a versão
-   antes dos builds, executa scans, browser integration e lifecycle e só então
-   cria a Release com digests e artifact de inventário.
+2. Publicar pelo workflow de CI uma **release estável marcada como Latest**. Ele
+   aloca a versão antes dos builds, executa scans, browser integration e lifecycle
+   e só então cria a Release com os digests; os inventários ficam nos artefatos
+   da execução do Actions.
 3. Conferir as evidências de scan, inventário, browser e lifecycle dos mesmos
    digests e executar os gates que exigem infra representativa. Anexar nesta
    página ou em evidência versionada: data, SHA, comandos, ambiente, filesystem,
    duração, hashes e links dos runs.
 4. Revisar limitações e scans. Uma vulnerabilidade HIGH/CRITICAL corrigível é
    no-go até correção ou análise fundamentada de inaplicabilidade.
-5. Aprovar o environment `production` e executar `Promote dated release` com a
-   versão e a URL das evidências. A promoção confere tag, digests e versão do app,
-   repete smoke e apenas marca a mesma Release como estável.
+5. Registrar a decisão de qualificação para produção sobre os artefatos publicados.
+   Para qualquer prerelease datada, a promoção manual por `Promote dated release`
+   continua disponível e preserva tag, SHA e digests.
 
-Não reconstrua para “promover”, não mova tags e não use `latest` como evidência.
-Se qualquer artefato mudar, é outro candidato e precisa de nova qualificação.
+Não reconstrua uma release já publicada, não mova tags e não use `latest` como
+evidência de qualificação. Se qualquer artefato mudar, é outro candidato e precisa
+de nova qualificação.
 
 ## Registro a preencher por candidato
 
@@ -82,7 +89,7 @@ Versão:
 SHA:
 Digest node:
 Digest control:
-Run da prerelease:
+Run da release:
 Run de browser/lifecycle:
 Host/filesystem do acceptance-full:
 Ensaio entre dois hosts:
@@ -96,7 +103,7 @@ Pendências aceitas:
 
 Há uma base funcional e controles de engenharia suficientes para um RC: estado
 durável/cifrado, autorização server-side, mTLS, limites de upload/disco,
-testes de falhas, recuperação offline, imagens rastreáveis e promoção imutável.
+testes de falhas, recuperação offline, imagens rastreáveis e publicação imutável.
 Isso **não** é evidência suficiente para declarar a v1 production-ready enquanto
 a qualificação dos artefatos publicados, o upgrade/rollback desde uma release
 anterior, a escala e o ensaio entre dois hosts estiverem pendentes. A decisão
