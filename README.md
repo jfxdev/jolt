@@ -81,7 +81,7 @@ Current production contract:
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — routines, Prometheus alerts, Grafana panels and incident response.
 - [`docs/RELEASE_V1.md`](docs/RELEASE_V1.md) — current maturity decision and go/no-go evidence.
 - [`docs/openapi/control.yaml`](docs/openapi/control.yaml) — Control Tower API; the node also serves its authenticated OpenAPI at `/openapi.yaml`.
-- [`docs/CICD.md`](docs/CICD.md) — CI, dated prereleases and stable promotion without rebuild.
+- [`docs/CICD.md`](docs/CICD.md) — CI and automatic dated releases published as Latest.
 - [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) — current trust boundaries, residual risks and private reporting.
 - [`docs/DISASTER_RECOVERY.md`](docs/DISASTER_RECOVERY.md), [`docs/REVERSE_PROXY.md`](docs/REVERSE_PROXY.md) — recovery and HTTPS proxying.
 - [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md) — load, fault-injection and integrated qualification.
