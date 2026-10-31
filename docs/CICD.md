@@ -40,11 +40,11 @@ publicação já concluída não refaz builds.
 `govulncheck` não cobre C/SQLCipher. Trivy e o inventário não substituem a triagem
 nativa nem os gates externos registrados em [RELEASE_V1.md](RELEASE_V1.md).
 
-## Promoção de prereleases antigas
+## Promoção manual de prereleases
 
-Releases RC criadas antes da publicação estável automática podem ser promovidas
-manualmente por **Promote dated release**, com versão e URL de evidências. O job
-exige aprovação do environment `production` e:
+Qualquer prerelease datada pode ser promovida manualmente por **Promote dated
+release**, com versão e URL de evidências. O job exige aprovação do environment
+`production` e:
 
 1. confirma que a Release é prerelease e resolve a tag anotada;
 2. verifica que as tags de imagem ainda apontam para os digests aprovados;
@@ -65,4 +65,4 @@ altere uma vez `jolt-node` e `jolt-control` para **Public** em GitHub Packages e
 reexecute; tag e digests são reutilizados. Proteção de branch, rulesets e
 permissions de actions são configuração externa obrigatória e devem ser auditadas
 antes da primeira publicação. O environment `production` continua necessário
-apenas para promover prereleases antigas.
+apenas para promoções manuais de prereleases.

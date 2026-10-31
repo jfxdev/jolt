@@ -66,7 +66,8 @@ perfis indicados, não substituem a execução no SHA e nas imagens finais.
    dos artefatos finais ou de infraestrutura representativa.
 2. Publicar pelo workflow de CI uma **release estável marcada como Latest**. Ele
    aloca a versão antes dos builds, executa scans, browser integration e lifecycle
-   e só então cria a Release com digests e artifact de inventário.
+   e só então cria a Release com os digests; os inventários ficam nos artefatos
+   da execução do Actions.
 3. Conferir as evidências de scan, inventário, browser e lifecycle dos mesmos
    digests e executar os gates que exigem infra representativa. Anexar nesta
    página ou em evidência versionada: data, SHA, comandos, ambiente, filesystem,
@@ -74,8 +75,8 @@ perfis indicados, não substituem a execução no SHA e nas imagens finais.
 4. Revisar limitações e scans. Uma vulnerabilidade HIGH/CRITICAL corrigível é
    no-go até correção ou análise fundamentada de inaplicabilidade.
 5. Registrar a decisão de qualificação para produção sobre os artefatos publicados.
-   Para RCs antigos, a promoção manual por `Promote dated release` continua
-   disponível e preserva tag, SHA e digests.
+   Para qualquer prerelease datada, a promoção manual por `Promote dated release`
+   continua disponível e preserva tag, SHA e digests.
 
 Não reconstrua uma release já publicada, não mova tags e não use `latest` como
 evidência de qualificação. Se qualquer artefato mudar, é outro candidato e precisa
