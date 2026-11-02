@@ -71,6 +71,53 @@ func TestAccessFilterPreservesLegacyListOnlyAndReadOnly(t *testing.T) {
 	}
 }
 
+func TestTreeScansDoNotExposeUnlistedReadableNames(t *testing.T) {
+	service, mountID, root := newTestService(t, "read_write")
+	writeFile(t, filepath.Join(root, "folder", "private.txt"), "private")
+	base := "nodes/n/files/mounts/m"
+	compiled, err := (filetypes.Context{Version: 1, Rules: []filetypes.Rule{
+		{PolicyID: "folder-list", Path: base + "/folder", Capabilities: []string{"list"}},
+		{PolicyID: "file-read", Path: base + "/folder/private.txt", Capabilities: []string{"read"}},
+	}}).Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter, err := NewAccessFilter(compiled, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	usage, err := service.DiskUsage(ctx, mountID, "folder", DiskUsageOptions{Filter: filter})
+	if err != nil || len(usage.Entries) != 0 || usage.TotalBytes != 0 || usage.Scanned != 0 {
+		t.Fatalf("unlisted file in usage: %+v %v", usage, err)
+	}
+	plan, err := service.PlanArchive(ctx, mountID, "folder", ArchiveOptions{Filter: filter})
+	if err != nil || plan.Entries != 0 || plan.Bytes != 0 {
+		t.Fatalf("unlisted file in archive plan: %+v %v", plan, err)
+	}
+	var output bytes.Buffer
+	if _, err := service.Archive(ctx, mountID, "folder", ArchiveOptions{Filter: filter}, &output); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := zip.NewReader(bytes.NewReader(output.Bytes()), int64(output.Len()))
+	if err != nil || len(archive.File) != 0 {
+		t.Fatalf("unlisted file in archive: %+v %v", archive, err)
+	}
+	output.Reset()
+	options := ArchiveOptions{Filter: filter, Names: []string{"private.txt"}}
+	plan, err = service.PlanArchive(ctx, mountID, "folder", options)
+	if err != nil || plan.Entries != 1 || plan.Bytes != int64(len("private")) {
+		t.Fatalf("explicit readable selection: %+v %v", plan, err)
+	}
+	if _, err := service.Archive(ctx, mountID, "folder", options, &output); err != nil {
+		t.Fatal(err)
+	}
+	archive, err = zip.NewReader(bytes.NewReader(output.Bytes()), int64(output.Len()))
+	if err != nil || len(archive.File) != 1 || archive.File[0].Name != "private.txt" {
+		t.Fatalf("explicit selection archive: %+v %v", archive, err)
+	}
+}
+
 func TestAccessFilterReadTreesBeforePaginationAndCounting(t *testing.T) {
 	service, mountID, root := newTestService(t, "read_write")
 	for name, data := range map[string]string{

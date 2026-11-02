@@ -65,8 +65,10 @@
 - Ambos os módulos possuem um envelope Ed25519 com contexto limitado, validade máxima de 30 segundos, verificação de destinatário e vínculo completo da operação; os testes compartilham um vetor determinístico. No node, listagem, metadados, conteúdo, busca, uso de disco e ZIP aceitam contexto assinado para leitura local; outras rotas recusam explicitamente o contexto. O Control Tower ainda não o envia, e não há renovação de jobs.
 - O store do Control Tower já preserva seletores e visibilidade em migração aditiva; regras tipadas gravadas internamente elevam o marcador mínimo para a versão 2. O avaliador legado recusa permissões tipadas e trata negações tipadas de forma conservadora.
 - O Control Tower consegue montar internamente um contexto completo para um mount, incluindo regras legadas e negações descendentes, rejeitando contextos inválidos ou acima dos limites. O proxy ainda não o envia aos nodes.
+- Há um emissor interno de autorizações para leituras locais que revalida sessão ou API key, grupos ativos, policies e limites de agente, com validade limitada pela credencial e pelo prazo da requisição. Ele ainda não está ligado ao proxy nem aos shares ou jobs.
 - Filtros internos no filesystem para leitura direta, listagem, busca, uso de disco, ZIP, criação de diretório, upload simples, cópia de arquivo e árvore, e pré-validação de delete e move. A implementação inclui testes focados de ocultação, destinos e sobrescritas.
 - A filtragem interna distingue ausência de `read`/`list` de uma restrição explícita, preservando listagem sem leitura e leitura direta sem listagem para policies legadas.
+- Uso de disco e ZIP recursivo não expõem nomes sem permissão de listagem; um arquivo conhecido e explicitamente selecionado ainda pode ser incluído quando há leitura direta.
 - A API recusa `file_types` e `visibility` enquanto não há aplicação integral. Os métodos internos não estão integrados aos endpoints de produção e não devem ser tratados como proteção ativa por policy.
 
 **Falta**

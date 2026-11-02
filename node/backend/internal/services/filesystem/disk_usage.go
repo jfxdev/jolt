@@ -110,7 +110,7 @@ func (s *Service) DiskUsage(ctx context.Context, mountID, relative string, optio
 			if info.IsDir() && !access.traversable {
 				return fs.SkipDir
 			}
-			if !info.IsDir() && !access.readable {
+			if !info.IsDir() && (!access.visible || !access.readable) {
 				return nil
 			}
 		}

@@ -77,7 +77,7 @@ func (s *Service) PlanArchive(ctx context.Context, mountID, relative string, opt
 			if info.IsDir() && !access.traversable {
 				return fs.SkipDir
 			}
-			if !info.IsDir() && !access.readable {
+			if !info.IsDir() && !archiveFileReadable(access, root, current) {
 				return nil
 			}
 			if entry.IsDir() {
@@ -152,7 +152,7 @@ func (s *Service) archiveRoot(ctx context.Context, archive *zip.Writer, root arc
 		if info.IsDir() && !access.traversable {
 			return fs.SkipDir
 		}
-		if !info.IsDir() && !access.readable {
+		if !info.IsDir() && !archiveFileReadable(access, root, current) {
 			return nil
 		}
 		name, err := archiveEntryName(root, current, entry.IsDir())
@@ -221,6 +221,13 @@ func archiveAccess(filter *AccessFilter, root archiveRoot, current string, info 
 		return accessDecision{}
 	}
 	return filter.decide(filepath.ToSlash(relative), info)
+}
+
+// A recursive archive must not disclose names that cannot be listed. An
+// explicitly selected file is already named by the caller and may be read
+// when direct read is allowed, even without permission to list that file.
+func archiveFileReadable(access accessDecision, root archiveRoot, current string) bool {
+	return access.readable && (access.visible || (!root.isDir && root.prefix != "" && current == root.absolute))
 }
 
 func validateArchiveRoot(filter *AccessFilter, root archiveRoot) error {
