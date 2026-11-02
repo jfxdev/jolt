@@ -1775,20 +1775,31 @@ func (s *Store) CreateSession(ctx context.Context, hash, userID string, expires 
 }
 
 func (s *Store) SessionUser(ctx context.Context, hash string) (User, error) {
+	user, _, err := s.SessionUserAndExpiry(ctx, hash)
+	return user, err
+}
+
+// SessionUserAndExpiry revalidates the session and returns its current user and
+// expiry together so short-lived authorizations cannot outlive the session.
+func (s *Store) SessionUserAndExpiry(ctx context.Context, hash string) (User, time.Time, error) {
 	var user User
 	var enabled int
-	var createdAt, updatedAt string
-	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.password_hash,u.role,u.enabled,u.created_at,u.updated_at
+	var createdAt, updatedAt, expiresAt string
+	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.password_hash,u.role,u.enabled,u.created_at,u.updated_at,s.expires_at
 FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?`,
 		hash, time.Now().UTC().Format(time.RFC3339Nano)).
-		Scan(&user.ID, &user.Username, &user.PasswordHash, &user.Role, &enabled, &createdAt, &updatedAt)
+		Scan(&user.ID, &user.Username, &user.PasswordHash, &user.Role, &enabled, &createdAt, &updatedAt, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return user, ErrNotFound
+		return user, time.Time{}, ErrNotFound
+	}
+	if err != nil {
+		return user, time.Time{}, err
 	}
 	user.Enabled = enabled != 0
 	user.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	user.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
-	return user, err
+	expiry, err := time.Parse(time.RFC3339Nano, expiresAt)
+	return user, expiry, err
 }
 
 func (s *Store) DeleteSession(ctx context.Context, hash string) error {

@@ -24,6 +24,24 @@ func TestTypedRulesFailClosedInPathOnlyEvaluator(t *testing.T) {
 	}
 }
 
+func TestUntypedDeniesWithinExcludesTypedDenialsOnly(t *testing.T) {
+	base := "nodes/n/files/mounts/m"
+	typed := Policy{ID: "typed", Rules: []Rule{{Path: base + "/**", Capabilities: []string{"deny", "read"}, FileTypes: &filetypes.Selector{Extensions: []string{"pem"}}}}}
+	if !DeniesWithin([]Policy{typed}, base) {
+		t.Fatal("legacy subtree guard ignored typed denial")
+	}
+	if UntypedDeniesWithin([]Policy{typed}, base) {
+		t.Fatal("typed denial blocked an otherwise filterable tree")
+	}
+	pathDeny := Policy{ID: "path", Rules: []Rule{{Path: base + "/private/**", Capabilities: []string{"deny"}}}}
+	if !UntypedDeniesWithin([]Policy{typed, pathDeny}, base) {
+		t.Fatal("descendant path denial did not block tree")
+	}
+	if UntypedDeniesWithin([]Policy{pathDeny}, base+"/public") {
+		t.Fatal("unrelated sibling was blocked")
+	}
+}
+
 func TestDenyAlwaysWins(t *testing.T) {
 	policies := []Policy{
 		{ID: "allow", Rules: []Rule{{Path: "nodes/*/transfers", Capabilities: []string{"execute"}}}},

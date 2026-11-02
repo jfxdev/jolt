@@ -236,6 +236,27 @@ func DeniesWithin(policies []Policy, scope string) bool {
 	return false
 }
 
+// UntypedDeniesWithin preserves the subtree refusal for path-based denials
+// when a node will enforce typed rules per entry. The original DeniesWithin
+// remains conservative for operations without verified node filtering.
+func UntypedDeniesWithin(policies []Policy, scope string) bool {
+	if !ValidResourcePath(scope) {
+		return true
+	}
+	scopeParts := strings.Split(NormalizePath(scope), "/")
+	for _, policy := range policies {
+		for _, rule := range policy.Rules {
+			if rule.FileTypes != nil || !capabilitySet(rule.Capabilities)["deny"] {
+				continue
+			}
+			if !ValidPath(rule.Path) || denyReachesScope(strings.Split(NormalizePath(rule.Path), "/"), scopeParts) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // RuleTouchesScope reports whether a rule can match the named scope or a
 // descendant. Callers must validate both paths before using this to narrow a
 // security context; invalid input is conservatively treated as touching it.

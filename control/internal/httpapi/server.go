@@ -38,10 +38,12 @@ const sessionCookie = "jolt_control_session"
 type contextKey string
 
 const (
-	userKey      contextKey = "user"
-	actorTypeKey contextKey = "actor_type"
-	groupKey     contextKey = "group_ids"
-	agentKey     contextKey = "agent_context"
+	userKey             contextKey = "user"
+	actorTypeKey        contextKey = "actor_type"
+	groupKey            contextKey = "group_ids"
+	agentKey            contextKey = "agent_context"
+	credentialKey       contextKey = "credential_id"
+	credentialDigestKey contextKey = "credential_digest"
 )
 
 type Server struct {
@@ -238,6 +240,8 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		}
 		ctx := context.WithValue(r.Context(), userKey, user)
 		ctx = context.WithValue(ctx, actorTypeKey, "user")
+		ctx = context.WithValue(ctx, credentialKey, "session-"+security.Digest("jolt-signed-session:"+cookie.Value))
+		ctx = context.WithValue(ctx, credentialDigestKey, security.Digest(cookie.Value))
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -265,6 +269,8 @@ func (s *Server) authenticateServiceAccount(next http.Handler, w http.ResponseWr
 	ctx := context.WithValue(r.Context(), userKey, actor)
 	ctx = context.WithValue(ctx, actorTypeKey, "service_account")
 	ctx = context.WithValue(ctx, groupKey, groupIDs)
+	ctx = context.WithValue(ctx, credentialKey, "token-"+token.ID)
+	ctx = context.WithValue(ctx, credentialDigestKey, digest)
 	if account.Kind == "agent" {
 		s.serveAgent(next, w, r.WithContext(ctx), digest, account, token)
 		return
