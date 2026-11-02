@@ -101,6 +101,26 @@ func VerifyLocalRead(token string, keys map[string]ed25519.PublicKey, receivingN
 	return claims, filter, nil
 }
 
+// VerifyLocalUpload binds an upload authorization to the persisted session's
+// actor, credential, node, mount, destination and ID independently loaded by
+// the caller from trusted state. It must
+// only be used after operational-token authentication and while the session is
+// locked. The caller must enforce expiry throughout processing and publication.
+func VerifyLocalUpload(token string, keys map[string]ed25519.PublicKey, actorID, credentialID, receivingNode, operation, mountID, destination, sessionID string, now time.Time) (Claims, *filetypes.Filter, error) {
+	claims, filter, err := verifySigned(token, keys, now)
+	if err != nil {
+		return Claims{}, nil, ErrInvalid
+	}
+	if operation != "upload_chunk" && operation != "upload_complete" {
+		return Claims{}, nil, ErrInvalid
+	}
+	b := claims.Binding
+	if actorID == "" || credentialID == "" || b.ActorID != actorID || b.CredentialID != credentialID || receivingNode == "" || sessionID == "" || b.Operation != operation || b.PlanID != sessionID || b.DestinationNodeID != receivingNode || b.DestinationMountID != mountID || b.DestinationRoot != destination || b.DestinationGrantID != "" || b.SourceNodeID != "" || b.SourceGrantID != "" || b.SourceMountID != "" || b.SourceRoot != "" {
+		return Claims{}, nil, ErrInvalid
+	}
+	return claims, filter, nil
+}
+
 func verifySigned(token string, keys map[string]ed25519.PublicKey, now time.Time) (Claims, *filetypes.Filter, error) {
 	var claims Claims
 	if len(token) > base64.RawURLEncoding.EncodedLen(maxPayloadBytes)+1+base64.RawURLEncoding.EncodedLen(ed25519.SignatureSize) {

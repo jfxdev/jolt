@@ -1,0 +1,66 @@
+package signedauth
+
+import (
+	"testing"
+	"time"
+)
+
+func TestVerifyLocalUploadBindsPersistedSession(t *testing.T) {
+	claims, key, keys := fixture()
+	claims.Binding.SourceNodeID, claims.Binding.SourceMountID, claims.Binding.SourceRoot, claims.Binding.SourceGrantID = "", "", "", ""
+	claims.Binding.DestinationNodeID, claims.Binding.DestinationMountID = "node", "mount"
+	claims.Binding.DestinationRoot, claims.Binding.DestinationGrantID, claims.Binding.PlanID = "folder/file.txt", "", "upload-1"
+	now := time.Unix(claims.IssuedAt, 0)
+	for _, operation := range []string{"upload_chunk", "upload_complete"} {
+		claims.Binding.Operation = operation
+		token, err := Sign(claims, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := VerifyLocalUpload(token, keys, "user-1", "credential-1", "node", operation, "mount", "folder/file.txt", "upload-1", now); err != nil {
+			t.Fatalf("valid %s: %v", operation, err)
+		}
+		for _, identity := range [][2]string{{"other", "credential-1"}, {"user-1", "other"}, {"", "credential-1"}, {"user-1", ""}} {
+			if _, _, err := VerifyLocalUpload(token, keys, identity[0], identity[1], "node", operation, "mount", "folder/file.txt", "upload-1", now); err == nil {
+				t.Fatalf("accepted different actor or credential: %v", identity)
+			}
+		}
+		otherOperation := "upload_chunk"
+		if operation == otherOperation {
+			otherOperation = "upload_complete"
+		}
+		for _, tc := range []struct{ node, op, mount, dest, session string }{
+			{"other", operation, "mount", "folder/file.txt", "upload-1"},
+			{"node", otherOperation, "mount", "folder/file.txt", "upload-1"},
+			{"node", "upload_other", "mount", "folder/file.txt", "upload-1"},
+			{"node", operation, "other", "folder/file.txt", "upload-1"},
+			{"node", operation, "mount", "folder/other.txt", "upload-1"},
+			{"node", operation, "mount", "folder/file.txt", "upload-2"},
+			{"node", operation, "mount", "folder/file.txt", ""},
+		} {
+			if _, _, err := VerifyLocalUpload(token, keys, "user-1", "credential-1", tc.node, tc.op, tc.mount, tc.dest, tc.session, now); err == nil {
+				t.Fatalf("accepted different session: %+v", tc)
+			}
+		}
+		if _, _, err := VerifyLocalUpload(token, keys, "user-1", "credential-1", "node", operation, "mount", "folder/file.txt", "upload-1", now.Add(MaxLifetime)); err == nil {
+			t.Fatal("accepted expired upload authorization")
+		}
+	}
+	claims.Binding.DestinationGrantID = "grant"
+	token, err := Sign(claims, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := VerifyLocalUpload(token, keys, "user-1", "credential-1", "node", "upload_complete", "mount", "folder/file.txt", "upload-1", now); err == nil {
+		t.Fatal("accepted transfer grant for local upload")
+	}
+	claims.Binding.DestinationGrantID = ""
+	claims.Binding.SourceNodeID, claims.Binding.SourceMountID, claims.Binding.SourceRoot = "other", "mount", "file.txt"
+	token, err = Sign(claims, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := VerifyLocalUpload(token, keys, "user-1", "credential-1", "node", "upload_complete", "mount", "folder/file.txt", "upload-1", now); err == nil {
+		t.Fatal("accepted source node for local upload")
+	}
+}
