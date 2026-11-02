@@ -3101,6 +3101,31 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	signedToken := ""
+	if operation := signedReadOperation(resource, r.Method); s.config.SignedLocalReads && operation != "" {
+		var deadline time.Time
+		var ok bool
+		signedToken, deadline, ok = s.prepareSignedProxyRead(w, r, node, resource, operation)
+		if !ok {
+			return
+		}
+		controller := http.NewResponseController(w)
+		if err := controller.SetWriteDeadline(deadline); err != nil {
+			writeError(w, r, http.StatusServiceUnavailable, "signed_authorization_unavailable", "Não foi possível limitar o prazo desta leitura.")
+			return
+		}
+		ctx, cancel := context.WithDeadline(r.Context(), deadline)
+		defer func() {
+			expired := ctx.Err() != nil || !time.Now().Before(deadline)
+			cancel()
+			if expired {
+				panic(http.ErrAbortHandler)
+			}
+			_ = controller.SetWriteDeadline(time.Time{})
+		}()
+		r = r.WithContext(ctx)
+		w = &signedProxyWriter{ResponseWriter: w, ctx: ctx}
+	}
 	token, err := security.Decrypt(s.config.EncryptionKey, node.TokenEncrypted)
 	if err != nil {
 		s.fail(w, r, err)
@@ -3118,6 +3143,9 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("X-Correlation-ID", r.Header.Get("X-Correlation-ID"))
 	request.Header.Set("X-Jolt-Internal-Canary", "1")
+	if signedToken != "" {
+		request.Header.Set(signedAuthorizationHeader, signedToken)
+	}
 	if agentSearch {
 		request.Header.Set("X-Jolt-Agent-Search", "1")
 	}
@@ -3147,6 +3175,10 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer response.Body.Close()
+	if signedToken != "" && response.Header.Get("X-Jolt-Access-Applied") != "v1" {
+		writeError(w, r, http.StatusConflict, "node_upgrade_required", "O node não confirmou a aplicação da autorização. Atualize o node e confira as chaves.")
+		return
+	}
 	if agentScan && response.Header.Get("X-Jolt-Scan-Applied") != "secrets" {
 		writeError(w, r, http.StatusConflict, "node_upgrade_required", "O node não confirmou a varredura de segredos. Atualize o node.")
 		return
@@ -3195,10 +3227,14 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", "inline")
 	}
 	w.WriteHeader(response.StatusCode)
+	var copyErr error
 	if strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
-		_, _ = io.Copy(flushingWriter{writer: w}, response.Body)
+		_, copyErr = io.Copy(flushingWriter{writer: w}, response.Body)
 	} else {
-		_, _ = io.Copy(w, response.Body)
+		_, copyErr = io.Copy(w, response.Body)
+	}
+	if signedToken != "" && copyErr != nil {
+		panic(http.ErrAbortHandler)
 	}
 	action := strings.ToLower(r.Method)
 	result := resultForStatus(response.StatusCode)

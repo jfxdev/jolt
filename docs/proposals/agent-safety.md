@@ -2,7 +2,7 @@
 
 > **Status:** implementação em andamento · **Origem:** uso do Jolt no homelab para dar a agentes de IA acesso somente leitura ao filesystem dos hosts, sem SSH · **Complementa:** [`file-type-restrictions.md`](file-type-restrictions.md) (a camada A dele é pré-requisito) · **Código lido:** `control/internal/httpapi/server.go`, `control/internal/store/store.go`, `control/internal/rbac/rbac.go`, `control/cmd/jolt-control/main.go`
 
-> **Acompanhamento atual:** consulte o [plano consolidado](plano-consolidado-seguranca.md) para o que já foi implementado, o que permanece interno e o que falta. As seções de proposta abaixo descrevem a intenção original; em caso de divergência, prevalece o plano consolidado.
+> **Acompanhamento em 2 de novembro de 2026:** o perfil de agente, limites e teto de capabilities por credencial, auditoria, canaries, varredura e JIT têm implementação parcial. O proxy pode emitir leitura assinada mediante configuração explícita; jobs ainda não recebem renovações. Lixeira, confirmação obrigatória, aprovação humana, JWT/SVID e MCP permanecem pendentes. Consulte o [plano consolidado](plano-consolidado-seguranca.md) para as evidências e os próximos passos. As seções abaixo descrevem a intenção original; em caso de divergência, prevalece o consolidado.
 
 ## 1. Resumo
 

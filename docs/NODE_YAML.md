@@ -82,9 +82,13 @@ The Control Tower can load the corresponding unencrypted PKCS#8 PEM private
 key from `CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_FILE` with its matching
 `CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID`. Both values must be supplied
 together. The node can verify signed contexts for local listing, metadata,
-content, search, disk usage, and ZIP reads and plans. The Control Tower does
-not yet issue these contexts for normal requests, other node operations reject
-them, and jobs do not yet renew them.
+content, search, disk usage, and ZIP reads and plans. Once all relevant nodes
+have the correct public keys, `CONTROL_TOWER_SIGNED_LOCAL_READS=true` enables
+signed contexts for these proxy reads. The option defaults to false and requires
+the signing key; enabled reads fail closed if the node lacks the capability or
+does not confirm enforcement. Each signed response expires within 30 seconds,
+including for a slow client. Other node operations reject signed contexts, and
+jobs do not yet renew them.
 File-type policies remain disabled until all required operations are integrated.
 
 Generate a random key with `openssl rand -base64 32`, save it outside the data,

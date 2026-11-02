@@ -295,6 +295,8 @@ type agentWriter struct {
 	wrote, aborted bool
 }
 
+func (w *agentWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 func (w *agentWriter) WriteHeader(status int) {
 	if !w.wrote {
 		w.status = status

@@ -18,8 +18,8 @@ import (
 var errSignedReadUnavailable = errors.New("signed local read unavailable")
 
 // issueSignedLocalRead builds a short-lived context from the authenticated
-// subject's current policies. It is not wired to proxy routes until every
-// affected operation can enforce the same authorization model.
+// subject's current policies. Other operations still require separate
+// integration before typed policies can be enabled.
 func (s *Server) issueSignedLocalRead(r *http.Request, nodeID, mountID, root, operation string, now time.Time) (string, error) {
 	if len(s.config.AuthorizationSigningKey) == 0 || !signedauth.ValidKeyID(s.config.AuthorizationSigningKeyID) || !validPathIdentifier(nodeID) || !validPathIdentifier(mountID) {
 		return "", errSignedReadUnavailable

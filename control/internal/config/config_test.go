@@ -37,9 +37,18 @@ func TestAuthorizationSigningKeyFile(t *testing.T) {
 	t.Setenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID", "current")
 	t.Setenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_FILE", file)
 	cfg, err := Load()
-	if err != nil || cfg.AuthorizationSigningKeyID != "current" || !cfg.AuthorizationSigningKey.Equal(private) {
+	if err != nil || cfg.SignedLocalReads || cfg.AuthorizationSigningKeyID != "current" || !cfg.AuthorizationSigningKey.Equal(private) {
 		t.Fatalf("key configuration failed: %v", err)
 	}
+	t.Setenv("CONTROL_TOWER_SIGNED_LOCAL_READS", "true")
+	if activated, err := Load(); err != nil || !activated.SignedLocalReads {
+		t.Fatalf("signed read activation failed: %v", err)
+	}
+	t.Setenv("CONTROL_TOWER_SIGNED_LOCAL_READS", "invalid")
+	if _, err := Load(); err == nil {
+		t.Fatal("invalid activation value accepted")
+	}
+	t.Setenv("CONTROL_TOWER_SIGNED_LOCAL_READS", "true")
 	binding := signedauth.Binding{ActorID: "actor", CredentialID: "credential", Operation: "read", RequestID: "request", SourceNodeID: "node", SourceMountID: "mount", SourceRoot: "."}
 	claims := signedauth.Claims{Version: signedauth.Version, KeyID: cfg.AuthorizationSigningKeyID, Binding: binding, IssuedAt: 1700000000, ExpiresAt: 1700000030, Context: json.RawMessage(`{"version":1,"rules":[]}`)}
 	token, err := signedauth.Sign(claims, cfg.AuthorizationSigningKey)
@@ -57,6 +66,10 @@ func TestAuthorizationSigningKeyFile(t *testing.T) {
 	t.Setenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_FILE", "")
 	if _, err := Load(); err == nil {
 		t.Fatal("partial key configuration accepted")
+	}
+	t.Setenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("signed reads without key accepted")
 	}
 	for _, tc := range []struct{ id, file string }{{"", file}, {"bad/id", file}, {"current", ""}, {"current", file + "-missing"}} {
 		if _, err := readAuthorizationSigningKey(tc.id, tc.file); err == nil {
