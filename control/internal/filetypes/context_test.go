@@ -34,6 +34,7 @@ func TestSharedContextCases(t *testing.T) {
 		Allowed    bool            `json:"allowed"`
 		Denied     bool            `json:"denied"`
 		Visibility string          `json:"visibility"`
+		Restricted *bool           `json:"restricted"`
 	}
 	if err := json.Unmarshal(data, &cases); err != nil {
 		t.Fatal(err)
@@ -51,6 +52,9 @@ func TestSharedContextCases(t *testing.T) {
 			got := filter.Evaluate(tc.Resource, tc.Capability, kind)
 			if got.Allowed != tc.Allowed || got.Denied != tc.Denied || got.Visibility != tc.Visibility {
 				t.Fatalf("decision=%+v", got)
+			}
+			if tc.Restricted != nil && got.Restricted != *tc.Restricted {
+				t.Fatalf("restriction=%+v", got)
 			}
 		})
 	}

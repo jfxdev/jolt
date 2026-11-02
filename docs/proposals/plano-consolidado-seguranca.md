@@ -66,6 +66,7 @@
 - O store do Control Tower já preserva seletores e visibilidade em migração aditiva; regras tipadas gravadas internamente elevam o marcador mínimo para a versão 2. O avaliador legado recusa permissões tipadas e trata negações tipadas de forma conservadora.
 - O Control Tower consegue montar internamente um contexto completo para um mount, incluindo regras legadas e negações descendentes, rejeitando contextos inválidos ou acima dos limites. O proxy ainda não o envia aos nodes.
 - Filtros internos no filesystem para leitura direta, listagem, busca, uso de disco, ZIP, criação de diretório, upload simples, cópia de arquivo e árvore, e pré-validação de delete e move. A implementação inclui testes focados de ocultação, destinos e sobrescritas.
+- A filtragem interna distingue ausência de `read`/`list` de uma restrição explícita, preservando listagem sem leitura e leitura direta sem listagem para policies legadas.
 - A API recusa `file_types` e `visibility` enquanto não há aplicação integral. Os métodos internos não estão integrados aos endpoints de produção e não devem ser tratados como proteção ativa por policy.
 
 **Falta**

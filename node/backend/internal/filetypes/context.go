@@ -38,6 +38,7 @@ type Decision struct {
 	Allowed    bool   `json:"allowed"`
 	Denied     bool   `json:"denied"`
 	Visibility string `json:"visibility"`
+	Restricted bool   `json:"-"`
 }
 
 var validCaps = set("read", "list", "create", "update", "delete", "write", "execute", "sudo", "deny")
@@ -276,6 +277,7 @@ func (f *Filter) Evaluate(resource, capability, entryType string) Decision {
 	if restricted && !anyHidden {
 		result.Visibility = "visible"
 	}
+	result.Restricted = restricted
 	result.Allowed = found && !result.Denied
 	return result
 }

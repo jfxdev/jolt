@@ -79,6 +79,15 @@ func (f *AccessFilter) decide(relative string, info os.FileInfo) accessDecision 
 	if list.Allowed && read.Allowed {
 		return accessDecision{visible: true, readable: true}
 	}
+	// A legacy list-only rule exposes names without granting content; a
+	// read-only rule permits direct access without granting directory listing.
+	// Only an actual restriction carries visibility semantics for an omission.
+	if list.Allowed && !read.Allowed && !read.Restricted {
+		return accessDecision{visible: true, blocked: true}
+	}
+	if read.Allowed && !list.Allowed && !list.Restricted {
+		return accessDecision{readable: true}
+	}
 	if !list.Allowed && list.Visibility != "visible" || !read.Allowed && read.Visibility != "visible" {
 		return accessDecision{}
 	}

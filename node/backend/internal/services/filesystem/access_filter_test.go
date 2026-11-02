@@ -36,6 +36,41 @@ func testAccessFilter(t *testing.T) *AccessFilter {
 	return access
 }
 
+func TestAccessFilterPreservesLegacyListOnlyAndReadOnly(t *testing.T) {
+	service, mountID, root := newTestService(t, "read_write")
+	writeFile(t, filepath.Join(root, "example.txt"), "content")
+	base := "nodes/n/files/mounts/m"
+	makeFilter := func(capability string) *AccessFilter {
+		compiled, err := (filetypes.Context{Version: 1, Rules: []filetypes.Rule{{PolicyID: "legacy", Path: base + "/**", Capabilities: []string{capability}}}}).Compile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		filter, err := NewAccessFilter(compiled, base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return filter
+	}
+	ctx := context.Background()
+	listOnly := makeFilter("list")
+	page, err := service.ListPageFiltered(ctx, mountID, "", 10, "", listOnly)
+	if err != nil || len(page.Items) != 1 || page.Items[0].Name != "example.txt" || !page.Items[0].Blocked {
+		t.Fatalf("list-only result: %+v %v", page, err)
+	}
+	if _, _, err := service.OpenFiltered(ctx, mountID, "example.txt", listOnly); !errors.Is(err, ErrFilteredBlocked) {
+		t.Fatalf("list-only read: %v", err)
+	}
+	readOnly := makeFilter("read")
+	file, _, err := service.OpenFiltered(ctx, mountID, "example.txt", readOnly)
+	if err != nil {
+		t.Fatalf("read-only direct access: %v", err)
+	}
+	file.Close()
+	if _, err := service.ListPageFiltered(ctx, mountID, "", 10, "", readOnly); !errors.Is(err, ErrFilteredHidden) {
+		t.Fatalf("read-only listing: %v", err)
+	}
+}
+
 func TestAccessFilterReadTreesBeforePaginationAndCounting(t *testing.T) {
 	service, mountID, root := newTestService(t, "read_write")
 	for name, data := range map[string]string{
