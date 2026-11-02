@@ -93,9 +93,9 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 	mux.HandleFunc("GET /api/v1/mounts/{mountID}", s.getMount)
 	mux.HandleFunc("PUT /api/v1/mounts/{mountID}", s.updateMount)
 	mux.HandleFunc("DELETE /api/v1/mounts/{mountID}", s.deleteMount)
-	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files", s.listFiles)
-	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/metadata", s.metadata)
-	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/content", s.download)
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files", s.signedLocalRead("list", s.listFiles))
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/metadata", s.signedLocalRead("metadata", s.metadata))
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/content", s.signedLocalRead("content", s.download))
 	mux.HandleFunc("PUT /api/v1/mounts/{mountID}/files/content", s.upload)
 	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/archive", s.archive)
 	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/archive/plan", s.archivePlan)
@@ -170,7 +170,7 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 	if s.registry != nil && s.config.MetricsToken != "" {
 		mux.HandleFunc("GET /metrics", s.metrics)
 	}
-	return s.recover(s.correlation(s.logging(s.instrument(s.auth(mux)))))
+	return s.recover(s.correlation(s.logging(s.instrument(s.auth(s.guardSignedContext(mux))))))
 }
 
 func (s *Server) auth(next http.Handler) http.Handler {
@@ -239,6 +239,8 @@ type statusRecorder struct {
 	written int64
 	wrote   bool
 }
+
+func (w *statusRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *statusRecorder) WriteHeader(status int) {
 	if !w.wrote {
@@ -349,6 +351,10 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) node(w http.ResponseWriter, r *http.Request) {
+	capabilities := []string{"api_filesystem", "streaming_upload", "range_download", "durable_local_jobs", "job_controls", "job_events_sse", "job_eta", "bandwidth_limits", "waiting_mount", "waiting_validation", "directory_manifests", "directory_resume", "resumable_chunks", "conflict_policies", "manual_item_overrides", "checksum_verification", "source_change_policies", "transfer_path_grants", "cluster_grouping", "mtls_peer_listener", "mtls_certificate_rotation", "mtls_certificate_rollout_diagnostics", "mtls_certificate_revocation", "identity_handover", "mtls_peer_heartbeat", "direct_file_pull", "operational_token_rotation", "idempotency", "hidden_patterns_v1", "protected_move_v1", "canary_paths_v1", "agent_search_limits_v1", "agent_secret_scan_v1", "grant_exclude_send_v1", "grant_exclude_receive_v1", "upload_inspection_v1"}
+	if len(s.config.AuthorizationKeys) > 0 {
+		capabilities = append(capabilities, "signed_local_read_v1")
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"configuration": map[string]any{"source": "yaml", "apply_mode": "restart", "mounts_mutable": false, "grants_mutable": false},
 		"node_id":       s.identity.NodeID, "name": s.config.NodeName, "fingerprint": s.identity.Fingerprint,
@@ -360,7 +366,7 @@ func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 		"upload_max_reserved_bytes": s.config.UploadMaxReservedBytes,
 		"upload_min_free_bytes":     s.config.UploadMinFreeBytes,
 		"upload_inspection":         s.config.UploadInspection,
-		"state":                     "idle", "capabilities": []string{"api_filesystem", "streaming_upload", "range_download", "durable_local_jobs", "job_controls", "job_events_sse", "job_eta", "bandwidth_limits", "waiting_mount", "waiting_validation", "directory_manifests", "directory_resume", "resumable_chunks", "conflict_policies", "manual_item_overrides", "checksum_verification", "source_change_policies", "transfer_path_grants", "cluster_grouping", "mtls_peer_listener", "mtls_certificate_rotation", "mtls_certificate_rollout_diagnostics", "mtls_certificate_revocation", "identity_handover", "mtls_peer_heartbeat", "direct_file_pull", "operational_token_rotation", "idempotency", "hidden_patterns_v1", "protected_move_v1", "canary_paths_v1", "agent_search_limits_v1", "agent_secret_scan_v1", "grant_exclude_send_v1", "grant_exclude_receive_v1", "upload_inspection_v1"},
+		"state":                     "idle", "capabilities": capabilities,
 	})
 }
 
@@ -833,7 +839,7 @@ func (s *Server) deleteMount(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	page, err := s.files.ListPage(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path"), limit, r.URL.Query().Get("after"))
+	page, err := s.files.ListPageFiltered(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path"), limit, r.URL.Query().Get("after"), signedAccessFilter(r))
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -842,10 +848,11 @@ func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) metadata(w http.ResponseWriter, r *http.Request) {
+	filter := signedAccessFilter(r)
 	if r.Header.Get("X-Jolt-Internal-Canary") == "1" && s.files.IsCanary(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path")) {
 		w.Header().Set("X-Jolt-Canary", "1")
 	}
-	item, err := s.files.Metadata(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path"))
+	item, err := s.files.MetadataFiltered(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path"), filter)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -858,10 +865,11 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request) {
 	if scanSecrets {
 		w.Header().Set("X-Jolt-Scan-Applied", "secrets")
 	}
+	filter := signedAccessFilter(r)
 	if r.Header.Get("X-Jolt-Internal-Canary") == "1" && s.files.IsCanary(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path")) {
 		w.Header().Set("X-Jolt-Canary", "1")
 	}
-	file, info, err := s.files.Open(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path"))
+	file, info, err := s.files.OpenFiltered(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path"), filter)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -1649,6 +1657,10 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, code = http.StatusUnprocessableEntity, "upload_content_rejected"
 	case errors.Is(err, filesystem.ErrInsufficientSpace):
 		status, code = http.StatusInsufficientStorage, "insufficient_storage"
+	case errors.Is(err, filesystem.ErrFilteredHidden):
+		status, code = http.StatusNotFound, "not_found"
+	case errors.Is(err, filesystem.ErrFilteredBlocked):
+		status, code = http.StatusForbidden, "file_type_not_allowed"
 	case errors.Is(err, filesystem.ErrNotFound):
 		status, code = http.StatusNotFound, "not_found"
 	case errors.Is(err, filesystem.ErrHiddenName):
@@ -1711,6 +1723,10 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	if status == http.StatusInternalServerError {
 		s.log.Error("request failed", "error", err, "correlation_id", r.Header.Get("X-Correlation-ID"))
+	}
+	if errors.Is(err, filesystem.ErrFilteredHidden) {
+		writeError(w, r, status, code, filesystem.ErrNotFound.Error(), nil)
+		return
 	}
 	if errors.Is(err, filesystem.ErrUploadContentRejected) {
 		writeError(w, r, status, code, "O conteúdo enviado foi recusado pela inspeção.", nil)
@@ -1938,12 +1954,15 @@ paths:
     get:
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context for this exact local listing; supported when signed_local_read_v1 is advertised}
         - {in: query, name: path, schema: {type: string}}
         - {in: query, name: limit, schema: {type: integer, maximum: 1000}}
         - {in: query, name: after, schema: {type: string}, description: Opaque keyset cursor from next_after}
       responses:
         "200":
           description: Directory entries in deterministic order; follow next_after while has_more is true
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
           content:
             application/json:
               schema:
@@ -1952,6 +1971,9 @@ paths:
                   items: {type: array, items: {type: object}}
                   has_more: {type: boolean}
                   next_after: {type: string}
+        "403": {description: Invalid or expired signed context, or visible blocked entry}
+        "404": {description: Hidden entry or path not found}
+        "503": {description: Signed request deadline enforcement unavailable}
     delete:
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
@@ -1967,9 +1989,19 @@ paths:
         - {in: query, name: path, required: true, schema: {type: string}}
         - {in: query, name: editor, schema: {type: boolean}, description: Enables the 512 KB text-editor limit}
         - {in: header, name: X-Jolt-Scan, schema: {type: string, enum: [secrets]}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context for this exact local content read}
       responses:
-        "200": {description: File stream}
-        "403": {description: secret_detected when prefix scanning detects a secret}
+        "200":
+          description: File stream
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
+        "206":
+          description: Partial file stream
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
+        "403": {description: secret_detected, file_type_not_allowed, or invalid_signed_context}
+        "404": {description: Hidden entry or path not found}
+        "503": {description: Signed request deadline enforcement unavailable}
     put:
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
@@ -1991,9 +2023,15 @@ paths:
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: query, name: path, required: true, schema: {type: string}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context for this exact local metadata read}
       responses:
-        "200": {description: Entry name, type, size and modification time}
+        "200":
+          description: Entry name, type, size and modification time
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
+        "403": {description: file_type_not_allowed or invalid_signed_context}
         "404": {description: Entry not found}
+        "503": {description: Signed request deadline enforcement unavailable}
   /api/v1/mounts/{mountID}/files/directories:
     post:
       summary: Creates a directory

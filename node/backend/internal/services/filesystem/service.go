@@ -282,6 +282,11 @@ func (s *Service) blocked(path string) bool {
 }
 
 func (s *Service) Metadata(ctx context.Context, mountID, relative string) (entities.FileEntry, error) {
+	return s.MetadataFiltered(ctx, mountID, relative, nil)
+}
+
+// MetadataFiltered determines the real entry type before applying the filter.
+func (s *Service) MetadataFiltered(ctx context.Context, mountID, relative string, filter *AccessFilter) (entities.FileEntry, error) {
 	_, resolved, err := s.resolve(ctx, mountID, relative, false)
 	if err != nil {
 		return entities.FileEntry{}, err
@@ -291,6 +296,9 @@ func (s *Service) Metadata(ctx context.Context, mountID, relative string) (entit
 		return entities.FileEntry{}, ErrNotFound
 	}
 	if err != nil {
+		return entities.FileEntry{}, err
+	}
+	if err := filter.checkRoot(cleanRelativeSlash(relative), info); err != nil {
 		return entities.FileEntry{}, err
 	}
 	kind := "file"
@@ -432,8 +440,7 @@ func (s *Service) Open(ctx context.Context, mountID, relative string) (*os.File,
 	return s.OpenFiltered(ctx, mountID, relative, nil)
 }
 
-// OpenFiltered remains internal to the node until the authorization context is
-// propagated and verified for every file operation.
+// OpenFiltered applies the supplied access filter before and after opening.
 func (s *Service) OpenFiltered(ctx context.Context, mountID, relative string, filter *AccessFilter) (*os.File, os.FileInfo, error) {
 	_, resolved, err := s.resolve(ctx, mountID, relative, false)
 	if err != nil {

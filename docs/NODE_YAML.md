@@ -81,8 +81,10 @@ authorization_public_keys:
 The Control Tower can load the corresponding unencrypted PKCS#8 PEM private
 key from `CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_FILE` with its matching
 `CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID`. Both values must be supplied
-together. These settings only provision keys: signed contexts are not yet
-enforced by node endpoints or used to renew jobs.
+together. The node can verify signed contexts for local listing, metadata and
+content reads. The Control Tower does not yet issue these contexts for normal
+requests, other node operations reject them, and jobs do not yet renew them.
+File-type policies remain disabled until all required operations are integrated.
 
 Generate a random key with `openssl rand -base64 32`, save it outside the data,
 identity and configuration files, and supply exactly one of

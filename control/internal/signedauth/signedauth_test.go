@@ -135,6 +135,7 @@ func TestRejectInvalidClaimsAndAmbiguousJSON(t *testing.T) {
 		{"version", func(c *Claims) { c.Version = 2 }}, {"duration", func(c *Claims) { c.ExpiresAt++ }},
 		{"missing actor", func(c *Claims) { c.Binding.ActorID = "" }}, {"missing credential", func(c *Claims) { c.Binding.CredentialID = "" }},
 		{"traversal", func(c *Claims) { c.Binding.SourceRoot = "../secret" }}, {"absolute", func(c *Claims) { c.Binding.DestinationRoot = "/etc" }},
+		{"ambiguous whitespace", func(c *Claims) { c.Binding.SourceRoot = " secret" }},
 		{"no node", func(c *Claims) { c.Binding.SourceNodeID = ""; c.Binding.DestinationNodeID = "" }},
 		{"bad filter", func(c *Claims) { c.Context = json.RawMessage(`{"version":1,"rules":[],"bad":1}`) }},
 		{"oversize filter", func(c *Claims) { c.Context = json.RawMessage(`{"version":1,"rules":[]}` + strings.Repeat(" ", 33000)) }},
@@ -157,5 +158,39 @@ func TestRejectInvalidClaimsAndAmbiguousJSON(t *testing.T) {
 	token := base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(sig)
 	if _, _, err := Verify(token, keys, claims.Binding, "source", time.Unix(claims.IssuedAt, 0)); err == nil {
 		t.Fatal("duplicate key accepted")
+	}
+}
+
+func TestVerifyLocalReadUsesExactRouteAndRejectsTransferTokens(t *testing.T) {
+	claims, key, keys := fixture()
+	claims.Binding.Operation = "content"
+	claims.Binding.SourceGrantID = ""
+	claims.Binding.DestinationNodeID, claims.Binding.DestinationGrantID, claims.Binding.DestinationMountID, claims.Binding.DestinationRoot, claims.Binding.PlanID = "", "", "", "", ""
+	token, err := Sign(claims, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(claims.IssuedAt, 0)
+	if _, _, err := VerifyLocalRead(token, keys, "source", "content", "m1", "private/docs", now); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ node, operation, mount, root string }{
+		{"other", "content", "m1", "private/docs"},
+		{"source", "metadata", "m1", "private/docs"},
+		{"source", "content", "other", "private/docs"},
+		{"source", "content", "m1", "private"},
+		{"source", "delete", "m1", "private/docs"},
+	} {
+		if _, _, err := VerifyLocalRead(token, keys, tc.node, tc.operation, tc.mount, tc.root, now); err == nil {
+			t.Fatalf("accepted different route: %+v", tc)
+		}
+	}
+	claims.Binding.SourceGrantID = "grant"
+	token, err = Sign(claims, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := VerifyLocalRead(token, keys, "source", "content", "m1", "private/docs", now); err == nil {
+		t.Fatal("transfer token accepted for local read")
 	}
 }

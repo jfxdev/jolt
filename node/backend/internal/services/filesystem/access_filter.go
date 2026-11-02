@@ -18,8 +18,8 @@ var (
 	ErrFilteredBlocked = errors.New("entry is blocked by access policy")
 )
 
-// AccessFilter is internal until every file operation can enforce the same
-// context. A nil filter preserves legacy behavior.
+// AccessFilter enforces a compiled policy context for a mount. A nil filter
+// preserves legacy behavior; callers must only use a verified context.
 type AccessFilter struct {
 	context *filetypes.Filter
 	base    string

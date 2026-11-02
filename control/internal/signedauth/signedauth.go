@@ -73,6 +73,35 @@ func Sign(claims Claims, key ed25519.PrivateKey) (string, error) {
 // The returned filter is usable only until the returned expiry. Callers must
 // interrupt active streams and work at expiry and validate each renewal.
 func Verify(token string, keys map[string]ed25519.PublicKey, expected Binding, receivingNode string, now time.Time) (Claims, *filetypes.Filter, error) {
+	claims, filter, err := verifySigned(token, keys, now)
+	if err != nil || claims.Binding != expected || receivingNode == "" || (receivingNode != expected.SourceNodeID && receivingNode != expected.DestinationNodeID) {
+		return Claims{}, nil, ErrInvalid
+	}
+	return claims, filter, nil
+}
+
+// VerifyLocalRead checks a signed, single-node read against independently
+// derived route parameters. It must only be used after operational-token auth.
+// The caller must enforce expiry while streaming and never accept this token
+// for jobs, uploads, peer transfers, or requests with different route targets.
+func VerifyLocalRead(token string, keys map[string]ed25519.PublicKey, receivingNode, operation, mountID, root string, now time.Time) (Claims, *filetypes.Filter, error) {
+	claims, filter, err := verifySigned(token, keys, now)
+	if err != nil {
+		return Claims{}, nil, ErrInvalid
+	}
+	b := claims.Binding
+	switch operation {
+	case "list", "metadata", "content":
+	default:
+		return Claims{}, nil, ErrInvalid
+	}
+	if receivingNode == "" || b.SourceNodeID != receivingNode || b.SourceMountID != mountID || b.SourceRoot != root || b.Operation != operation || b.SourceGrantID != "" || b.DestinationNodeID != "" || b.DestinationGrantID != "" || b.DestinationMountID != "" || b.DestinationRoot != "" || b.PlanID != "" {
+		return Claims{}, nil, ErrInvalid
+	}
+	return claims, filter, nil
+}
+
+func verifySigned(token string, keys map[string]ed25519.PublicKey, now time.Time) (Claims, *filetypes.Filter, error) {
 	var claims Claims
 	if len(token) > base64.RawURLEncoding.EncodedLen(maxPayloadBytes)+1+base64.RawURLEncoding.EncodedLen(ed25519.SignatureSize) {
 		return claims, nil, ErrInvalid
@@ -100,7 +129,7 @@ func Verify(token string, keys map[string]ed25519.PublicKey, expected Binding, r
 		return Claims{}, nil, ErrInvalid
 	}
 	unix := now.UTC().Unix()
-	if unix < claims.IssuedAt || unix >= claims.ExpiresAt || claims.Binding != expected || receivingNode == "" || (receivingNode != expected.SourceNodeID && receivingNode != expected.DestinationNodeID) {
+	if unix < claims.IssuedAt || unix >= claims.ExpiresAt {
 		return Claims{}, nil, ErrInvalid
 	}
 	filter, err := filetypes.DecodeContext(claims.Context)
@@ -159,7 +188,7 @@ func endpoint(node, grant, mount, root string) bool {
 	if node == "" {
 		return grant == "" && mount == "" && root == ""
 	}
-	if mount == "" || root == "" || len(root) > 2048 || !utf8.ValidString(root) || strings.ContainsAny(root, "\\\x00") || strings.HasPrefix(root, "/") {
+	if mount == "" || root == "" || strings.TrimSpace(root) != root || len(root) > 2048 || !utf8.ValidString(root) || strings.ContainsAny(root, "\\\x00") || strings.HasPrefix(root, "/") {
 		return false
 	}
 	if root == "." {
