@@ -585,6 +585,22 @@ export function ServiceAccountsDialog({
             {form.kind === "agent" && (
               <fieldset className="grid gap-3 rounded-md border p-3">
                 <legend className="px-1 text-sm font-medium">Limites da credencial{editingId ? " selecionada ou nova" : ""}</legend>
+                <div className="grid gap-2">
+                  <Label>Permissões máximas da credencial</Label>
+                  {([ ["list", "Listar"], ["read", "Ler"] ] as const).map(([capability, label]) => (
+                    <label key={capability} className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={(form.limits.capabilities ?? ["list", "read"]).includes(capability)}
+                        onCheckedChange={(checked) => setForm((current) => {
+                          const selected = current.limits.capabilities ?? ["list", "read"];
+                          return { ...current, limits: { ...current.limits, capabilities: checked === true ? [...selected.filter((item) => item !== capability), capability] : selected.filter((item) => item !== capability) } };
+                        })}
+                      />
+                      {label}
+                    </label>
+                  ))}
+                  <small className="text-muted-foreground">A policy da conta também precisa conceder a permissão.</small>
+                </div>
                 {([
                   ["requests_per_minute", "Requisições por minuto", 1, 60000],
                   ["burst", "Pico de requisições", 1, 10000],

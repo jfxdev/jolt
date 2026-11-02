@@ -71,13 +71,14 @@ type ServiceAccountToken struct {
 
 // AgentLimits are per-credential server-enforced ceilings.
 type AgentLimits struct {
-	RequestsPerMinute int      `json:"requests_per_minute"`
-	Burst             int      `json:"burst"`
-	MaxConcurrent     int      `json:"max_concurrent"`
-	MaxResponseBytes  int64    `json:"max_response_bytes"`
-	DailyBytes        int64    `json:"daily_bytes"`
-	AllowedCIDRs      []string `json:"allowed_cidrs,omitempty"`
-	ReadMediaTypes    []string `json:"read_media_types,omitempty"`
+	RequestsPerMinute int       `json:"requests_per_minute"`
+	Burst             int       `json:"burst"`
+	MaxConcurrent     int       `json:"max_concurrent"`
+	MaxResponseBytes  int64     `json:"max_response_bytes"`
+	DailyBytes        int64     `json:"daily_bytes"`
+	AllowedCIDRs      []string  `json:"allowed_cidrs,omitempty"`
+	ReadMediaTypes    []string  `json:"read_media_types,omitempty"`
+	Capabilities      *[]string `json:"capabilities,omitempty"`
 }
 
 func DefaultAgentLimits() AgentLimits {

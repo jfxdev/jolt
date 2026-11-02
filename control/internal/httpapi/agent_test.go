@@ -141,6 +141,49 @@ func TestAgentReadCeilingAndRateLimit(t *testing.T) {
 	}
 }
 
+func TestAgentCredentialCapabilityCeiling(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		ceiling    *[]string
+		list, read int
+	}{
+		{name: "legacy", list: 200, read: 200},
+		{name: "list only", ceiling: &[]string{"list"}, list: 200, read: 403},
+		{name: "read only", ceiling: &[]string{"read"}, list: 403, read: 200},
+		{name: "empty", ceiling: &[]string{}, list: 403, read: 403},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				body := `{"items":[]}`
+				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body))}, nil
+			})}
+			limits := store.DefaultAgentLimits()
+			limits.Capabilities = tc.ceiling
+			f := setupAgent(t, limits, client)
+			for _, request := range []struct {
+				path string
+				want int
+			}{
+				{"/api/v1/nodes/n1/mounts/m/files", tc.list},
+				{"/api/v1/nodes/n1/mounts/m/files/content?path=file.txt", tc.read},
+			} {
+				w := httptest.NewRecorder()
+				f.handler.ServeHTTP(w, f.request(http.MethodGet, request.path))
+				if w.Code != request.want {
+					t.Fatalf("%s: status=%d want=%d body=%s", request.path, w.Code, request.want, w.Body)
+				}
+			}
+		})
+	}
+	for _, caps := range [][]string{{"delete"}, {"read", "read"}, {"sudo"}} {
+		limits := store.DefaultAgentLimits()
+		limits.Capabilities = &caps
+		if _, err := normalizeAgentLimits(&limits); err == nil {
+			t.Fatalf("accepted invalid ceiling %v", caps)
+		}
+	}
+}
+
 func TestAuditExportIncludesHashCheckpoint(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil

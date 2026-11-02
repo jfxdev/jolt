@@ -828,8 +828,17 @@ func (s *Server) exportAuditEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) evaluateAuthorization(r *http.Request, path, capability string) (rbac.Decision, error) {
-	if r.Context().Value(agentKey) != nil && capability != "read" && capability != "list" {
-		return rbac.Decision{Path: rbac.NormalizePath(path), Capability: capability, Denied: true}, nil
+	if agent, ok := r.Context().Value(agentKey).(agentContext); ok {
+		allowed := capability == "read" || capability == "list"
+		if allowed && agent.limits.Capabilities != nil {
+			allowed = false
+			for _, ceiling := range *agent.limits.Capabilities {
+				allowed = allowed || ceiling == capability
+			}
+		}
+		if !allowed {
+			return rbac.Decision{Path: rbac.NormalizePath(path), Capability: capability, Denied: true}, nil
+		}
 	}
 	if currentUser(r).Role == "admin" && currentActorType(r) == "user" {
 		return rbac.Decision{

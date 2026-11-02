@@ -43,6 +43,7 @@ export interface AgentLimits {
   daily_bytes: number;
   allowed_cidrs: string[];
   read_media_types?: string[];
+  capabilities?: ("list" | "read")[];
 }
 
 export interface TemporaryPolicyAssignment {

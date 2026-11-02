@@ -57,6 +57,17 @@ func normalizeAgentLimits(input *store.AgentLimits) (store.AgentLimits, error) {
 		limits.ReadMediaTypes[i] = mediaType
 		seenTypes[mediaType] = true
 	}
+	if limits.Capabilities != nil {
+		seen := map[string]bool{}
+		for i, raw := range *limits.Capabilities {
+			capability := strings.ToLower(strings.TrimSpace(raw))
+			if (capability != "read" && capability != "list") || seen[capability] {
+				return limits, errors.New("invalid agent capability ceiling")
+			}
+			(*limits.Capabilities)[i] = capability
+			seen[capability] = true
+		}
+	}
 	return limits, nil
 }
 

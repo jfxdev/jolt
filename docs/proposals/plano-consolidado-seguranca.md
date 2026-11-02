@@ -33,6 +33,7 @@
 **Código existente**
 
 - Perfil `agent`, limites por credencial, expiração, CIDRs opcionais e teto de leitura; contas antigas mantêm `automation`. Há interface e contratos para administração.
+- A credencial pode restringir suas capabilities a `list`, `read`, ambas ou nenhuma; a ausência do campo mantém as duas possibilidades sujeitas às policies.
 - Taxa e concorrência em memória; reservas transacionais no banco para orçamento de saída, reconciliação dos bytes enviados e cobrança conservadora após interrupção abrupta.
 - Cancelamento de requisições por revogação, desativação, expiração e desligamento coletivo; reativação individual. Proxies confiáveis são configuráveis para interpretação de `X-Forwarded-For`.
 - Marcador `minimum_security_version` e verificação em binários que o conhecem. Isso não modifica binários antigos.

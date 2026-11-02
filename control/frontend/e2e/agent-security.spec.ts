@@ -40,9 +40,10 @@ test("create an agent with explicit limits and stop all agents", async ({ page }
   await expect(page.getByLabel("Bytes por resposta")).toHaveValue("16777216");
   await page.getByLabel("Redes permitidas (CIDR, opcional)").fill("10.2.0.0/16");
   await page.getByLabel("Formatos de leitura (opcional)").fill("text/plain, application/pdf");
+  await page.getByRole("checkbox", { name: "Ler", exact: true }).uncheck();
   await page.getByRole("button", { name: "Criar e emitir API key" }).click();
   await expect(page.getByText("synthetic-token")).toBeVisible();
-  expect(created).toMatchObject({ name: "reader", kind: "agent", group_ids: ["group-1"], agent_limits: { requests_per_minute: 60, max_concurrent: 2, allowed_cidrs: ["10.2.0.0/16"], read_media_types: ["text/plain", "application/pdf"] } });
+  expect(created).toMatchObject({ name: "reader", kind: "agent", group_ids: ["group-1"], agent_limits: { requests_per_minute: 60, max_concurrent: 2, allowed_cidrs: ["10.2.0.0/16"], read_media_types: ["text/plain", "application/pdf"], capabilities: ["list"] } });
   await page.getByLabel("Requisições por minuto").fill("120");
   await page.getByRole("button", { name: "Aplicar limites" }).click();
   await expect.poll(() => updated).toMatchObject({ agent_limits: { requests_per_minute: 120, allowed_cidrs: ["10.2.0.0/16"], read_media_types: ["text/plain", "application/pdf"] } });
