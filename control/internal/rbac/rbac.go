@@ -236,6 +236,16 @@ func DeniesWithin(policies []Policy, scope string) bool {
 	return false
 }
 
+// RuleTouchesScope reports whether a rule can match the named scope or a
+// descendant. Callers must validate both paths before using this to narrow a
+// security context; invalid input is conservatively treated as touching it.
+func RuleTouchesScope(rulePath, scope string) bool {
+	if !ValidPath(rulePath) || !ValidResourcePath(scope) {
+		return true
+	}
+	return denyReachesScope(strings.Split(NormalizePath(rulePath), "/"), strings.Split(NormalizePath(scope), "/"))
+}
+
 // denyReachesScope reports whether a deny rule covers the scope itself or
 // anything under it. The rule's fixed prefix must agree with the scope on every
 // segment they share; a "*" agrees with anything. A rule shorter than the scope

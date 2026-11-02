@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jfxdev/jolt/backend/internal/entities"
 	"github.com/jfxdev/jolt/backend/internal/filetypes"
 )
 
@@ -750,6 +751,93 @@ func TestUploadFilteredAuthorizationAndPublication(t *testing.T) {
 	matches, err := filepath.Glob(filepath.Join(root, ".jolt-*.partial"))
 	if err != nil || len(matches) != 0 {
 		t.Fatalf("partials: %v, %v", matches, err)
+	}
+}
+
+func TestResumableUploadFilteredRevalidatesPersistedDestination(t *testing.T) {
+	service, mountID, root := newTestService(t, "read_write")
+	base := "nodes/n/files/mounts/m"
+	makeFilter := func(deny string) *AccessFilter {
+		rules := []filetypes.Rule{{PolicyID: "allow", Path: base + "/**", Capabilities: []string{"list", "read", "create", "update"}}}
+		if deny != "" {
+			rules = append(rules, filetypes.Rule{PolicyID: "deny", Path: base + "/**", Capabilities: []string{"deny", deny}, FileTypes: &filetypes.Selector{Extensions: []string{"txt"}}})
+		}
+		compiled, err := (filetypes.Context{Version: 1, Rules: rules}).Compile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		filter, err := NewAccessFilter(compiled, base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return filter
+	}
+	ctx := context.Background()
+	session := entities.UploadSession{ID: "upl_session", MountID: mountID, Destination: "file.txt", Size: 6}
+	allow, deny := makeFilter(""), makeFilter("create")
+	if err := service.ValidateUploadDestinationFiltered(ctx, session, deny); !errors.Is(err, ErrFilteredBlocked) {
+		t.Fatalf("denied admission: %v", err)
+	}
+	if err := service.ValidateUploadDestinationFiltered(ctx, session, nil); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("missing context: %v", err)
+	}
+	if offset, err := service.AppendUploadFiltered(ctx, session, 0, strings.NewReader("abc"), allow); err != nil || offset != 3 {
+		t.Fatalf("first chunk %d: %v", offset, err)
+	}
+	read := false
+	body := &testUploadReader{reader: strings.NewReader("def"), first: func() error { read = true; return nil }}
+	if _, err := service.AppendUploadFiltered(ctx, session, 3, body, deny); !errors.Is(err, ErrFilteredBlocked) || read {
+		t.Fatalf("denied resume: %v read=%v", err, read)
+	}
+	if offset, err := service.AppendUploadFiltered(ctx, session, 3, strings.NewReader("def"), allow); err != nil || offset != 6 {
+		t.Fatalf("resume %d: %v", offset, err)
+	}
+	if _, err := service.PrepareUploadFiltered(ctx, session, deny); !errors.Is(err, ErrFilteredBlocked) {
+		t.Fatalf("denied preparation: %v", err)
+	}
+	if digest, err := service.PrepareUploadFiltered(ctx, session, allow); err != nil || len(digest) != 64 {
+		t.Fatalf("allowed preparation: %q %v", digest, err)
+	}
+	if _, _, err := service.CompleteUploadFiltered(ctx, session, "", deny); !errors.Is(err, ErrFilteredBlocked) {
+		t.Fatalf("denied publication: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "file.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination created: %v", err)
+	}
+	writeFile(t, filepath.Join(root, "file.txt"), "other")
+	if _, _, err := service.CompleteUploadFiltered(ctx, session, "", allow); !errors.Is(err, ErrConflict) {
+		t.Fatalf("concurrent destination: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "file.txt")); err != nil || string(data) != "other" {
+		t.Fatalf("destination changed: %q %v", data, err)
+	}
+	if err := os.Remove(filepath.Join(root, "file.txt")); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, _, err := service.CompleteUploadFiltered(cancelled, session, "", allow); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled publication: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "file.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cancelled upload published: %v", err)
+	}
+	if _, _, err := service.CompleteUploadFiltered(ctx, session, "", allow); err != nil {
+		t.Fatalf("allowed publication: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "file.txt")); err != nil || string(data) != "abcdef" {
+		t.Fatalf("published bytes: %q %v", data, err)
+	}
+	writeFile(t, filepath.Join(root, "overwrite.txt"), "original")
+	overwrite := entities.UploadSession{ID: "upl_overwrite", MountID: mountID, Destination: "overwrite.txt", Size: 3, Overwrite: true}
+	if _, err := service.AppendUploadFiltered(ctx, overwrite, 0, strings.NewReader("new"), allow); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.CompleteUploadFiltered(ctx, overwrite, "", makeFilter("update")); !errors.Is(err, ErrFilteredBlocked) {
+		t.Fatalf("revoked overwrite: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "overwrite.txt")); err != nil || string(data) != "original" {
+		t.Fatalf("overwrite destination changed: %q %v", data, err)
 	}
 }
 
