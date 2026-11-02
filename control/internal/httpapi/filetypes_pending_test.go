@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jfxdev/jolt/control/internal/filetypes"
 	"github.com/jfxdev/jolt/control/internal/rbac"
 	"github.com/jfxdev/jolt/control/internal/store"
 )
@@ -31,5 +32,24 @@ func TestTypeRulesAreRejectedUntilNodeFilteringIsAvailable(t *testing.T) {
 	current, err := storage.GetPolicy(context.Background(), policy.ID)
 	if err != nil || len(current.Rules) != 1 || current.Rules[0].Capabilities[0] != "read" {
 		t.Fatalf("existing policy changed: %+v %v", current, err)
+	}
+}
+
+func TestPendingTypePolicyCannotBeReplacedThroughLegacyEditor(t *testing.T) {
+	handler, storage, session := testUserHandler(t, store.User{ID: "admin", Username: "admin", Role: "admin", Enabled: true})
+	now := time.Now().UTC()
+	policy := store.Policy{ID: "typed", Name: "typed", CreatedAt: now, UpdatedAt: now, Rules: []rbac.Rule{{Path: "nodes/n/files/mounts/m/**", Capabilities: []string{"deny", "read"}, FileTypes: &filetypes.Selector{Extensions: []string{"pem"}}}}}
+	if err := storage.CreatePolicy(context.Background(), policy); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	body := []byte(`{"name":"typed","rules":[{"path":"nodes/n/files/mounts/m/**","capabilities":["read"]}]}`)
+	handler.ServeHTTP(w, authenticatedRequest(http.MethodPatch, "/api/v1/control-tower/policies/typed", session, body))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("legacy replacement: %d %s", w.Code, w.Body)
+	}
+	stored, err := storage.GetPolicy(context.Background(), policy.ID)
+	if err != nil || len(stored.Rules) != 1 || stored.Rules[0].FileTypes == nil {
+		t.Fatalf("type policy changed: %+v %v", stored, err)
 	}
 }

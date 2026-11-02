@@ -1,6 +1,28 @@
 package rbac
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/jfxdev/jolt/control/internal/filetypes"
+)
+
+func TestTypedRulesFailClosedInPathOnlyEvaluator(t *testing.T) {
+	path := "nodes/n/files/mounts/m"
+	selector := &filetypes.Selector{Extensions: []string{"pem"}}
+	allow := Rule{Path: path, Capabilities: []string{"read"}, FileTypes: selector, Visibility: "visible"}
+	expanded := ExpandCompatibilityRules([]Policy{{ID: "typed", Rules: []Rule{allow}}})
+	if len(expanded[0].Rules) != 2 || expanded[0].Rules[1].FileTypes != selector || expanded[0].Rules[1].Visibility != "visible" {
+		t.Fatalf("compatibility expansion lost typed fields: %+v", expanded)
+	}
+	if decision := Evaluate(expanded, path+"/example.pem", "read"); decision.Allowed {
+		t.Fatalf("path-only evaluator granted typed rule: %+v", decision)
+	}
+	deny := Rule{Path: path, Capabilities: []string{"deny", "read"}, FileTypes: selector}
+	policies := ExpandCompatibilityRules([]Policy{{ID: "allow", Rules: []Rule{{Path: path, Capabilities: []string{"read"}}}}, {ID: "deny", Rules: []Rule{deny}}})
+	if decision := Evaluate(policies, path+"/example.txt", "read"); !decision.Denied {
+		t.Fatalf("path-only evaluator ignored typed denial: %+v", decision)
+	}
+}
 
 func TestDenyAlwaysWins(t *testing.T) {
 	policies := []Policy{

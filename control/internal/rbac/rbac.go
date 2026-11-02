@@ -3,6 +3,8 @@ package rbac
 import (
 	"sort"
 	"strings"
+
+	"github.com/jfxdev/jolt/control/internal/filetypes"
 )
 
 var validCapabilities = map[string]struct{}{
@@ -11,8 +13,10 @@ var validCapabilities = map[string]struct{}{
 }
 
 type Rule struct {
-	Path         string   `json:"path"`
-	Capabilities []string `json:"capabilities"`
+	Path         string              `json:"path"`
+	Capabilities []string            `json:"capabilities"`
+	FileTypes    *filetypes.Selector `json:"file_types,omitempty"`
+	Visibility   string              `json:"visibility,omitempty"`
 }
 
 type Policy struct {
@@ -127,6 +131,11 @@ func Evaluate(policies []Policy, path, capability string) Decision {
 				continue
 			}
 			capabilities := capabilitySet(rule.Capabilities)
+			// This path-only evaluator cannot safely grant a typed rule. Treat
+			// typed denies conservatively until the node applies the full filter.
+			if rule.FileTypes != nil && !capabilities["deny"] {
+				continue
+			}
 			if capabilities["deny"] {
 				deniedPolicies[policy.ID] = struct{}{}
 				continue
@@ -271,10 +280,9 @@ func ExpandCompatibilityRules(policies []Policy) []Policy {
 		for _, rule := range policy.Rules {
 			rules = append(rules, rule)
 			if isMountScopedFileRule(rule.Path) {
-				rules = append(rules, Rule{
-					Path:         NormalizePath(rule.Path) + "/" + Recursive,
-					Capabilities: rule.Capabilities,
-				})
+				compatibility := rule
+				compatibility.Path = NormalizePath(rule.Path) + "/" + Recursive
+				rules = append(rules, compatibility)
 			}
 		}
 		policy.Rules = rules

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"strconv"
 	"strings"
@@ -20,7 +21,7 @@ var (
 	ErrLastAdmin = errors.New("at least one enabled administrator is required")
 )
 
-const supportedSecurityVersion = 1
+const supportedSecurityVersion = 2
 
 type User struct {
 	ID           string    `json:"user_id"`
@@ -373,6 +374,8 @@ WHERE path LIKE 'workers/%'`); err != nil {
 		return err
 	}
 	for _, statement := range []string{
+		`ALTER TABLE policy_rules ADD COLUMN file_types TEXT NOT NULL DEFAULT 'null'`,
+		`ALTER TABLE policy_rules ADD COLUMN visibility TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE service_accounts ADD COLUMN kind TEXT NOT NULL DEFAULT 'automation'`,
 		`ALTER TABLE service_account_tokens ADD COLUMN agent_limits TEXT NOT NULL DEFAULT 'null'`,
 		`ALTER TABLE audit_events ADD COLUMN source_ip TEXT NOT NULL DEFAULT ''`,
@@ -1039,7 +1042,7 @@ func (s *Store) GetPolicy(ctx context.Context, id string) (Policy, error) {
 }
 
 func (s *Store) policyRules(ctx context.Context, policyID string) ([]rbac.Rule, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT path,capabilities FROM policy_rules WHERE policy_id=? ORDER BY position,id`, policyID)
+	rows, err := s.db.QueryContext(ctx, `SELECT path,capabilities,file_types,visibility FROM policy_rules WHERE policy_id=? ORDER BY position,id`, policyID)
 	if err != nil {
 		return nil, err
 	}
@@ -1047,11 +1050,23 @@ func (s *Store) policyRules(ctx context.Context, policyID string) ([]rbac.Rule, 
 	var rules []rbac.Rule
 	for rows.Next() {
 		var rule rbac.Rule
-		var encoded string
-		if err := rows.Scan(&rule.Path, &encoded); err != nil {
+		var encoded, selector string
+		if err := rows.Scan(&rule.Path, &encoded, &selector, &rule.Visibility); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(encoded), &rule.Capabilities); err != nil {
+			return nil, err
+		}
+		decoder := json.NewDecoder(strings.NewReader(selector))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&rule.FileTypes); err != nil {
+			return nil, err
+		}
+		var extra any
+		if err := decoder.Decode(&extra); err != io.EOF {
+			return nil, errors.New("invalid trailing file type selector data")
+		}
+		if err := validatePolicyTypeRule(rule); err != nil {
 			return nil, err
 		}
 		rules = append(rules, rule)
@@ -1107,16 +1122,45 @@ func (s *Store) UpdatePolicy(ctx context.Context, policy Policy) error {
 
 func insertPolicyRules(ctx context.Context, tx *sql.Tx, policyID string, rules []rbac.Rule) error {
 	for position, rule := range rules {
+		if err := validatePolicyTypeRule(rule); err != nil {
+			return err
+		}
 		encoded, err := json.Marshal(rule.Capabilities)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO policy_rules(policy_id,path,capabilities,position) VALUES(?,?,?,?)`,
-			policyID, rule.Path, string(encoded), position); err != nil {
+		selector, err := json.Marshal(rule.FileTypes)
+		if err != nil {
+			return err
+		}
+		if rule.FileTypes != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO metadata(key,value) VALUES('minimum_security_version','2') ON CONFLICT(key) DO UPDATE SET value=CASE WHEN CAST(value AS INTEGER)<2 THEN '2' ELSE value END`); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO policy_rules(policy_id,path,capabilities,position,file_types,visibility) VALUES(?,?,?,?,?,?)`,
+			policyID, rule.Path, string(encoded), position, string(selector), rule.Visibility); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func validatePolicyTypeRule(rule rbac.Rule) error {
+	if rule.FileTypes == nil {
+		if rule.Visibility != "" {
+			return errors.New("visibility requires file types")
+		}
+		return nil
+	}
+	if rule.Visibility != "" && rule.Visibility != "hidden" && rule.Visibility != "visible" {
+		return errors.New("invalid file type visibility")
+	}
+	parts := strings.Split(rbac.NormalizePath(rule.Path), "/")
+	if !rbac.ValidPath(rule.Path) || len(parts) < 5 || parts[0] != "nodes" || parts[2] != "files" || parts[3] != "mounts" || parts[1] == "**" || parts[4] == "**" {
+		return errors.New("file types require a mount file path")
+	}
+	return rule.FileTypes.Validate()
 }
 
 func (s *Store) DeletePolicy(ctx context.Context, id string) error {

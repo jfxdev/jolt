@@ -1562,6 +1562,12 @@ func (s *Server) updatePolicy(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	for _, rule := range current.Rules {
+		if rule.FileTypes != nil {
+			writeError(w, r, http.StatusConflict, "file_type_policy_unavailable", "A edição desta policy exige a integração completa das restrições de tipo.")
+			return
+		}
+	}
 	var input policyRequest
 	if !decodeJSON(w, r, &input) {
 		s.audit(r, "update", resource, "denied")
@@ -1920,6 +1926,11 @@ func normalizePolicyRequest(input *policyRequest) bool {
 	}
 	for index := range input.Rules {
 		rule := &input.Rules[index]
+		// Do not activate typed policies before every affected node path,
+		// share, upload and transfer enforces their authorization context.
+		if rule.FileTypes != nil || rule.Visibility != "" {
+			return false
+		}
 		rule.Path = rbac.NormalizePath(rule.Path)
 		if !rbac.ValidPath(rule.Path) || len(rule.Capabilities) == 0 || len(rule.Capabilities) > 9 {
 			return false
