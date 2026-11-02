@@ -109,3 +109,31 @@ test("a failed abort reports the error without starting a replacement", async ()
   assert.deepEqual(created, [false]);
   assert.deepEqual(errors, [error]);
 });
+
+test("a rejected upload starts a new session on retry", async () => {
+  const file = new File(["payload"], "rejected.txt", { lastModified: 2 });
+  let creates = 0, finishes = 0;
+  const errors: unknown[] = [];
+  const session: UploadSession = { upload_id: "session", mount_id: "media", destination_path: file.name, size: file.size, offset: 0, overwrite: false, chunk_size: 8, created_at: "", updated_at: "", expires_at: "" };
+  api.createUpload = async () => { creates++; return { ...session, upload_id: `session-${creates}` }; };
+  api.appendUploadChunk = async (_node, _mount, id) => ({ ...session, upload_id: id, offset: file.size });
+  api.completeUpload = async (_node, _mount, id) => {
+    if (id === "session-1") throw Object.assign(new Error("content rejected"), { status: 422, code: "upload_content_rejected" });
+    finishes++;
+    return { upload_id: id, destination_path: file.name, size: file.size, checksum: "" };
+  };
+  let uploads!: ReturnType<typeof useResumableUploads>;
+  function Harness() {
+    uploads = useResumableUploads({ nodeId: "node", mountId: "media", onFinished: () => {}, onError: (error) => errors.push(error) });
+    return null;
+  }
+  renderToStaticMarkup(createElement(Harness));
+  uploads.start(file, file.name);
+  await setImmediate();
+  assert.equal(creates, 1);
+  await uploads.retry(`node:media:${file.name}:${file.size}:${file.lastModified}`);
+  await setImmediate();
+  assert.equal(creates, 2);
+  assert.equal(finishes, 1);
+  assert.equal(errors.length, 1);
+});

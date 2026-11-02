@@ -79,6 +79,10 @@ func (s *Server) writeUploadLookupError(w http.ResponseWriter, r *http.Request, 
 			writeError(w, r, http.StatusGone, "upload_expired", "Este envio expirou. Verifique o destino antes de iniciar um novo envio.")
 			return
 		}
+		if apiErr.StatusCode == http.StatusUnprocessableEntity && apiErr.Code == "upload_content_rejected" {
+			writeError(w, r, http.StatusUnprocessableEntity, "upload_content_rejected", "O conteúdo enviado foi recusado pela inspeção.")
+			return
+		}
 	}
 	writeError(w, r, http.StatusBadGateway, "node_unavailable", "Não foi possível consultar os uploads deste node.")
 }

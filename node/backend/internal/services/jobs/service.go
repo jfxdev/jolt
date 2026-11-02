@@ -200,6 +200,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 }
 
 func (s *Service) Create(ctx context.Context, request CreateRequest, idempotencyKey string) (entities.Job, bool, error) {
+	if err := s.validateHiddenPaths(ctx, request); err != nil {
+		return entities.Job{}, false, err
+	}
 	if request.BandwidthLimit < 0 || request.BandwidthLimit > 1<<40 {
 		return entities.Job{}, false, fmt.Errorf("%w: bandwidth limit is outside the supported range", ErrInvalid)
 	}
@@ -323,6 +326,9 @@ func (s *Service) CreatePlannedBatchPull(ctx context.Context, request CreateRequ
 // CreateInline records operations whose input only exists for the lifetime of the
 // HTTP request (currently streaming uploads). It cannot be claimed by a worker.
 func (s *Service) CreateInline(ctx context.Context, request CreateRequest, idempotencyKey string) (entities.Job, bool, error) {
+	if err := s.validateHiddenPaths(ctx, request); err != nil {
+		return entities.Job{}, false, err
+	}
 	if request.BandwidthLimit < 0 || request.BandwidthLimit > 1<<40 {
 		return entities.Job{}, false, fmt.Errorf("%w: bandwidth limit is outside the supported range", ErrInvalid)
 	}
@@ -334,6 +340,39 @@ func (s *Service) CreateInline(ctx context.Context, request CreateRequest, idemp
 		s.recordEvent(ctx, created, "job.started", "inline operation started")
 	}
 	return created, repeated, err
+}
+
+func (s *Service) validateHiddenPaths(ctx context.Context, request CreateRequest) error {
+	if request.MountID == "" {
+		return nil
+	}
+	switch request.Type {
+	case "copy_local", "move_local", "delete":
+		hidden, err := s.files.IsHiddenPath(ctx, request.MountID, request.SourcePath)
+		if errors.Is(err, filesystem.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if hidden {
+			return filesystem.ErrNotFound
+		}
+	}
+	switch request.Type {
+	case "mkdir", "upload", "copy_local", "move_local", "transfer_pull", "transfer_pull_directory", "transfer_pull_batch", "transfer_move_batch":
+		hidden, err := s.files.IsHiddenPath(ctx, request.MountID, request.Destination)
+		if errors.Is(err, filesystem.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if hidden {
+			return filesystem.ErrHiddenName
+		}
+	}
+	return nil
 }
 
 func (s *Service) newJob(request CreateRequest, state string) entities.Job {
@@ -486,6 +525,13 @@ func hasBlockedParent(relative string, blocked map[string]struct{}) bool {
 }
 
 func (s *Service) planAction(ctx context.Context, mountID string, item entities.JobItem, policy string) (string, string, string, error) {
+	hidden, err := s.files.IsHiddenPath(ctx, mountID, item.DestinationPath)
+	if err != nil {
+		return "", item.DestinationPath, "", err
+	}
+	if hidden {
+		return "", item.DestinationPath, "", filesystem.ErrHiddenName
+	}
 	existing, err := s.files.Metadata(ctx, mountID, item.DestinationPath)
 	if err != nil && !errors.Is(err, filesystem.ErrNotFound) {
 		return "", item.DestinationPath, item.Checksum, err
@@ -536,6 +582,13 @@ func (s *Service) uniqueDestination(ctx context.Context, mountID, destination st
 	base := strings.TrimSuffix(destination, extension)
 	for index := 1; index <= 10_000; index++ {
 		candidate := fmt.Sprintf("%s (%d)%s", base, index, extension)
+		hidden, err := s.files.IsHiddenPath(ctx, mountID, candidate)
+		if err != nil {
+			return "", err
+		}
+		if hidden {
+			continue
+		}
 		if _, err := s.files.Metadata(ctx, mountID, candidate); errors.Is(err, filesystem.ErrNotFound) {
 			return candidate, nil
 		} else if err != nil {

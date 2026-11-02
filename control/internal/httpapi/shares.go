@@ -383,6 +383,9 @@ func (s *Server) publicShareList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.authorizeSharePath(w, r, share, relative, "list") {
+		return
+	}
 	query := url.Values{}
 	query.Set("path", relative)
 	if after := r.URL.Query().Get("after"); after != "" {
@@ -403,6 +406,9 @@ func (s *Server) publicShareContent(w http.ResponseWriter, r *http.Request) {
 	}
 	relative, ok := s.resolveSharePath(w, r, share)
 	if !ok {
+		return
+	}
+	if !s.authorizeSharePath(w, r, share, relative, "read") {
 		return
 	}
 	// Every content request, including Range, consumes the atomic budget.
@@ -435,6 +441,21 @@ func (s *Server) publicShareArchive(w http.ResponseWriter, r *http.Request) {
 	relative, ok := s.resolveSharePath(w, r, share)
 	if !ok {
 		return
+	}
+	if !s.authorizeSharePath(w, r, share, relative, "read") {
+		return
+	}
+	for _, name := range r.URL.Query()["name"] {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		selected := fileScope(relative, name)
+		if selected == "" || !s.authorizeSharePath(w, r, share, selected, "read") {
+			if selected == "" {
+				writeError(w, r, http.StatusBadRequest, "invalid_path", "Caminho inválido.")
+			}
+			return
+		}
 	}
 	if err := s.store.RegisterShareDownload(r.Context(), share.ID, time.Now().UTC()); err != nil {
 		writeError(w, r, http.StatusGone, "share_exhausted", "Este link não está mais disponível.")
@@ -498,11 +519,23 @@ func (s *Server) loadPublicShare(w http.ResponseWriter, r *http.Request, forCont
 // from storage rather than trusted from the share, so demoting an admin
 // likewise stops their links.
 func (s *Server) shareCreatorStillAuthorized(r *http.Request, share store.Share) bool {
+	return s.shareCreatorAuthorizedPath(r, share, share.Path, "read", share.Kind == "directory")
+}
+
+func (s *Server) authorizeSharePath(w http.ResponseWriter, r *http.Request, share store.Share, relative, capability string) bool {
+	if !s.shareCreatorAuthorizedPath(r, share, relative, capability, false) {
+		writeError(w, r, http.StatusGone, "share_revoked", "Este link não está mais disponível.")
+		return false
+	}
+	return true
+}
+
+func (s *Server) shareCreatorAuthorizedPath(r *http.Request, share store.Share, relative, capability string, checkSubtree bool) bool {
 	user, err := s.store.GetUser(r.Context(), share.CreatedBy)
 	if err != nil || !user.Enabled {
 		return false
 	}
-	scope := fileScope("nodes/"+share.NodeID+"/files/mounts/"+share.MountID, share.Path)
+	scope := fileScope("nodes/"+share.NodeID+"/files/mounts/"+share.MountID, relative)
 	if scope == "" {
 		return false
 	}
@@ -513,13 +546,13 @@ func (s *Server) shareCreatorStillAuthorized(r *http.Request, share store.Share)
 	expanded := rbac.ExpandCompatibilityRules(policies)
 	// A deny rule inside the shared subtree still wins, even for an admin, so
 	// an archive of a shared folder cannot reach a denied descendant.
-	if share.Kind == "directory" && rbac.DeniesWithin(expanded, scope) {
+	if checkSubtree && rbac.DeniesWithin(expanded, scope) {
 		return false
 	}
 	if user.Role == "admin" {
 		return true
 	}
-	decision := rbac.Evaluate(expanded, scope, "read")
+	decision := rbac.Evaluate(expanded, scope, capability)
 	return decision.Allowed && !decision.Denied
 }
 
@@ -574,6 +607,7 @@ func (s *Server) streamShareResource(w http.ResponseWriter, r *http.Request, sha
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("X-Correlation-ID", r.Header.Get("X-Correlation-ID"))
+	request.Header.Set("X-Jolt-Internal-Canary", "1")
 	if value := r.Header.Get("Range"); value != "" && download {
 		request.Header.Set("Range", value)
 	}
@@ -583,6 +617,9 @@ func (s *Server) streamShareResource(w http.ResponseWriter, r *http.Request, sha
 		return
 	}
 	defer response.Body.Close()
+	if response.Header.Get("X-Jolt-Canary") == "1" {
+		s.auditCanary(r, share.CreatedBy, "share", "shares/"+share.ID+"/"+resource, response.StatusCode)
+	}
 	for _, header := range []string{"Content-Type", "Content-Length", "Content-Disposition",
 		"Accept-Ranges", "Content-Range", "X-Jolt-Archive-Files", "X-Jolt-Archive-Bytes"} {
 		if value := response.Header.Get(header); value != "" {

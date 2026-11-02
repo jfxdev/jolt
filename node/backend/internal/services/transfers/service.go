@@ -19,6 +19,7 @@ import (
 
 	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/entities"
+	"github.com/jfxdev/jolt/backend/internal/filepolicy"
 	joltcrypto "github.com/jfxdev/jolt/backend/internal/infra/crypto"
 
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
@@ -26,9 +27,10 @@ import (
 )
 
 var (
-	ErrInvalid   = errors.New("invalid transfer")
-	ErrForbidden = errors.New("transfer is not permitted by the grant")
-	ErrPeer      = errors.New("peer is unavailable")
+	ErrInvalid             = errors.New("invalid transfer")
+	ErrForbidden           = errors.New("transfer is not permitted by the grant")
+	ErrPeer                = errors.New("peer is unavailable")
+	ErrPeerUpgradeRequired = errors.New("peer must be upgraded to support protected move validation")
 )
 
 type PullRequest struct {
@@ -153,7 +155,7 @@ func (s *Service) CreatePull(ctx context.Context, request PullRequest, idempoten
 		case "fail":
 			return entities.Job{}, false, filesystem.ErrConflict
 		case "rename":
-			destination, err = s.uniqueDestination(ctx, grant.MountID, destination)
+			destination, err = s.uniqueDestination(ctx, grant, destination)
 			if err != nil {
 				return entities.Job{}, false, err
 			}
@@ -176,18 +178,11 @@ func (s *Service) CreatePull(ctx context.Context, request PullRequest, idempoten
 }
 
 func (s *Service) OpenSource(ctx context.Context, peerNodeID, grantID, relative string, checksum bool) (SourceFile, error) {
-	grant, err := s.store.GetTransferGrant(ctx, grantID)
-	if errors.Is(err, contracts.ErrNotFound) {
-		return SourceFile{}, ErrForbidden
-	}
+	grant, err := s.sendGrant(ctx, peerNodeID, grantID)
 	if err != nil {
 		return SourceFile{}, err
 	}
-	if !grant.Enabled || grant.PeerNodeID != peerNodeID ||
-		(grant.Direction != "send" && grant.Direction != "send_receive") || !grant.Permissions.Read {
-		return SourceFile{}, ErrForbidden
-	}
-	sourcePath, err := withinGrant(grant.Path, relative)
+	sourcePath, err := withinGrantWithExclusions(grant, relative)
 	if err != nil {
 		return SourceFile{}, err
 	}
@@ -211,7 +206,7 @@ func (s *Service) OpenManifest(ctx context.Context, peerNodeID, grantID, relativ
 	if err != nil {
 		return ManifestPage{}, err
 	}
-	sourcePath, err := withinGrant(grant.Path, relative)
+	sourcePath, err := withinGrantWithExclusions(grant, relative)
 	if err != nil {
 		return ManifestPage{}, err
 	}
@@ -249,12 +244,12 @@ func (s *Service) OpenManifest(ctx context.Context, peerNodeID, grantID, relativ
 	var descendants []entities.FileEntry
 	descendantTotal := 0
 	if descendantLimit > 0 {
-		descendants, descendantTotal, err = s.files.ManifestPage(ctx, grant.MountID, sourcePath, descendantAfter, descendantLimit)
+		descendants, descendantTotal, err = s.files.ManifestPageWithExclusions(ctx, grant.MountID, sourcePath, descendantAfter, descendantLimit, grant.Exclude)
 		if err != nil {
 			return ManifestPage{}, err
 		}
 	} else {
-		_, descendantTotal, err = s.files.ManifestPage(ctx, grant.MountID, sourcePath, 0, 1)
+		_, descendantTotal, err = s.files.ManifestPageWithExclusions(ctx, grant.MountID, sourcePath, 0, 1, grant.Exclude)
 		if err != nil {
 			return ManifestPage{}, err
 		}
@@ -305,7 +300,7 @@ func (s *Service) PlanDirectoryPull(ctx context.Context, request PullRequest) (e
 	}
 	now := time.Now().UTC()
 	blockedDirectories := make(map[string]struct{})
-	for index, entry := range entries {
+	for _, entry := range entries {
 		if entry.Path == ".." || strings.HasPrefix(entry.Path, "../") {
 			return entities.CopyPlan{}, fmt.Errorf("%w: remote manifest contains an invalid path", ErrInvalid)
 		}
@@ -316,14 +311,20 @@ func (s *Service) PlanDirectoryPull(ctx context.Context, request PullRequest) (e
 			return entities.CopyPlan{}, fmt.Errorf("%w: remote manifest contains an invalid item size", ErrInvalid)
 		}
 		item := entities.JobItem{
-			Ordinal: index, RelativePath: entry.Path, SourcePath: joinRelative(request.SourcePath, entry.Path),
+			Ordinal: len(plan.Items), RelativePath: entry.Path, SourcePath: joinRelative(request.SourcePath, entry.Path),
 			DestinationPath: joinRelative(destination, entry.Path), Type: entry.Type, Size: entry.Size,
 			ModifiedAt: entry.ModifiedAt, Checksum: entry.Checksum, State: "pending", UpdatedAt: now,
+		}
+		if err := validateGrantDestination(grant, item.DestinationPath); err != nil {
+			if errors.Is(err, ErrForbidden) {
+				continue
+			}
+			return entities.CopyPlan{}, err
 		}
 		if hasBlockedParent(entry.Path, blockedDirectories) {
 			item.Action = "conflict"
 		} else {
-			item.Action, item.DestinationPath, err = s.planRemoteAction(ctx, grant.MountID, item, policy)
+			item.Action, item.DestinationPath, err = s.planRemoteAction(ctx, grant, item, policy)
 			if err != nil {
 				return entities.CopyPlan{}, err
 			}
@@ -404,6 +405,11 @@ func (s *Service) PlanBatchPull(ctx context.Context, request BatchPullRequest) (
 	}
 	seenDestinations := make(map[string]struct{}, len(paths))
 	for _, sourcePath := range paths {
+		if operation == "move" {
+			if err := s.validateRemoteMoveSource(ctx, peer, request.SourceGrantID, sourcePath); err != nil {
+				return entities.CopyPlan{}, err
+			}
+		}
 		rootName := sourceNames[sourcePath]
 		if rootName == "" {
 			rootName = path.Base(sourcePath)
@@ -413,7 +419,7 @@ func (s *Service) PlanBatchPull(ctx context.Context, request BatchPullRequest) (
 		}
 		seenDestinations[rootName] = struct{}{}
 		rootDestination := joinRelative(destinationBase, rootName)
-		rootPlan, err := s.planBatchRoot(ctx, peer, request.SourceGrantID, sourcePath, destinationGrant.MountID, rootDestination, policy, checksum)
+		rootPlan, err := s.planBatchRoot(ctx, peer, request.SourceGrantID, sourcePath, destinationGrant, rootDestination, policy, checksum, operation)
 		if err != nil {
 			return entities.CopyPlan{}, err
 		}
@@ -479,7 +485,7 @@ func (s *Service) CreateBatchPull(ctx context.Context, request BatchPullRequest,
 	}, plan, idempotencyKey, requestHash)
 }
 
-func (s *Service) planBatchRoot(ctx context.Context, peer entities.Peer, sourceGrantID, sourcePath, destinationMountID, destinationPath, policy string, checksum bool) (entities.CopyPlan, error) {
+func (s *Service) planBatchRoot(ctx context.Context, peer entities.Peer, sourceGrantID, sourcePath string, grant entities.TransferPathGrant, destinationPath, policy string, checksum bool, operation string) (entities.CopyPlan, error) {
 	entries, err := s.fetchRemoteManifest(ctx, peer, sourceGrantID, sourcePath, checksum)
 	if err != nil {
 		return entities.CopyPlan{}, err
@@ -496,10 +502,16 @@ func (s *Service) planBatchRoot(ctx context.Context, peer entities.Peer, sourceG
 			Type: entry.Type, Size: entry.Size, ModifiedAt: entry.ModifiedAt, Checksum: entry.Checksum,
 			State: "pending", UpdatedAt: now,
 		}
+		if err := validateGrantDestination(grant, item.DestinationPath); err != nil {
+			if errors.Is(err, ErrForbidden) && operation == "copy" {
+				continue
+			}
+			return entities.CopyPlan{}, err
+		}
 		if hasBlockedParent(entry.Path, blockedDirectories) {
 			item.Action = "conflict"
 		} else {
-			item.Action, item.DestinationPath, err = s.planRemoteAction(ctx, destinationMountID, item, policy)
+			item.Action, item.DestinationPath, err = s.planRemoteAction(ctx, grant, item, policy)
 			if err != nil {
 				return entities.CopyPlan{}, err
 			}
@@ -596,6 +608,26 @@ func (s *Service) ExecutePull(ctx context.Context, job entities.Job, progress fu
 }
 
 func (s *Service) executePullFile(ctx context.Context, peer entities.Peer, grant entities.TransferPathGrant, job entities.Job, progress func(int64, int64) error) (int64, error) {
+	if grant.MountID != job.MountID {
+		return job.BytesCompleted, ErrForbidden
+	}
+	if err := validateGrantDestination(grant, job.Destination); err != nil {
+		return job.BytesCompleted, err
+	}
+	validatePublication := func() error {
+		currentPeer, err := s.trustedPeer(ctx, job.PeerNodeID)
+		if err != nil {
+			return err
+		}
+		currentGrant, err := s.receiveGrant(ctx, currentPeer.NodeID, job.DestinationGrantID, job.ConflictPolicy)
+		if err != nil {
+			return err
+		}
+		if currentGrant.MountID != job.MountID {
+			return ErrForbidden
+		}
+		return validateGrantDestination(currentGrant, job.Destination)
+	}
 	if job.ConflictPolicy == "skip" {
 		if _, err := s.files.Metadata(ctx, grant.MountID, job.Destination); err == nil {
 			return 0, nil
@@ -691,7 +723,7 @@ func (s *Service) executePullFile(ctx context.Context, peer entities.Peer, grant
 					}
 					return nil
 				}, nil
-			}, progress, s.jobs.BandwidthLimiter(job))
+			}, progress, validatePublication, s.jobs.BandwidthLimiter(job))
 		return written, receiveErr
 	}
 	response, err := s.openRemote(ctx, peer, job, checkpoint, -1, http.MethodGet, false)
@@ -728,7 +760,7 @@ func (s *Service) executePullFile(ctx context.Context, peer entities.Peer, grant
 			if finalETag := response.Trailer.Get("X-Jolt-Final-ETag"); finalETag == "" || finalETag != etag {
 				return filesystem.ErrSourceChanged
 			}
-			return nil
+			return validatePublication()
 		}, s.jobs.BandwidthLimiter(job))
 	return written, err
 }
@@ -748,6 +780,19 @@ func (s *Service) ExecuteDirectoryPull(ctx context.Context, job entities.Job, pr
 	items, err := s.store.ListJobItems(ctx, job.ID)
 	if err != nil {
 		return job.BytesCompleted, err
+	}
+	if grant.MountID != job.MountID {
+		return job.BytesCompleted, ErrForbidden
+	}
+	if err := validateGrantDestination(grant, job.Destination); err != nil {
+		return job.BytesCompleted, err
+	}
+	// Validate every persisted item before changing anything, including completed
+	// entries that may later trigger source cleanup on resumed moves.
+	for _, item := range items {
+		if err := validateGrantDestination(grant, item.DestinationPath); err != nil {
+			return job.BytesCompleted, err
+		}
 	}
 	var stateMu sync.Mutex
 	var bytesCompleted int64
@@ -907,7 +952,21 @@ func (s *Service) ExecuteDirectoryPull(ctx context.Context, job entities.Job, pr
 		if latestErr != nil {
 			return bytesCompleted, latestErr
 		}
+		currentPeer, validationErr := s.trustedPeer(ctx, job.PeerNodeID)
+		if validationErr != nil {
+			return bytesCompleted, validationErr
+		}
+		currentGrant, validationErr := s.receiveGrant(ctx, currentPeer.NodeID, job.DestinationGrantID, job.ConflictPolicy)
+		if validationErr != nil {
+			return bytesCompleted, validationErr
+		}
+		if currentGrant.MountID != job.MountID {
+			return bytesCompleted, ErrForbidden
+		}
 		for _, item := range latest {
+			if err := validateGrantDestination(currentGrant, item.DestinationPath); err != nil {
+				return bytesCompleted, err
+			}
 			if item.Action == "skip" && job.ConflictPolicy != "checksum" {
 				return bytesCompleted, fmt.Errorf("%w: source was preserved because an existing destination was skipped without checksum verification", jobs.ErrWarnings)
 			}
@@ -924,6 +983,25 @@ func (s *Service) ExecuteDirectoryPull(ctx context.Context, job entities.Job, pr
 }
 
 func (s *Service) cleanupMovedSources(ctx context.Context, peer entities.Peer, job entities.Job, items []entities.JobItem) error {
+	// Check every selected root before deleting any individual source item.
+	// An older peer cannot attest to this check, so it is rejected rather than
+	// silently allowing a partially moved tree.
+	rootCount := 0
+	for _, item := range items {
+		if !item.SourceRoot {
+			continue
+		}
+		rootCount++
+		if item.SourceCleanupState == "completed" {
+			continue
+		}
+		if err := s.validateRemoteMoveSource(ctx, peer, job.SourceGrantID, item.SourcePath); err != nil {
+			return err
+		}
+	}
+	if rootCount == 0 {
+		return fmt.Errorf("%w: move source roots are unavailable; replan the transfer", ErrInvalid)
+	}
 	itemsToRemove := make([]entities.JobItem, 0)
 	for _, item := range items {
 		if item.SourceCleanupState != "completed" {
@@ -937,13 +1015,28 @@ func (s *Service) cleanupMovedSources(ctx context.Context, peer entities.Peer, j
 		return strings.Count(itemsToRemove[left].SourcePath, "/") > strings.Count(itemsToRemove[right].SourcePath, "/")
 	})
 	for _, item := range itemsToRemove {
+		root := ""
+		foundRoot := false
+		for _, candidate := range items {
+			if !candidate.SourceRoot {
+				continue
+			}
+			base, child := cleanRelative(candidate.SourcePath), cleanRelative(item.SourcePath)
+			if base == "." || child == base || strings.HasPrefix(child, base+"/") {
+				root, foundRoot = candidate.SourcePath, true
+				break
+			}
+		}
+		if !foundRoot {
+			return fmt.Errorf("%w: move item has no selected root", ErrInvalid)
+		}
 		expectedETag := sourceEntryETag(item)
 		if item.Type == "directory" {
 			// Deleting descendants updates the directory mtime by design. A
 			// non-recursive delete still fails if a new or changed child remains.
 			expectedETag = ""
 		}
-		if err := s.deleteRemoteSource(ctx, peer, job.SourceGrantID, item.SourcePath, expectedETag, false); err != nil {
+		if err := s.deleteRemoteSource(ctx, peer, job.SourceGrantID, item.SourcePath, root, expectedETag, false); err != nil {
 			item.SourceCleanupState, item.Error, item.UpdatedAt = "failed", err.Error(), time.Now().UTC()
 			_ = s.store.UpdateJobItem(context.Background(), item)
 			return err
@@ -956,7 +1049,66 @@ func (s *Service) cleanupMovedSources(ctx context.Context, peer entities.Peer, j
 	return nil
 }
 
-func (s *Service) DeleteSource(ctx context.Context, peerNodeID, grantID, relative, expectedETag string, recursive bool) error {
+func (s *Service) ValidateMoveSource(ctx context.Context, peerNodeID, grantID, relative string) error {
+	grant, err := s.sendGrant(ctx, peerNodeID, grantID)
+	if err != nil {
+		return err
+	}
+	if !grant.Permissions.Delete {
+		return ErrForbidden
+	}
+	sourcePath, err := withinGrantWithExclusions(grant, relative)
+	if err != nil {
+		return err
+	}
+	return s.files.ValidateMoveSourceWithExclusions(ctx, grant.MountID, sourcePath, grant.Exclude)
+}
+
+func (s *Service) validateRemoteMoveSource(ctx context.Context, peer entities.Peer, grantID, relative string) error {
+	endpoint, err := url.Parse(strings.TrimRight(peer.MTLSEndpoint, "/"))
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" {
+		return fmt.Errorf("%w: invalid peer mTLS endpoint", ErrPeer)
+	}
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/peer/v1/grants/" + url.PathEscape(grantID) + "/actions/validate-move"
+	body, err := json.Marshal(map[string]string{"path": relative})
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), strings.NewReader(string(body)))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := s.doPeerRequest(peer, request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	switch response.StatusCode {
+	case http.StatusNoContent:
+		return nil
+	case http.StatusConflict:
+		return filesystem.ErrProtectedTree
+	case http.StatusForbidden:
+		return ErrForbidden
+	case http.StatusNotFound:
+		var payload struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&payload) == nil && payload.Error.Code == "source_not_found" {
+			return filesystem.ErrNotFound
+		}
+		return ErrPeerUpgradeRequired
+	case http.StatusMethodNotAllowed:
+		return ErrPeerUpgradeRequired
+	default:
+		return fmt.Errorf("%w: move validation returned HTTP %d", ErrPeer, response.StatusCode)
+	}
+}
+
+func (s *Service) DeleteSource(ctx context.Context, peerNodeID, grantID, relative string, sourceRoot *string, expectedETag string, recursive bool) error {
 	if recursive {
 		return ErrForbidden
 	}
@@ -967,8 +1119,21 @@ func (s *Service) DeleteSource(ctx context.Context, peerNodeID, grantID, relativ
 	if !grant.Permissions.Delete {
 		return ErrForbidden
 	}
-	sourcePath, err := withinGrant(grant.Path, relative)
+	sourcePath, err := withinGrantWithExclusions(grant, relative)
 	if err != nil {
+		return err
+	}
+	if sourceRoot == nil {
+		return ErrPeerUpgradeRequired
+	}
+	rootPath, err := withinGrantWithExclusions(grant, *sourceRoot)
+	if err != nil {
+		return err
+	}
+	if rootPath != "." && sourcePath != rootPath && !strings.HasPrefix(sourcePath, rootPath+"/") {
+		return ErrForbidden
+	}
+	if err := s.files.ValidateMoveSourceWithExclusions(ctx, grant.MountID, rootPath, grant.Exclude); err != nil {
 		return err
 	}
 	entry, err := s.files.Metadata(ctx, grant.MountID, sourcePath)
@@ -981,13 +1146,13 @@ func (s *Service) DeleteSource(ctx context.Context, peerNodeID, grantID, relativ
 	return s.files.Delete(ctx, grant.MountID, sourcePath, recursive)
 }
 
-func (s *Service) deleteRemoteSource(ctx context.Context, peer entities.Peer, grantID, relative, expectedETag string, recursive bool) error {
+func (s *Service) deleteRemoteSource(ctx context.Context, peer entities.Peer, grantID, relative, sourceRoot, expectedETag string, recursive bool) error {
 	endpoint, err := url.Parse(strings.TrimRight(peer.MTLSEndpoint, "/"))
 	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" {
 		return fmt.Errorf("%w: invalid peer mTLS endpoint", ErrPeer)
 	}
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/peer/v1/grants/" + url.PathEscape(grantID) + "/actions/delete"
-	body, err := json.Marshal(map[string]any{"path": relative, "expected_etag": expectedETag, "recursive": recursive})
+	body, err := json.Marshal(map[string]any{"path": relative, "source_root": sourceRoot, "expected_etag": expectedETag, "recursive": recursive})
 	if err != nil {
 		return err
 	}
@@ -1008,6 +1173,8 @@ func (s *Service) deleteRemoteSource(ctx context.Context, peer entities.Peer, gr
 		return ErrForbidden
 	case http.StatusPreconditionFailed:
 		return filesystem.ErrSourceChanged
+	case http.StatusConflict:
+		return filesystem.ErrProtectedTree
 	default:
 		return fmt.Errorf("remote source cleanup returned HTTP %d", response.StatusCode)
 	}
@@ -1176,7 +1343,15 @@ func (c *readDeadlineConn) Read(buffer []byte) (int, error) {
 	return c.Conn.Read(buffer)
 }
 
-func (s *Service) planRemoteAction(ctx context.Context, mountID string, item entities.JobItem, policy string) (string, string, error) {
+func (s *Service) planRemoteAction(ctx context.Context, grant entities.TransferPathGrant, item entities.JobItem, policy string) (string, string, error) {
+	mountID := grant.MountID
+	hidden, err := s.files.IsHiddenPath(ctx, mountID, item.DestinationPath)
+	if err != nil {
+		return "", item.DestinationPath, err
+	}
+	if hidden {
+		return "", item.DestinationPath, filesystem.ErrHiddenName
+	}
 	existing, err := s.files.Metadata(ctx, mountID, item.DestinationPath)
 	if err != nil && !errors.Is(err, filesystem.ErrNotFound) {
 		return "", item.DestinationPath, err
@@ -1202,7 +1377,7 @@ func (s *Service) planRemoteAction(ctx context.Context, mountID string, item ent
 	case "overwrite":
 		return "overwrite", item.DestinationPath, nil
 	case "rename":
-		destination, err := s.uniqueDestination(ctx, mountID, item.DestinationPath)
+		destination, err := s.uniqueDestination(ctx, grant, item.DestinationPath)
 		return "rename", destination, err
 	case "checksum":
 		if item.Checksum == "" {
@@ -1247,6 +1422,9 @@ func (s *Service) sendGrant(ctx context.Context, peerNodeID, grantID string) (en
 		(grant.Direction != "send" && grant.Direction != "send_receive") || !grant.Permissions.Read {
 		return grant, ErrForbidden
 	}
+	if filepolicy.ValidatePatterns(grant.Exclude) != nil {
+		return grant, ErrForbidden
+	}
 	return grant, nil
 }
 
@@ -1262,6 +1440,9 @@ func (s *Service) receiveGrant(ctx context.Context, peerNodeID, grantID, policy 
 		(grant.Direction != "receive" && grant.Direction != "send_receive") || !grant.Permissions.Write {
 		return grant, ErrForbidden
 	}
+	if filepolicy.ValidatePatterns(grant.Exclude) != nil {
+		return grant, ErrForbidden
+	}
 	if policy = normalizePolicy(policy); !contains(grant.ConflictPolicies, policy) {
 		return grant, fmt.Errorf("%w: conflict policy is not allowed by the destination grant", ErrForbidden)
 	}
@@ -1273,7 +1454,7 @@ func (s *Service) receiveDestination(ctx context.Context, peerNodeID, grantID, r
 	if err != nil {
 		return grant, "", err
 	}
-	destination, err := withinGrant(grant.Path, relative)
+	destination, err := withinGrantWithExclusions(grant, relative)
 	return grant, destination, err
 }
 
@@ -1301,11 +1482,25 @@ func sourceEntryETag(item entities.JobItem) string {
 	return fmt.Sprintf(`"%x-%x"`, item.Size, item.ModifiedAt.UTC().UnixNano())
 }
 
-func (s *Service) uniqueDestination(ctx context.Context, mountID, destination string) (string, error) {
+func (s *Service) uniqueDestination(ctx context.Context, grant entities.TransferPathGrant, destination string) (string, error) {
+	mountID := grant.MountID
 	extension := path.Ext(destination)
 	base := strings.TrimSuffix(destination, extension)
 	for index := 1; index <= 10_000; index++ {
 		candidate := fmt.Sprintf("%s (%d)%s", base, index, extension)
+		if err := validateGrantDestination(grant, candidate); err != nil {
+			if errors.Is(err, ErrForbidden) {
+				continue
+			}
+			return "", err
+		}
+		hidden, err := s.files.IsHiddenPath(ctx, mountID, candidate)
+		if err != nil {
+			return "", err
+		}
+		if hidden {
+			continue
+		}
 		if _, err := s.files.Metadata(ctx, mountID, candidate); errors.Is(err, filesystem.ErrNotFound) {
 			return candidate, nil
 		} else if err != nil {
@@ -1326,6 +1521,34 @@ func withinGrant(base, relative string) (string, error) {
 		return "", filesystem.ErrTraversal
 	}
 	return cleanRelative(joined), nil
+}
+
+func withinGrantWithExclusions(grant entities.TransferPathGrant, relative string) (string, error) {
+	resolved, err := withinGrant(grant.Path, relative)
+	if err != nil {
+		return "", err
+	}
+	if err := validateGrantDestination(grant, resolved); err != nil {
+		return "", err
+	}
+	return resolved, nil
+}
+
+func validateGrantDestination(grant entities.TransferPathGrant, destination string) error {
+	if path.IsAbs(destination) || strings.Contains(destination, "\\") {
+		return filesystem.ErrTraversal
+	}
+	resolved := cleanRelative(destination)
+	base := cleanRelative(grant.Path)
+	if resolved == ".." || strings.HasPrefix(resolved, "../") || base != "." && resolved != base && !strings.HasPrefix(resolved, base+"/") {
+		return filesystem.ErrTraversal
+	}
+	for _, component := range strings.Split(resolved, "/") {
+		if component != "." && filepolicy.Hidden(grant.Exclude, component) {
+			return ErrForbidden
+		}
+	}
+	return nil
 }
 
 func cleanRelative(value string) string {

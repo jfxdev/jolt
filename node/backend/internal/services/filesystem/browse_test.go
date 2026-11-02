@@ -290,6 +290,43 @@ func TestSearchStopsAtTheScanLimit(t *testing.T) {
 	}
 }
 
+func TestSearchDepthAndHiddenEntriesCountAgainstBudget(t *testing.T) {
+	service, mountID, root := newTestService(t, "read_write")
+	mount, err := service.GetMount(context.Background(), mountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mount.HiddenPatterns = []string{"*.secret"}
+	if _, err := service.SaveMount(context.Background(), mount); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, "a.secret"), "hidden")
+	writeFile(t, filepath.Join(root, "b.secret"), "hidden")
+	writeFile(t, filepath.Join(root, "c.secret"), "hidden")
+	writeFile(t, filepath.Join(root, "d", "nested", "match.txt"), "visible")
+	result, err := service.Search(context.Background(), mountID, "", SearchOptions{Query: "match", MaxEntries: 2})
+	if err != nil || !result.Truncated || result.TruncatedReason != "entries" || result.Scanned != 0 || len(result.Entries) != 0 {
+		t.Fatalf("hidden entries bypassed budget or were counted publicly: %+v %v", result, err)
+	}
+	result, err = service.Search(context.Background(), mountID, "", SearchOptions{Query: "match", MaxEntries: 20, MaxDepth: 2})
+	if err != nil || !result.Truncated || result.TruncatedReason != "depth" || len(result.Entries) != 0 {
+		t.Fatalf("depth limit not applied: %+v %v", result, err)
+	}
+	result, err = service.Search(context.Background(), mountID, "", SearchOptions{Query: "match", MaxEntries: 20, MaxDepth: 3})
+	if err != nil || len(result.Entries) != 1 || result.Entries[0].Name != "match.txt" {
+		t.Fatalf("entry within depth not returned: %+v %v", result, err)
+	}
+	outside := t.TempDir()
+	writeFile(t, filepath.Join(outside, "match-external.txt"), "outside")
+	if err := os.Symlink(outside, filepath.Join(root, "external")); err != nil {
+		t.Fatal(err)
+	}
+	result, err = service.Search(context.Background(), mountID, "", SearchOptions{Query: "match", MaxEntries: 20, MaxDepth: 16})
+	if err != nil || len(result.Entries) != 1 || result.Entries[0].Name != "match.txt" {
+		t.Fatalf("streaming search followed symlink: %+v %v", result, err)
+	}
+}
+
 func TestSearchNeverFollowsSymlinks(t *testing.T) {
 	service, mountID, root := newTestService(t, "read_write")
 	outside := t.TempDir()

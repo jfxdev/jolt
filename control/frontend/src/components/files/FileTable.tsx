@@ -139,14 +139,14 @@ export function FileTable({
                   <TableRow
                     className="cursor-pointer"
                     tabIndex={0}
-                    aria-label={`Ações para ${entry.name}`}
+                    aria-label={`Ações para ${entry.display_name ?? entry.name}`}
                     onDoubleClick={() => onDownload(entry)}
                   />
                 }
               >
                 <TableCell onClick={(event) => event.stopPropagation()}>
                   <Checkbox
-                    aria-label={`Selecionar ${entry.name}`}
+                    aria-label={`Selecionar ${entry.display_name ?? entry.name}`}
                     checked={selected.has(entry.path)}
                     disabled={entry.type === "symlink"}
                     title={entry.type === "symlink" ? "Links simbólicos não podem ser transferidos" : undefined}
@@ -159,7 +159,7 @@ export function FileTable({
                     onClick={() => onDownload(entry)}
                   >
                     <FileEntryIcon entry={entry} />
-                    {entry.name}
+                    {entry.display_name ?? entry.name}
                   </button>
                 </TableCell>
                 <TableCell className="text-muted-foreground">

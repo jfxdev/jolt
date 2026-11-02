@@ -24,6 +24,10 @@ func registerControlMetrics(registry *metrics.Registry) {
 		"Authorization decisions that denied a request.", "capability")
 	registry.Counter("jolt_control_node_proxy_total",
 		"Proxied node calls by node and outcome.", "node_id", "result")
+	registry.Counter("jolt_control_agent_requests_total", "Agent requests by account and outcome (bounded to 1024 accounts).", "actor", "result")
+	registry.Counter("jolt_control_agent_bytes_out_total", "Agent response bytes by account (bounded to 1024 accounts).", "actor")
+	registry.Counter("jolt_control_agent_limited_total", "Agent requests rejected by rate, concurrency or daily quota.", "actor", "reason")
+	registry.Counter("jolt_control_canary_total", "Canary access attempts by account (bounded to 1024 actors).", "actor")
 	registry.Counter("jolt_control_shares_created_total", "Public share links created.")
 	registry.Counter("jolt_control_shares_revoked_total", "Public share links revoked.")
 	registry.Counter("jolt_control_share_downloads_total", "Downloads served through share links.")
@@ -74,6 +78,9 @@ type statusRecorder struct {
 	status int
 	wrote  bool
 }
+
+// Unwrap lets ResponseController reach the real connection for deadlines.
+func (w *statusRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *statusRecorder) WriteHeader(status int) {
 	if !w.wrote {

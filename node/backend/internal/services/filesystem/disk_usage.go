@@ -15,6 +15,7 @@ import (
 
 type DiskUsageOptions struct {
 	MaxEntries int
+	Filter     *AccessFilter
 }
 
 type DiskUsageResult struct {
@@ -33,7 +34,7 @@ type diskUsageIdentity struct {
 }
 
 func (s *Service) DiskUsage(ctx context.Context, mountID, relative string, options DiskUsageOptions) (DiskUsageResult, error) {
-	_, root, err := s.resolve(ctx, mountID, relative, false)
+	mount, root, err := s.resolve(ctx, mountID, relative, false)
 	if err != nil {
 		return DiskUsageResult{}, err
 	}
@@ -43,6 +44,9 @@ func (s *Service) DiskUsage(ctx context.Context, mountID, relative string, optio
 	}
 	if !rootInfo.IsDir() {
 		return DiskUsageResult{}, ErrInvalid
+	}
+	if err := options.Filter.checkRoot(cleanRelativeSlash(relative), rootInfo); err != nil {
+		return DiskUsageResult{}, err
 	}
 	if options.MaxEntries <= 0 {
 		options.MaxEntries = 1_000_000
@@ -56,7 +60,12 @@ func (s *Service) DiskUsage(ctx context.Context, mountID, relative string, optio
 	children := make(map[string]int)
 	seenFiles := make(map[diskUsageIdentity]struct{})
 	stop := errors.New("stop disk usage scan")
-	walkErr := safeWalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
+	examined := 0
+	walk := safeWalkDir
+	if options.Filter != nil {
+		walk = safeWalkDirStreaming
+	}
+	walkErr := walk(root, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			result.ReadErrors++
 			if entry != nil && entry.IsDir() {
@@ -76,18 +85,18 @@ func (s *Service) DiskUsage(ctx context.Context, mountID, relative string, optio
 		if relativePath == "." {
 			return nil
 		}
-		result.Scanned++
-		if result.Scanned > options.MaxEntries {
+		examined++
+		if examined > options.MaxEntries {
 			result.Truncated, result.TruncatedReason = true, "entries"
 			return stop
 		}
-		if isInternalPartialName(entry.Name()) {
+		if hiddenName(mount, entry.Name()) {
 			if entry.IsDir() {
 				return fs.SkipDir
 			}
 			return nil
 		}
-		info, err := entry.Info()
+		info, err := safeLstat(current)
 		if err != nil {
 			result.ReadErrors++
 			if entry.IsDir() {
@@ -95,6 +104,17 @@ func (s *Service) DiskUsage(ctx context.Context, mountID, relative string, optio
 			}
 			return nil
 		}
+		if options.Filter != nil {
+			entryPath := filepath.ToSlash(filepath.Join(cleanRelative(relative), relativePath))
+			access := options.Filter.decide(entryPath, info)
+			if info.IsDir() && !access.traversable {
+				return fs.SkipDir
+			}
+			if !info.IsDir() && !access.readable {
+				return nil
+			}
+		}
+		result.Scanned++
 		if !info.IsDir() && !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
 			return nil
 		}

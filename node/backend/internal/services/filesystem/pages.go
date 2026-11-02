@@ -23,6 +23,10 @@ func entryKey(directory bool, name string) string {
 }
 
 func (s *Service) ListPage(ctx context.Context, mountID, relative string, limit int, after string) (entities.FilePage, error) {
+	return s.ListPageFiltered(ctx, mountID, relative, limit, after, nil)
+}
+
+func (s *Service) ListPageFiltered(ctx context.Context, mountID, relative string, limit int, after string, filter *AccessFilter) (entities.FilePage, error) {
 	page := entities.FilePage{Items: []entities.FileEntry{}}
 	mount, resolved, err := s.resolve(ctx, mountID, relative, false)
 	if err != nil {
@@ -30,6 +34,15 @@ func (s *Service) ListPage(ctx context.Context, mountID, relative string, limit 
 	}
 	if !mount.Enabled {
 		return page, ErrDisabled
+	}
+	if filter != nil {
+		info, err := safeStat(resolved)
+		if err != nil {
+			return page, err
+		}
+		if err := filter.checkRoot(cleanRelativeSlash(relative), info); err != nil {
+			return page, err
+		}
 	}
 	cursor := ""
 	if after != "" {
@@ -55,11 +68,16 @@ func (s *Service) ListPage(ctx context.Context, mountID, relative string, limit 
 			return page, err
 		}
 		key := entryKey(entry.IsDir(), entry.Name())
-		if key <= cursor || isInternalPartialName(entry.Name()) {
+		if key <= cursor || hiddenName(mount, entry.Name()) {
 			continue
 		}
 		info, err := entry.Info()
 		if err != nil {
+			continue
+		}
+		entryPath := filepath.ToSlash(filepath.Join(cleanRelative(relative), entry.Name()))
+		access := filter.decide(entryPath, info)
+		if !access.visible {
 			continue
 		}
 		if len(page.Items) == limit {
@@ -73,7 +91,7 @@ func (s *Service) ListPage(ctx context.Context, mountID, relative string, limit 
 		} else if info.Mode()&os.ModeSymlink != 0 {
 			kind = "symlink"
 		}
-		page.Items = append(page.Items, entities.FileEntry{Name: entry.Name(), Path: filepath.ToSlash(filepath.Join(cleanRelative(relative), entry.Name())), Type: kind, Size: info.Size(), ModifiedAt: info.ModTime().UTC()})
+		page.Items = append(page.Items, entities.FileEntry{Name: entry.Name(), Path: entryPath, Type: kind, Size: info.Size(), ModifiedAt: info.ModTime().UTC(), Blocked: access.blocked})
 		last = key
 	}
 	return page, nil

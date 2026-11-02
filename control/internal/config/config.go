@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -13,6 +14,10 @@ import (
 )
 
 type Config struct {
+	AuditRetentionDays     int
+	AuditHashChain         bool
+	AuditSearchQuery       bool
+	TrustedProxies         []netip.Prefix
 	Address                string
 	DataDir                string
 	StaticDir              string
@@ -30,6 +35,9 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
+		AuditRetentionDays:     intValue("CONTROL_TOWER_AUDIT_RETENTION_DAYS", 0),
+		AuditHashChain:         boolValue("CONTROL_TOWER_AUDIT_HASH_CHAIN", false),
+		AuditSearchQuery:       boolValue("CONTROL_TOWER_AUDIT_SEARCH_QUERY", false),
 		Address:                value("CONTROL_TOWER_ADDRESS", ":8090"),
 		DataDir:                value("CONTROL_TOWER_DATA_DIR", "./.jolt-control"),
 		StaticDir:              value("CONTROL_TOWER_STATIC_DIR", "./frontend/dist"),
@@ -42,6 +50,15 @@ func Load() (Config, error) {
 		PublicBaseURL:          strings.TrimRight(value("CONTROL_TOWER_PUBLIC_BASE_URL", ""), "/"),
 	}
 	var err error
+	if raw := strings.TrimSpace(os.Getenv("CONTROL_TOWER_TRUSTED_PROXIES")); raw != "" {
+		for _, part := range strings.Split(raw, ",") {
+			prefix, parseErr := netip.ParsePrefix(strings.TrimSpace(part))
+			if parseErr != nil {
+				return Config{}, errors.New("CONTROL_TOWER_TRUSTED_PROXIES must contain valid CIDRs")
+			}
+			cfg.TrustedProxies = append(cfg.TrustedProxies, prefix.Masked())
+		}
+	}
 	if cfg.AdminPassword, err = SecretValue("CONTROL_TOWER_ADMIN_PASSWORD"); err != nil {
 		return Config{}, err
 	}
@@ -77,6 +94,9 @@ func Load() (Config, error) {
 	}
 	if cfg.TransferMaxSourcePaths < 1 || cfg.TransferMaxSourcePaths > 100000 {
 		return Config{}, errors.New("TRANSFER_MAX_SOURCE_PATHS must be between 1 and 100000")
+	}
+	if cfg.AuditRetentionDays < 0 || cfg.AuditRetentionDays > 36500 {
+		return Config{}, errors.New("CONTROL_TOWER_AUDIT_RETENTION_DAYS must be between 0 and 36500")
 	}
 	cfg.EncryptionKey, err = LoadEncryptionKey()
 	if err != nil {

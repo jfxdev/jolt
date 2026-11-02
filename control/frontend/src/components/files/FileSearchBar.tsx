@@ -24,6 +24,7 @@ interface Props {
 const truncationMessage: Record<string, string> = {
   results: "Mostrando os primeiros resultados. Refine a busca para ver o resto.",
   entries: "A busca parou após varrer o limite de itens. Refine a busca.",
+  depth: "A busca atingiu o limite de profundidade. Busque em uma subpasta.",
   timeout: "A busca atingiu o tempo limite. Refine a busca ou busque em uma subpasta.",
 };
 

@@ -28,6 +28,9 @@ func (s *Server) admitUpload(w http.ResponseWriter, r *http.Request, mountID, pa
 			return false
 		}
 		for _, session := range sessions {
+			if session.State == "rejected" {
+				continue
+			}
 			if !session.ExpiresAt.IsZero() && now.After(session.ExpiresAt) {
 				continue
 			}

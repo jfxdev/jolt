@@ -3,22 +3,25 @@ package entities
 import "time"
 
 type Mount struct {
-	ID         string    `json:"mount_id" yaml:"mount_id"`
-	Name       string    `json:"name" yaml:"name"`
-	LocalPath  string    `json:"-" yaml:"local_path"`
-	TargetType string    `json:"target_type" yaml:"target_type"`
-	Mode       string    `json:"mode" yaml:"mode"`
-	Published  bool      `json:"published" yaml:"published"`
-	Enabled    bool      `json:"enabled" yaml:"enabled"`
-	State      string    `json:"state" yaml:"state"`
-	Readable   bool      `json:"readable" yaml:"readable"`
-	Writable   bool      `json:"writable" yaml:"writable"`
-	ModeBits   string    `json:"mode_bits,omitempty" yaml:"mode_bits"`
-	CreatedAt  time.Time `json:"created_at" yaml:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at" yaml:"updated_at"`
+	CanaryPaths    []string  `json:"-" yaml:"canary_paths,omitempty"`
+	HiddenPatterns []string  `json:"-" yaml:"hidden_patterns,omitempty"`
+	ID             string    `json:"mount_id" yaml:"mount_id"`
+	Name           string    `json:"name" yaml:"name"`
+	LocalPath      string    `json:"-" yaml:"local_path"`
+	TargetType     string    `json:"target_type" yaml:"target_type"`
+	Mode           string    `json:"mode" yaml:"mode"`
+	Published      bool      `json:"published" yaml:"published"`
+	Enabled        bool      `json:"enabled" yaml:"enabled"`
+	State          string    `json:"state" yaml:"state"`
+	Readable       bool      `json:"readable" yaml:"readable"`
+	Writable       bool      `json:"writable" yaml:"writable"`
+	ModeBits       string    `json:"mode_bits,omitempty" yaml:"mode_bits"`
+	CreatedAt      time.Time `json:"created_at" yaml:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at" yaml:"updated_at"`
 }
 
 type FileEntry struct {
+	Blocked    bool      `json:"blocked,omitempty" yaml:"blocked,omitempty"`
 	Name       string    `json:"name" yaml:"name"`
 	Path       string    `json:"path" yaml:"path"`
 	Type       string    `json:"type" yaml:"type"`
@@ -228,6 +231,7 @@ type TransferPathGrant struct {
 	Direction         string           `json:"direction" yaml:"direction"`
 	Permissions       GrantPermissions `json:"permissions" yaml:"permissions"`
 	ConflictPolicies  []string         `json:"conflict_policies" yaml:"conflict_policies"`
+	Exclude           []string         `json:"exclude,omitempty" yaml:"exclude,omitempty"`
 	VisibleToPeer     bool             `json:"visible_to_peer" yaml:"visible_to_peer"`
 	Enabled           bool             `json:"enabled" yaml:"enabled"`
 	CorrelationID     string           `json:"correlation_id" yaml:"correlation_id"`

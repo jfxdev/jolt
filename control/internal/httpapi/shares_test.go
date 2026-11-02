@@ -424,6 +424,33 @@ func TestDirectoryShareConfinesSubpaths(t *testing.T) {
 	}
 }
 
+func TestDirectoryShareRechecksListingPermission(t *testing.T) {
+	harness := newShareHarness(t, []rbac.Rule{
+		{Path: "control-tower/shares", Capabilities: []string{"create"}},
+		{Path: "nodes/nod_a/files/mounts/media/publico/**", Capabilities: []string{"read", "list"}},
+	})
+	_, token := createShareFor(t, harness, map[string]any{
+		"node_id": "nod_a", "mount_id": "media", "path": "publico", "kind": "directory",
+	})
+	policy := store.Policy{ID: "pol_share", Name: "share", UpdatedAt: time.Now().UTC(), Rules: []rbac.Rule{
+		{Path: "control-tower/shares", Capabilities: []string{"create"}},
+		{Path: "nodes/nod_a/files/mounts/media/publico/**", Capabilities: []string{"read"}},
+	}}
+	if err := harness.storage.UpdatePolicy(context.Background(), policy); err != nil {
+		t.Fatal(err)
+	}
+	before := len(harness.calls)
+	if got := harness.public(t, http.MethodGet, "/api/v1/public/shares/"+token+"/list?path=fotos", nil); got.Code != http.StatusGone {
+		t.Fatalf("listing after permission removal: %d %s", got.Code, got.Body.String())
+	}
+	if len(harness.calls) != before {
+		t.Fatal("listing reached node without current list permission")
+	}
+	if got := harness.public(t, http.MethodGet, "/api/v1/public/shares/"+token+"/content?path=fotos/a.txt", nil); got.Code != http.StatusOK {
+		t.Fatalf("read permission should remain effective: %d %s", got.Code, got.Body.String())
+	}
+}
+
 func TestFileShareRejectsASubpath(t *testing.T) {
 	harness := newShareHarness(t, fullAccessRules())
 	_, token := createShareFor(t, harness, map[string]any{

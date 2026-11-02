@@ -11,6 +11,7 @@ import (
 
 	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/entities"
+	"github.com/jfxdev/jolt/backend/internal/filepolicy"
 
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
 )
@@ -28,6 +29,7 @@ type Input struct {
 	Direction        string
 	Permissions      entities.GrantPermissions
 	ConflictPolicies []string
+	Exclude          []string
 	VisibleToPeer    bool
 	Enabled          bool
 	CorrelationID    string
@@ -50,7 +52,21 @@ func New(store serviceStore, files *filesystem.Service) *Service {
 }
 
 func (s *Service) List(ctx context.Context) ([]entities.TransferPathGrant, error) {
-	return s.store.ListTransferGrants(ctx)
+	items, err := s.store.ListTransferGrants(ctx)
+	if err != nil {
+		return nil, err
+	}
+	visible := items[:0]
+	for _, item := range items {
+		hidden, err := s.files.IsHiddenPath(ctx, item.MountID, item.Path)
+		if err != nil && !errors.Is(err, filesystem.ErrNotFound) {
+			return nil, err
+		}
+		if !hidden {
+			visible = append(visible, item)
+		}
+	}
+	return visible, nil
 }
 
 func (s *Service) Create(ctx context.Context, input Input) (entities.TransferPathGrant, error) {
@@ -122,6 +138,10 @@ func (s *Service) validate(ctx context.Context, input Input) (entities.TransferP
 		Permissions: input.Permissions, VisibleToPeer: input.VisibleToPeer, Enabled: input.Enabled,
 		CorrelationID: input.CorrelationID,
 	}
+	if err := filepolicy.ValidatePatterns(input.Exclude); err != nil {
+		return grant, fmt.Errorf("%w: invalid exclude pattern", ErrInvalid)
+	}
+	grant.Exclude = append([]string(nil), input.Exclude...)
 	if grant.PeerNodeID == "" || grant.MountID == "" {
 		return grant, fmt.Errorf("%w: peer_node_id and mount_id are required", ErrInvalid)
 	}

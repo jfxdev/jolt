@@ -1577,6 +1577,42 @@ func TestMountFileRequirementsAreSubpathScoped(t *testing.T) {
 	}
 }
 
+func TestCopyMoveRequirePermissionsForBothSidesAndOverwrite(t *testing.T) {
+	base := "nodes/node-1/files/mounts/m1/"
+	for _, tc := range []struct {
+		resource string
+		policy   string
+		want     []authorizationRequirement
+	}{
+		{"mounts/m1/files/copy", "fail", []authorizationRequirement{{Path: base + "source", Capability: "read"}, {Path: base + "destination", Capability: "create"}}},
+		{"mounts/m1/files/copy", "overwrite", []authorizationRequirement{{Path: base + "destination", Capability: "update"}}},
+		{"mounts/m1/files/copy/plan", "checksum", []authorizationRequirement{{Path: base + "destination", Capability: "update"}}},
+		{"mounts/m1/files/copy", "ask", []authorizationRequirement{{Path: strings.TrimSuffix(base, "/"), Capability: "create"}, {Path: strings.TrimSuffix(base, "/"), Capability: "update"}}},
+		{"mounts/m1/files/move", "fail", []authorizationRequirement{{Path: base + "source", Capability: "read"}, {Path: base + "source", Capability: "update"}, {Path: base + "destination", Capability: "create"}}},
+		{"mounts/m1/files/move", "overwrite", []authorizationRequirement{{Path: base + "destination", Capability: "update"}}},
+	} {
+		t.Run(tc.resource+"/"+tc.policy, func(t *testing.T) {
+			got := nodeAuthorizationRequirements("node-1", tc.resource, http.MethodPost, fileTargets{Source: "source", Destination: "destination", ConflictPolicy: tc.policy})
+			for _, want := range tc.want {
+				found := false
+				for _, requirement := range got {
+					if requirement == want {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("missing %+v in %+v", want, got)
+				}
+			}
+		})
+	}
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/nodes/node-1/mounts/m1/files/move", strings.NewReader(`{"source_path":"source","destination_path":"destination","overwrite":true,"conflict_policy":"fail"}`))
+	targets, err := fileTargetsFromRequest(r)
+	if err != nil || targets.ConflictPolicy != "overwrite" {
+		t.Fatalf("move overwrite was not recognized: %+v, %v", targets, err)
+	}
+}
+
 func TestArchiveAndSearchRefuseWhenADenyRuleSitsInsideTheScope(t *testing.T) {
 	// These two read a whole subtree from one named root, so authorizing only
 	// that root would let the node stream or list denied descendants.

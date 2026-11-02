@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -192,6 +193,58 @@ func safeWalkDir(name string, visit fs.WalkDirFunc) error {
 			}
 		}
 		return nil
+	}
+	err = walk(name, fs.FileInfoToDirEntry(info))
+	if err == fs.SkipAll || err == fs.SkipDir {
+		return nil
+	}
+	return err
+}
+
+// safeWalkDirStreaming avoids reading and statting an entire directory before
+// invoking the visitor, so its entry and deadline budgets bound real work.
+func safeWalkDirStreaming(name string, visit fs.WalkDirFunc) error {
+	info, err := safeLstat(name)
+	if err != nil {
+		return visit(name, nil, err)
+	}
+	var walk func(string, fs.DirEntry) error
+	walk = func(current string, entry fs.DirEntry) error {
+		if err := visit(current, entry, nil); err != nil {
+			if err == fs.SkipDir && entry.IsDir() {
+				return nil
+			}
+			return err
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		dir, err := safeOpen(current)
+		if err != nil {
+			if err := visit(current, entry, err); err != fs.SkipDir {
+				return err
+			}
+			return nil
+		}
+		defer dir.Close()
+		for {
+			children, err := dir.ReadDir(1)
+			if len(children) > 0 {
+				childPath := filepath.Join(current, children[0].Name())
+				if err := walk(childPath, children[0]); err != nil {
+					return err
+				}
+			}
+			if err == io.EOF {
+				return nil
+			}
+			if err != nil {
+				if err := visit(current, entry, err); err != fs.SkipDir {
+					return err
+				}
+				return nil
+			}
+		}
 	}
 	err = walk(name, fs.FileInfoToDirEntry(info))
 	if err == fs.SkipAll || err == fs.SkipDir {

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"mime"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -14,17 +15,20 @@ import (
 	"time"
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
+	"github.com/jfxdev/jolt/backend/internal/filepolicy"
 	"github.com/jfxdev/jolt/backend/internal/infra/yamlutil"
 	"go.yaml.in/yaml/v3"
 )
 
 type MountConfig struct {
-	ID        string `yaml:"id"`
-	Name      string `yaml:"name"`
-	LocalPath string `yaml:"local_path"`
-	Mode      string `yaml:"mode"`
-	Published bool   `yaml:"published"`
-	Enabled   bool   `yaml:"enabled"`
+	CanaryPaths    []string `yaml:"canary_paths"`
+	HiddenPatterns []string `yaml:"hidden_patterns"`
+	ID             string   `yaml:"id"`
+	Name           string   `yaml:"name"`
+	LocalPath      string   `yaml:"local_path"`
+	Mode           string   `yaml:"mode"`
+	Published      bool     `yaml:"published"`
+	Enabled        bool     `yaml:"enabled"`
 }
 type GrantConfig struct {
 	ID               string                    `yaml:"id"`
@@ -34,61 +38,68 @@ type GrantConfig struct {
 	Direction        string                    `yaml:"direction"`
 	Permissions      entities.GrantPermissions `yaml:"permissions"`
 	ConflictPolicies []string                  `yaml:"conflict_policies"`
+	Exclude          []string                  `yaml:"exclude"`
 	VisibleToPeer    bool                      `yaml:"visible_to_peer"`
 	Enabled          bool                      `yaml:"enabled"`
 }
+type UploadInspectionConfig struct {
+	Enabled           bool     `yaml:"enabled" json:"enabled"`
+	BlockExecutables  bool     `yaml:"block_executables" json:"block_executables"`
+	AllowedMediaTypes []string `yaml:"allowed_media_types" json:"allowed_media_types"`
+}
 type Config struct {
-	Version                  int           `yaml:"version"`
-	Mounts                   []MountConfig `yaml:"mounts"`
-	TransferGrants           []GrantConfig `yaml:"transfer_grants"`
-	FilePath                 string        `yaml:"-"`
-	Revision                 string        `yaml:"-"`
-	PublicYAML               string        `yaml:"-"`
-	UploadMaxBytes           int64         `yaml:"upload_max_bytes"`
-	UploadMinFreeBytes       int64         `yaml:"upload_min_free_bytes"`
-	UploadMaxSessions        int           `yaml:"upload_max_sessions"`
-	UploadMaxReservedBytes   int64         `yaml:"upload_max_reserved_bytes"`
-	NodeName                 string        `yaml:"node_name"`
-	APIAddress               string        `yaml:"api_address"`
-	APITLSCertFile           string        `yaml:"api_tls_cert_file"`
-	APITLSKeyFile            string        `yaml:"api_tls_key_file"`
-	APITLSClientCAFile       string        `yaml:"api_tls_client_ca_file"`
-	MTLSAddress              string        `yaml:"mtls_address"`
-	MTLSPublicEndpoint       string        `yaml:"mtls_public_endpoint"`
-	DataDir                  string        `yaml:"data_dir"`
-	KeysDir                  string        `yaml:"keys_dir"`
-	ControlTowerToken        string        `yaml:"-"`
-	MetricsToken             string        `yaml:"-"`
-	EncryptionKey            []byte        `yaml:"-"`
-	PublicHealth             bool          `yaml:"public_healthcheck"`
-	ShutdownTimeout          time.Duration `yaml:"shutdown_timeout"`
-	MaxConcurrentJobs        int           `yaml:"max_concurrent_jobs"`
-	JobMaxAttempts           int           `yaml:"job_max_attempts"`
-	CopyChunkSize            int64         `yaml:"copy_chunk_size_bytes"`
-	NodeBandwidthLimit       int64         `yaml:"node_bandwidth_limit_bytes_per_second"`
-	MaxParallelFilesPerJob   int           `yaml:"max_parallel_files_per_job"`
-	MaxParallelChunksPerFile int           `yaml:"max_parallel_chunks_per_file"`
-	TransferConnectTimeout   time.Duration `yaml:"transfer_connect_timeout"`
-	TransferIdleReadTimeout  time.Duration `yaml:"transfer_idle_read_timeout"`
-	TransferChunkTimeout     time.Duration `yaml:"transfer_chunk_timeout"`
-	JobValidationTimeout     time.Duration `yaml:"job_validation_timeout"`
-	JobNoProgressTimeout     time.Duration `yaml:"job_no_progress_timeout"`
-	PeerHeartbeatInterval    time.Duration `yaml:"peer_heartbeat_interval"`
-	PeerHeartbeatTimeout     time.Duration `yaml:"peer_heartbeat_timeout"`
-	PeerFailureThreshold     int           `yaml:"peer_failure_threshold"`
-	SearchMaxResults         int           `yaml:"search_max_results"`
-	SearchMaxEntries         int           `yaml:"search_max_entries"`
-	SearchTimeout            time.Duration `yaml:"search_timeout"`
-	DiskUsageMaxEntries      int           `yaml:"disk_usage_max_entries"`
-	DiskUsageTimeout         time.Duration `yaml:"disk_usage_timeout"`
-	ArchiveMaxEntries        int           `yaml:"archive_max_entries"`
-	ArchiveMaxBytes          int64         `yaml:"archive_max_bytes"`
-	UploadSessionTTL         time.Duration `yaml:"upload_session_ttl"`
+	UploadInspection         UploadInspectionConfig `yaml:"upload_inspection"`
+	Version                  int                    `yaml:"version"`
+	Mounts                   []MountConfig          `yaml:"mounts"`
+	TransferGrants           []GrantConfig          `yaml:"transfer_grants"`
+	FilePath                 string                 `yaml:"-"`
+	Revision                 string                 `yaml:"-"`
+	PublicYAML               string                 `yaml:"-"`
+	UploadMaxBytes           int64                  `yaml:"upload_max_bytes"`
+	UploadMinFreeBytes       int64                  `yaml:"upload_min_free_bytes"`
+	UploadMaxSessions        int                    `yaml:"upload_max_sessions"`
+	UploadMaxReservedBytes   int64                  `yaml:"upload_max_reserved_bytes"`
+	NodeName                 string                 `yaml:"node_name"`
+	APIAddress               string                 `yaml:"api_address"`
+	APITLSCertFile           string                 `yaml:"api_tls_cert_file"`
+	APITLSKeyFile            string                 `yaml:"api_tls_key_file"`
+	APITLSClientCAFile       string                 `yaml:"api_tls_client_ca_file"`
+	MTLSAddress              string                 `yaml:"mtls_address"`
+	MTLSPublicEndpoint       string                 `yaml:"mtls_public_endpoint"`
+	DataDir                  string                 `yaml:"data_dir"`
+	KeysDir                  string                 `yaml:"keys_dir"`
+	ControlTowerToken        string                 `yaml:"-"`
+	MetricsToken             string                 `yaml:"-"`
+	EncryptionKey            []byte                 `yaml:"-"`
+	PublicHealth             bool                   `yaml:"public_healthcheck"`
+	ShutdownTimeout          time.Duration          `yaml:"shutdown_timeout"`
+	MaxConcurrentJobs        int                    `yaml:"max_concurrent_jobs"`
+	JobMaxAttempts           int                    `yaml:"job_max_attempts"`
+	CopyChunkSize            int64                  `yaml:"copy_chunk_size_bytes"`
+	NodeBandwidthLimit       int64                  `yaml:"node_bandwidth_limit_bytes_per_second"`
+	MaxParallelFilesPerJob   int                    `yaml:"max_parallel_files_per_job"`
+	MaxParallelChunksPerFile int                    `yaml:"max_parallel_chunks_per_file"`
+	TransferConnectTimeout   time.Duration          `yaml:"transfer_connect_timeout"`
+	TransferIdleReadTimeout  time.Duration          `yaml:"transfer_idle_read_timeout"`
+	TransferChunkTimeout     time.Duration          `yaml:"transfer_chunk_timeout"`
+	JobValidationTimeout     time.Duration          `yaml:"job_validation_timeout"`
+	JobNoProgressTimeout     time.Duration          `yaml:"job_no_progress_timeout"`
+	PeerHeartbeatInterval    time.Duration          `yaml:"peer_heartbeat_interval"`
+	PeerHeartbeatTimeout     time.Duration          `yaml:"peer_heartbeat_timeout"`
+	PeerFailureThreshold     int                    `yaml:"peer_failure_threshold"`
+	SearchMaxResults         int                    `yaml:"search_max_results"`
+	SearchMaxEntries         int                    `yaml:"search_max_entries"`
+	SearchTimeout            time.Duration          `yaml:"search_timeout"`
+	DiskUsageMaxEntries      int                    `yaml:"disk_usage_max_entries"`
+	DiskUsageTimeout         time.Duration          `yaml:"disk_usage_timeout"`
+	ArchiveMaxEntries        int                    `yaml:"archive_max_entries"`
+	ArchiveMaxBytes          int64                  `yaml:"archive_max_bytes"`
+	UploadSessionTTL         time.Duration          `yaml:"upload_session_ttl"`
 }
 
 func (c Config) APITLSEnabled() bool { return c.APITLSCertFile != "" && c.APITLSKeyFile != "" }
 func Defaults() Config {
-	return Config{UploadMaxBytes: 100 << 30,
+	return Config{UploadMaxBytes: 100 << 30, UploadInspection: UploadInspectionConfig{BlockExecutables: true},
 		UploadMinFreeBytes:       1 << 30,
 		UploadMaxSessions:        32,
 		UploadMaxReservedBytes:   400 << 30,
@@ -180,6 +191,18 @@ func Read(file string) (Config, error) {
 	}
 	if c.UploadMaxBytes < 1 || c.UploadMaxBytes > 1<<50 {
 		return c, fail("upload_max_bytes", "value outside supported limits")
+	}
+	if len(c.UploadInspection.AllowedMediaTypes) > 64 {
+		return c, fail("upload_inspection.allowed_media_types", "at most 64 media types are allowed")
+	}
+	seenMedia := make(map[string]bool)
+	for i, value := range c.UploadInspection.AllowedMediaTypes {
+		mediaType, params, err := mime.ParseMediaType(strings.ToLower(strings.TrimSpace(value)))
+		if err != nil || len(params) != 0 || !strings.Contains(mediaType, "/") || strings.Contains(mediaType, "*") || seenMedia[mediaType] {
+			return c, fail("upload_inspection.allowed_media_types", "invalid or duplicate media type")
+		}
+		seenMedia[mediaType] = true
+		c.UploadInspection.AllowedMediaTypes[i] = mediaType
 	}
 	if c.UploadMinFreeBytes < 0 || c.UploadMinFreeBytes > 1<<50 {
 		return c, fail("upload_min_free_bytes", "value outside supported limits")
@@ -312,6 +335,12 @@ func Read(file string) (Config, error) {
 	mounts := map[string]MountConfig{}
 	paths := map[string]bool{}
 	for i, m := range c.Mounts {
+		if err := filepolicy.ValidateCanaries(m.CanaryPaths); err != nil {
+			return c, fail(fmt.Sprintf("mounts[%d].canary_paths", i), err.Error())
+		}
+		if err := filepolicy.ValidatePatterns(m.HiddenPatterns); err != nil {
+			return c, fail(fmt.Sprintf("mounts[%d].hidden_patterns", i), err.Error())
+		}
 		if !validID(m.ID) || strings.TrimSpace(m.Name) == "" {
 			return c, fail(fmt.Sprintf("mounts[%d]", i), "each mount requires a valid id and name")
 		}
@@ -398,6 +427,9 @@ func Read(file string) (Config, error) {
 		if g.Direction == "send" && len(g.ConflictPolicies) > 0 {
 			return c, fail(fmt.Sprintf("transfer_grants[%d]", i), "conflict policies apply only to receiving grants")
 		}
+		if err := filepolicy.ValidatePatterns(g.Exclude); err != nil {
+			return c, fail(fmt.Sprintf("transfer_grants[%d].exclude", i), err.Error())
+		}
 		if g.Direction != "send" && len(g.ConflictPolicies) == 0 {
 			g.ConflictPolicies = []string{"fail"}
 		}
@@ -436,10 +468,10 @@ func (c Config) Resources() ([]entities.Mount, []entities.TransferPathGrant) {
 	mounts := make([]entities.Mount, 0, len(c.Mounts))
 	grants := make([]entities.TransferPathGrant, 0, len(c.TransferGrants))
 	for _, m := range c.Mounts {
-		mounts = append(mounts, entities.Mount{ID: m.ID, Name: m.Name, LocalPath: m.LocalPath, TargetType: "directory", Mode: m.Mode, Published: m.Published, Enabled: m.Enabled})
+		mounts = append(mounts, entities.Mount{ID: m.ID, Name: m.Name, LocalPath: m.LocalPath, TargetType: "directory", Mode: m.Mode, Published: m.Published, Enabled: m.Enabled, HiddenPatterns: append([]string(nil), m.HiddenPatterns...), CanaryPaths: append([]string(nil), m.CanaryPaths...)})
 	}
 	for _, g := range c.TransferGrants {
-		grants = append(grants, entities.TransferPathGrant{ID: g.ID, PeerNodeID: g.PeerNodeID, MountID: g.MountID, Path: g.Path, Direction: g.Direction, Permissions: g.Permissions, ConflictPolicies: g.ConflictPolicies, VisibleToPeer: g.VisibleToPeer, Enabled: g.Enabled})
+		grants = append(grants, entities.TransferPathGrant{ID: g.ID, PeerNodeID: g.PeerNodeID, MountID: g.MountID, Path: g.Path, Direction: g.Direction, Permissions: g.Permissions, ConflictPolicies: g.ConflictPolicies, Exclude: g.Exclude, VisibleToPeer: g.VisibleToPeer, Enabled: g.Enabled})
 	}
 	return mounts, grants
 }

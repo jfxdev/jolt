@@ -48,6 +48,33 @@ func uploadRequest(h http.Handler, method, path, body string) *httptest.Response
 	return w
 }
 
+func TestRejectedUploadRemovesSessionAndReleasesAdmission(t *testing.T) {
+	h, base := admissionFixture(t, config.Config{UploadMaxBytes: 100, UploadMaxSessions: 1, UploadMaxReservedBytes: 100, UploadInspection: config.UploadInspectionConfig{Enabled: true, BlockExecutables: true}})
+	created := uploadRequest(h, http.MethodPost, base+"/uploads", `{"path":"file.txt","size":4}`)
+	var session entities.UploadSession
+	if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &session) != nil {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	request := httptest.NewRequest(http.MethodPatch, base+"/uploads/"+session.ID, strings.NewReader("MZxx"))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Range", "bytes 0-3/4")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("chunk: %d %s", response.Code, response.Body.String())
+	}
+	complete := uploadRequest(h, http.MethodPost, base+"/uploads/"+session.ID+"/complete", `{}`)
+	if complete.Code != http.StatusUnprocessableEntity || !strings.Contains(complete.Body.String(), "upload_content_rejected") {
+		t.Fatalf("complete: %d %s", complete.Code, complete.Body.String())
+	}
+	if got := uploadRequest(h, http.MethodGet, base+"/uploads/"+session.ID, ""); got.Code != http.StatusNotFound {
+		t.Fatalf("rejected session remains: %d %s", got.Code, got.Body.String())
+	}
+	if got := uploadRequest(h, http.MethodPost, base+"/uploads", `{"path":"next.txt","size":4}`); got.Code != http.StatusCreated {
+		t.Fatalf("admission not released: %d %s", got.Code, got.Body.String())
+	}
+}
+
 func TestConcurrentSessionAdmissionRespectsLimitAndReleasesAbortedSlot(t *testing.T) {
 	h, base := admissionFixture(t, config.Config{UploadMaxBytes: 8, UploadMaxSessions: 1, UploadMaxReservedBytes: 16})
 	gate := make(chan struct{})

@@ -52,6 +52,10 @@ func (s *Server) createUploadSession(w http.ResponseWriter, r *http.Request) {
 	mountID := r.PathValue("mountID")
 	s.uploadAdmission.Lock()
 	defer s.uploadAdmission.Unlock()
+	if err := s.cleanupRejectedUploads(r.Context(), mountID); err != nil {
+		s.fail(w, r, err)
+		return
+	}
 	if !s.admitUpload(w, r, mountID, request.Path, request.Size) {
 		return
 	}
@@ -112,6 +116,21 @@ func (s *Server) listUploadSessions(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	visible := sessions[:0]
+	for _, session := range sessions {
+		if session.State == "rejected" {
+			continue
+		}
+		hidden, err := s.files.IsHiddenPath(r.Context(), session.MountID, session.Destination)
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		if !hidden {
+			visible = append(visible, session)
+		}
+	}
+	sessions = visible
 	for index := range sessions {
 		if sessions[index].State == "publishing" {
 			sessions[index].Offset = sessions[index].Size
@@ -228,6 +247,19 @@ func (s *Server) completeUploadSession(w http.ResponseWriter, r *http.Request) {
 		_, _, err = s.files.CompleteUpload(r.Context(), session.MountID, session.Destination, session.ID, session.Size, checksum, session.Overwrite)
 	}
 	if err != nil {
+		if errors.Is(err, filesystem.ErrUploadContentRejected) {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			session.State, session.UpdatedAt = "rejected", time.Now().UTC()
+			cleanupErr := s.store.UpdateUploadSession(cleanupCtx, session)
+			if cleanupErr == nil {
+				cleanupErr = s.cleanupRejectedUpload(cleanupCtx, session)
+			}
+			cancel()
+			if cleanupErr != nil {
+				s.fail(w, r, cleanupErr)
+				return
+			}
+		}
 		s.registry.Inc("jolt_uploads_failed_total")
 		s.fail(w, r, err)
 		return
@@ -281,12 +313,71 @@ func (s *Server) loadUploadSession(w http.ResponseWriter, r *http.Request) (enti
 		writeError(w, r, http.StatusNotFound, "upload_not_found", "Upload não encontrado.", nil)
 		return entities.UploadSession{}, false
 	}
+	if session.State == "rejected" {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cleanupErr := s.cleanupRejectedUpload(cleanupCtx, session)
+		cancel()
+		if cleanupErr != nil {
+			s.fail(w, r, cleanupErr)
+			return entities.UploadSession{}, false
+		}
+		writeError(w, r, http.StatusUnprocessableEntity, "upload_content_rejected", "O conteúdo enviado foi recusado.", nil)
+		return entities.UploadSession{}, false
+	}
+	hidden, err := s.files.IsHiddenPath(r.Context(), session.MountID, session.Destination)
+	if err != nil {
+		s.fail(w, r, err)
+		return entities.UploadSession{}, false
+	}
+	if hidden {
+		writeError(w, r, http.StatusNotFound, "upload_not_found", "Upload não encontrado.", nil)
+		return entities.UploadSession{}, false
+	}
 	if !session.ExpiresAt.IsZero() && time.Now().UTC().After(session.ExpiresAt) {
 		writeError(w, r, http.StatusGone, "upload_expired",
 			"Este upload expirou. Inicie um novo envio.", nil)
 		return entities.UploadSession{}, false
 	}
 	return session, true
+}
+
+// A persisted rejection must precede removing the partial: otherwise a crash
+// could make a rejected upload look like a completed publication during recovery.
+func (s *Server) cleanupRejectedUpload(ctx context.Context, session entities.UploadSession) error {
+	if err := s.files.AbortUpload(ctx, session.MountID, session.Destination, session.ID); err != nil {
+		return err
+	}
+	if err := s.store.DeleteUploadSession(ctx, session.ID); err != nil && !errors.Is(err, contracts.ErrNotFound) {
+		return err
+	}
+	return nil
+}
+
+func (s *Server) cleanupRejectedUploads(ctx context.Context, mountID string) error {
+	sessions, err := s.store.ListUploadSessions(ctx, mountID)
+	if err != nil {
+		return err
+	}
+	for _, session := range sessions {
+		if session.State != "rejected" {
+			continue
+		}
+		unlock, err := filesystem.LockUploadSession(ctx, session.ID)
+		if err != nil {
+			return err
+		}
+		current, err := s.store.GetUploadSession(ctx, session.ID)
+		if errors.Is(err, contracts.ErrNotFound) {
+			err = nil
+		} else if err == nil && current.State == "rejected" {
+			err = s.cleanupRejectedUpload(ctx, current)
+		}
+		unlock()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // parseContentRange reads "bytes start-end/total". The end is informational:

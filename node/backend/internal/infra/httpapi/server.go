@@ -65,6 +65,7 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 		cfg.CopyChunkSize = 16 << 20
 	}
 	files.ConfigureUploadLimits(cfg.UploadMaxBytes, cfg.UploadMinFreeBytes)
+	files.ConfigureUploadInspection(filesystem.UploadInspection{Enabled: cfg.UploadInspection.Enabled, BlockExecutables: cfg.UploadInspection.BlockExecutables, AllowedMediaTypes: cfg.UploadInspection.AllowedMediaTypes})
 	s := &Server{config: cfg, identity: identity, files: files, jobs: jobService, pairing: pairingService, grants: grantService, log: logger}
 	for _, dependency := range dependencies {
 		switch value := dependency.(type) {
@@ -358,7 +359,8 @@ func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 		"upload_max_sessions":       s.config.UploadMaxSessions,
 		"upload_max_reserved_bytes": s.config.UploadMaxReservedBytes,
 		"upload_min_free_bytes":     s.config.UploadMinFreeBytes,
-		"state":                     "idle", "capabilities": []string{"api_filesystem", "streaming_upload", "range_download", "durable_local_jobs", "job_controls", "job_events_sse", "job_eta", "bandwidth_limits", "waiting_mount", "waiting_validation", "directory_manifests", "directory_resume", "resumable_chunks", "conflict_policies", "manual_item_overrides", "checksum_verification", "source_change_policies", "transfer_path_grants", "cluster_grouping", "mtls_peer_listener", "mtls_certificate_rotation", "mtls_certificate_rollout_diagnostics", "mtls_certificate_revocation", "identity_handover", "mtls_peer_heartbeat", "direct_file_pull", "operational_token_rotation", "idempotency"},
+		"upload_inspection":         s.config.UploadInspection,
+		"state":                     "idle", "capabilities": []string{"api_filesystem", "streaming_upload", "range_download", "durable_local_jobs", "job_controls", "job_events_sse", "job_eta", "bandwidth_limits", "waiting_mount", "waiting_validation", "directory_manifests", "directory_resume", "resumable_chunks", "conflict_policies", "manual_item_overrides", "checksum_verification", "source_change_policies", "transfer_path_grants", "cluster_grouping", "mtls_peer_listener", "mtls_certificate_rotation", "mtls_certificate_rollout_diagnostics", "mtls_certificate_revocation", "identity_handover", "mtls_peer_heartbeat", "direct_file_pull", "operational_token_rotation", "idempotency", "hidden_patterns_v1", "protected_move_v1", "canary_paths_v1", "agent_search_limits_v1", "agent_secret_scan_v1", "grant_exclude_send_v1", "grant_exclude_receive_v1", "upload_inspection_v1"},
 	})
 }
 
@@ -369,6 +371,7 @@ func (s *Server) effectiveConfig(w http.ResponseWriter, r *http.Request) {
 		"upload_max_sessions":       s.config.UploadMaxSessions,
 		"upload_max_reserved_bytes": s.config.UploadMaxReservedBytes,
 		"upload_min_free_bytes":     s.config.UploadMinFreeBytes,
+		"upload_inspection":         s.config.UploadInspection,
 		"node_name":                 s.config.NodeName, "api_address": s.config.APIAddress, "mtls_address": s.config.MTLSAddress,
 		"mtls_public_endpoint": s.config.MTLSPublicEndpoint,
 		"data_dir":             "[internal]", "keys_dir": "[internal]", "control_tower_token": "[redacted]",
@@ -839,6 +842,9 @@ func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) metadata(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("X-Jolt-Internal-Canary") == "1" && s.files.IsCanary(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path")) {
+		w.Header().Set("X-Jolt-Canary", "1")
+	}
 	item, err := s.files.Metadata(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path"))
 	if err != nil {
 		s.fail(w, r, err)
@@ -848,12 +854,25 @@ func (s *Server) metadata(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) download(w http.ResponseWriter, r *http.Request) {
+	scanSecrets := r.Header.Get("X-Jolt-Scan") == "secrets"
+	if scanSecrets {
+		w.Header().Set("X-Jolt-Scan-Applied", "secrets")
+	}
+	if r.Header.Get("X-Jolt-Internal-Canary") == "1" && s.files.IsCanary(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path")) {
+		w.Header().Set("X-Jolt-Canary", "1")
+	}
 	file, info, err := s.files.Open(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path"))
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
 	defer file.Close()
+	if scanSecrets {
+		if err := filesystem.ScanSecretPrefix(file); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+	}
 	if boolQuery(r, "editor") && info.Size() > editorMaxBytes {
 		writeError(w, r, http.StatusRequestEntityTooLarge, "editor_content_too_large",
 			"O editor aceita arquivos de até 512 KB.", nil)
@@ -1076,7 +1095,14 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	visible := items[:0]
+	for _, item := range items {
+		if s.hideJob(r.Context(), &item) {
+			continue
+		}
+		visible = append(visible, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": visible})
 }
 
 func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
@@ -1085,7 +1111,39 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	if s.hideJob(r.Context(), &job) {
+		s.fail(w, r, jobs.ErrNotFound)
+		return
+	}
 	writeJSON(w, http.StatusOK, job)
+}
+
+// hideJob prevents historical job metadata from undoing a newly configured
+// hidden-name rule. Errors may embed filenames, so omit them on protected mounts.
+func (s *Server) hideJob(ctx context.Context, job *entities.Job) bool {
+	if job.MountID == "" {
+		return false
+	}
+	mount, err := s.files.GetMount(ctx, job.MountID)
+	if errors.Is(err, filesystem.ErrNotFound) {
+		return false
+	}
+	if err != nil {
+		return true
+	}
+	if len(mount.HiddenPatterns) > 0 {
+		job.Error = ""
+	}
+	for _, value := range []string{job.SourcePath, job.Destination} {
+		if value == "" {
+			continue
+		}
+		hidden, err := s.files.IsHiddenPath(ctx, job.MountID, value)
+		if err != nil || hidden {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) jobSummary(w http.ResponseWriter, r *http.Request) {
@@ -1098,6 +1156,15 @@ func (s *Server) jobSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listJobItems(w http.ResponseWriter, r *http.Request) {
+	job, err := s.jobs.Get(r.Context(), r.PathValue("jobID"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if s.hideJob(r.Context(), &job) {
+		s.fail(w, r, jobs.ErrNotFound)
+		return
+	}
 	after, _ := strconv.Atoi(r.URL.Query().Get("after"))
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	items, next, err := s.store.ListJobItemsPage(r.Context(), r.PathValue("jobID"), after, limit)
@@ -1108,7 +1175,36 @@ func (s *Server) listJobItems(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_after": next})
+	mount, mountErr := s.files.GetMount(r.Context(), job.MountID)
+	if mountErr != nil && !errors.Is(mountErr, filesystem.ErrNotFound) {
+		s.fail(w, r, mountErr)
+		return
+	}
+	visible := items[:0]
+	for _, item := range items {
+		if errors.Is(mountErr, filesystem.ErrNotFound) {
+			visible = append(visible, item)
+			continue
+		}
+		hide := false
+		for _, value := range []string{item.RelativePath, item.SourcePath, item.DestinationPath} {
+			if value == "" {
+				continue
+			}
+			hidden, err := s.files.IsHiddenPath(r.Context(), job.MountID, value)
+			if err != nil || hidden {
+				hide = true
+				break
+			}
+		}
+		if !hide {
+			if len(mount.HiddenPatterns) > 0 {
+				item.Error = ""
+			}
+			visible = append(visible, item)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": visible, "next_after": next})
 }
 
 type overrideJobItemRequest struct {
@@ -1117,6 +1213,15 @@ type overrideJobItemRequest struct {
 }
 
 func (s *Server) overrideJobItem(w http.ResponseWriter, r *http.Request) {
+	current, err := s.jobs.Get(r.Context(), r.PathValue("jobID"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if s.hideJob(r.Context(), &current) {
+		s.fail(w, r, jobs.ErrNotFound)
+		return
+	}
 	ordinal, err := strconv.Atoi(r.PathValue("ordinal"))
 	if err != nil || ordinal < 0 {
 		writeError(w, r, http.StatusBadRequest, "invalid_ordinal", "Item ordinal must be a non-negative integer.", nil)
@@ -1129,6 +1234,10 @@ func (s *Server) overrideJobItem(w http.ResponseWriter, r *http.Request) {
 	job, err := s.jobs.OverrideItem(r.Context(), r.PathValue("jobID"), ordinal, request.Action, request.ApplyToFollowing)
 	if err != nil {
 		s.fail(w, r, err)
+		return
+	}
+	if s.hideJob(r.Context(), &job) {
+		s.fail(w, r, jobs.ErrNotFound)
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
@@ -1164,9 +1273,16 @@ func (s *Server) streamJobEvents(w http.ResponseWriter, r *http.Request) {
 	defer heartbeat.Stop()
 	for {
 		for _, event := range events {
+			after = event.ID
 			job, getErr := s.jobs.Get(r.Context(), event.JobID)
 			if getErr != nil {
 				continue
+			}
+			if s.hideJob(r.Context(), &job) {
+				continue
+			}
+			if mount, err := s.files.GetMount(r.Context(), job.MountID); err == nil && len(mount.HiddenPatterns) > 0 {
+				event.Message = ""
 			}
 			payload, marshalErr := json.Marshal(map[string]any{"event": event, "job": job})
 			if marshalErr != nil {
@@ -1175,7 +1291,6 @@ func (s *Server) streamJobEvents(w http.ResponseWriter, r *http.Request) {
 			if _, err := fmt.Fprintf(w, "id: %d\nevent: job\ndata: %s\n\n", event.ID, payload); err != nil {
 				return
 			}
-			after = event.ID
 		}
 		if len(events) > 0 {
 			flusher.Flush()
@@ -1221,9 +1336,22 @@ func (s *Server) retryJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) controlJob(w http.ResponseWriter, r *http.Request, action func(context.Context, string) (entities.Job, error)) {
+	current, err := s.jobs.Get(r.Context(), r.PathValue("jobID"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if s.hideJob(r.Context(), &current) {
+		s.fail(w, r, jobs.ErrNotFound)
+		return
+	}
 	job, err := action(r.Context(), r.PathValue("jobID"))
 	if err != nil {
 		s.fail(w, r, err)
+		return
+	}
+	if s.hideJob(r.Context(), &job) {
+		s.fail(w, r, jobs.ErrNotFound)
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
@@ -1506,15 +1634,27 @@ func (s *Server) deleteGrant(w http.ResponseWriter, r *http.Request) {
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	status, code := http.StatusInternalServerError, "internal_error"
 	var maxBytesError *http.MaxBytesError
+	var secretError *filesystem.SecretError
 	switch {
+	case errors.As(err, &secretError):
+		status, code = http.StatusForbidden, "secret_detected"
+		if r.Header.Get("X-Jolt-Scan") == "secrets" {
+			w.Header().Set("X-Jolt-Secret-Kind", secretError.Kind)
+		}
 	case errors.As(err, &maxBytesError):
 		status, code = http.StatusRequestEntityTooLarge, "editor_content_too_large"
 	case errors.Is(err, filesystem.ErrUploadTooLarge):
 		status, code = http.StatusRequestEntityTooLarge, "upload_too_large"
+	case errors.Is(err, filesystem.ErrUploadContentRejected):
+		status, code = http.StatusUnprocessableEntity, "upload_content_rejected"
 	case errors.Is(err, filesystem.ErrInsufficientSpace):
 		status, code = http.StatusInsufficientStorage, "insufficient_storage"
 	case errors.Is(err, filesystem.ErrNotFound):
 		status, code = http.StatusNotFound, "not_found"
+	case errors.Is(err, filesystem.ErrHiddenName):
+		status, code = http.StatusUnprocessableEntity, "hidden_name"
+	case errors.Is(err, filesystem.ErrProtectedTree):
+		status, code = http.StatusConflict, "protected_tree"
 	case errors.Is(err, filesystem.ErrReadOnly):
 		status, code = http.StatusForbidden, "mount_read_only"
 	case errors.Is(err, filesystem.ErrTraversal):
@@ -1562,6 +1702,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, code = http.StatusConflict, "identity_restart_required"
 	case errors.Is(err, transfers.ErrForbidden):
 		status, code = http.StatusForbidden, "transfer_forbidden"
+	case errors.Is(err, transfers.ErrPeerUpgradeRequired):
+		status, code = http.StatusConflict, "peer_upgrade_required"
 	case errors.Is(err, transfers.ErrPeer):
 		status, code = http.StatusConflict, "peer_unavailable"
 	case errors.Is(err, transfers.ErrInvalid):
@@ -1569,6 +1711,10 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	if status == http.StatusInternalServerError {
 		s.log.Error("request failed", "error", err, "correlation_id", r.Header.Get("X-Correlation-ID"))
+	}
+	if errors.Is(err, filesystem.ErrUploadContentRejected) {
+		writeError(w, r, status, code, "O conteúdo enviado foi recusado pela inspeção.", nil)
+		return
 	}
 	writeError(w, r, status, code, err.Error(), nil)
 }
@@ -1638,6 +1784,10 @@ const openAPISpec = `openapi: 3.1.0
 info:
   title: jolt node API
   version: 0.1.0
+  description: >
+    Mount hidden_patterns are enforced for all callers. Direct reads of hidden
+    paths return 404, attempts to create a hidden name return 422 hidden_name,
+    and destructive jobs involving protected trees fail with protected_tree.
 servers:
   - url: /
 components:
@@ -1689,6 +1839,11 @@ components:
             conflict_policies:
               type: [array, 'null']
               items: {type: string}
+            exclude:
+              type: array
+              maxItems: 64
+              items: {type: string}
+              description: Basename globs excluded from source and destination paths; moves that include excluded content are refused.
             visible_to_peer: {type: boolean}
             correlation_id: {type: string}
             created_at: {type: string, format: date-time}
@@ -1806,12 +1961,15 @@ paths:
         "202": {description: Persistent job queued for asynchronous execution}
   /api/v1/mounts/{mountID}/files/content:
     get:
+      description: X-Jolt-Scan secrets scans the first 64 KiB before serving, including Range requests, and confirms enforcement in X-Jolt-Scan-Applied.
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: query, name: path, required: true, schema: {type: string}}
         - {in: query, name: editor, schema: {type: boolean}, description: Enables the 512 KB text-editor limit}
+        - {in: header, name: X-Jolt-Scan, schema: {type: string, enum: [secrets]}}
       responses:
         "200": {description: File stream}
+        "403": {description: secret_detected when prefix scanning detects a secret}
     put:
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
@@ -1826,6 +1984,7 @@ paths:
             schema: {type: string, format: binary}
       responses:
         "201": {description: Completed upload job}
+        "422": {description: hidden_name or upload_content_rejected by the configured upload inspection}
   /api/v1/mounts/{mountID}/files/metadata:
     get:
       summary: Returns metadata for one entry
@@ -1852,6 +2011,7 @@ paths:
       responses:
         "200": {description: Completed mkdir job}
         "403": {description: The mount is read-only}
+        "422": {description: hidden_name - the destination is hidden by mount configuration}
   /api/v1/mounts/{mountID}/files/move:
     post:
       summary: Moves or renames an entry inside one mount
@@ -1878,15 +2038,18 @@ paths:
         Symlinks are skipped and counted in X-Jolt-Archive-Skipped-Symlinks
         rather than followed. The size is measured before streaming begins, so
         an oversized selection is refused with a status code instead of
-        producing a truncated download.
+        producing a truncated download. X-Jolt-Scan secrets scans every file
+        before the response and again as each entry is opened.
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: query, name: path, required: true, schema: {type: string}}
         - {in: query, name: name, schema: {type: array, items: {type: string}}, description: Direct children to include; omit for the whole directory}
         - {in: query, name: compress, schema: {type: boolean}, description: Deflate instead of Store; off by default because media is already compressed}
+        - {in: header, name: X-Jolt-Scan, schema: {type: string, enum: [secrets]}}
       responses:
         "200": {description: ZIP stream}
         "400": {description: Selection exceeds the configured entry or byte limit}
+        "403": {description: secret_detected when prefix scanning detects a secret}
   /api/v1/mounts/{mountID}/files/archive/plan:
     get:
       summary: Reports what an archive would contain without writing it
@@ -1902,11 +2065,15 @@ paths:
       description: >
         Bounded by SEARCH_MAX_RESULTS, SEARCH_MAX_ENTRIES and SEARCH_TIMEOUT.
         Symlinks are never followed. A partial result sets truncated with a
-        truncated_reason of results, entries or timeout.
+        truncated_reason of results, entries, depth or timeout. Requests with
+        X-Jolt-Agent-Search set to 1 are additionally bounded to depth 16,
+        10000 examined entries, 200 results and 10 seconds. The node confirms
+        enforcement in the X-Jolt-Agent-Search-Applied response header.
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: query, name: path, required: true, schema: {type: string}}
         - {in: query, name: query, schema: {type: string}, description: Case-insensitive substring of the entry name}
+        - {in: header, name: X-Jolt-Agent-Search, schema: {type: string, enum: ["1"]}, description: Apply the bounded agent search profile}
         - {in: query, name: type, schema: {type: string, enum: [file, directory]}}
         - {in: query, name: extensions, schema: {type: string}, description: Comma-separated extensions}
         - {in: query, name: min_size, schema: {type: integer, format: int64}}
@@ -1962,6 +2129,7 @@ paths:
         "201": {description: Created session}
         "409": {description: Another unfinished upload already targets this destination}
         "413": {description: Declared size exceeds UPLOAD_MAX_BYTES}
+        "422": {description: hidden_name - the destination is hidden by mount configuration}
         "429": {description: UPLOAD_MAX_SESSIONS reached; Retry-After carries retry guidance}
         "507": {description: Reservation budget or available disk safety margin exhausted}
   /api/v1/mounts/{mountID}/files/uploads/{uploadID}:
@@ -2039,6 +2207,7 @@ paths:
         "201": {description: Durable completion receipt including upload_id, destination_path, size, SHA-256 checksum, state and completed_at; repeat returns the same receipt until expiry}
         "400": {description: The upload is short of the declared size or its checksum does not match}
         "409": {description: The destination exists and the session does not allow overwrite}
+        "422": {description: upload_content_rejected; the rejected partial and upload session are removed}
   /api/v1/mounts/{mountID}/files/copy/plan:
     post:
       parameters:

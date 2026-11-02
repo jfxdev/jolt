@@ -28,10 +28,28 @@ export interface BuildInfo {
 }
 
 export interface ServiceAccount {
+  kind: "automation" | "agent";
   service_account_id: string;
   name: string;
   description: string;
   enabled: boolean;
+}
+
+export interface AgentLimits {
+  requests_per_minute: number;
+  burst: number;
+  max_concurrent: number;
+  max_response_bytes: number;
+  daily_bytes: number;
+  allowed_cidrs: string[];
+  read_media_types?: string[];
+}
+
+export interface TemporaryPolicyAssignment {
+  policy_id: string;
+  created_by: string;
+  created_at: string;
+  expires_at: string;
 }
 
 export interface AccessGroup {
@@ -46,6 +64,7 @@ export interface AccessGroup {
 }
 
 export interface ServiceAccountToken {
+  agent_limits?: AgentLimits | null;
   token_id: string;
   name: string;
   expires_at: string | null;
@@ -77,6 +96,8 @@ export interface Role {
 }
 
 export interface AuditEvent {
+  chain_data?: string;
+  chain_hash?: string;
   event_id?: string;
   actor_type?: string;
   actor_id?: string;
@@ -94,6 +115,7 @@ export interface AuditEvent {
 export type NodeState = "online" | "offline" | "degraded" | "untrusted" | string;
 
 export interface NodeInfo {
+  upload_inspection?: { enabled: boolean; block_executables: boolean; allowed_media_types: string[] | null };
   configuration?: { source: "yaml"; apply_mode: "restart"; mounts_mutable: boolean; grants_mutable: boolean };
   node_id: string;
   name: string;
@@ -118,6 +140,7 @@ export type FileEntryType = "directory" | "file" | "symlink";
 
 export interface FileEntry {
   name: string;
+  display_name?: string;
   path: string;
   type: FileEntryType;
   size?: number;
@@ -195,6 +218,7 @@ export interface GrantPermissions {
 export type GrantDirection = "send" | "receive" | "send_receive";
 
 export interface Grant {
+	  exclude?: string[];
   configured_enabled?: boolean;
   inactive_reason?: string;
   grant_id: string;
@@ -409,7 +433,7 @@ export interface SearchResponse {
 	entries: FileEntry[];
 	scanned: number;
 	truncated: boolean;
-	truncated_reason?: "results" | "entries" | "timeout";
+	truncated_reason?: "results" | "entries" | "depth" | "timeout";
 }
 
 export interface DiskUsageResponse {
@@ -435,7 +459,7 @@ export interface FilePage extends ListResponse<FileEntry> { next_after?: string;
 export interface UploadVerification { offset: number; next_after: number; blocks: { offset: number; size: number; sha256: string }[] }
 
 export interface UploadSession {
- state?: "open" | "publishing" | "completed";
+ state?: "open" | "publishing" | "completed" | "rejected";
  completed_at?: string;
 	upload_id: string;
 	mount_id: string;

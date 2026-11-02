@@ -176,13 +176,26 @@ paths:
         '200': {$ref: '#/components/responses/JSONObject'}
     post:
       tags: [Administration]
-      summary: Create a service account and optionally its first API key
-      description: A plaintext API key is returned only at issuance. Store it immediately.
-      requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
+      summary: Create a service account and its first API key
+      description: A plaintext API key is returned only at issuance. Agent credentials default to 30 days and have mandatory usage limits.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ServiceAccountInput'}
       responses:
         '201': {$ref: '#/components/responses/JSONObject'}
         '400': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/service-accounts/disable:
+    post:
+      tags: [Administration]
+      summary: Disable all agent accounts and cancel their active requests
+      parameters:
+        - {name: kind, in: query, schema: {type: string, enum: [agent]}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/service-accounts/{serviceAccountID}:
     parameters: [{$ref: '#/components/parameters/ServiceAccountID'}]
     patch:
@@ -224,6 +237,22 @@ paths:
       summary: Revoke one API key immediately
       responses:
         '204': {$ref: '#/components/responses/NoContent'}
+        '404': {$ref: '#/components/responses/Error'}
+    patch:
+      tags: [Administration]
+      summary: Update one agent credential's limits and cancel its active requests
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_limits]
+              properties:
+                agent_limits: {$ref: '#/components/schemas/AgentLimits'}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/access-groups:
     get:
@@ -366,6 +395,29 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/JSONObject'}
         '400': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/users/{userID}/policies/temporary:
+    parameters: [{$ref: '#/components/parameters/UserID'}]
+    get:
+      tags: [Administration]
+      summary: List active temporary user policy assignments
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+    post:
+      tags: [Administration]
+      summary: Grant or renew a temporary user policy
+      requestBody: {$ref: '#/components/requestBodies/TemporaryPolicy'}
+      responses:
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/users/{userID}/policies/temporary/{policyID}:
+    parameters: [{$ref: '#/components/parameters/UserID'}, {$ref: '#/components/parameters/PolicyID'}]
+    delete:
+      tags: [Administration]
+      summary: Revoke a temporary user policy
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '404': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/users/{userID}/roles:
     parameters: [{$ref: '#/components/parameters/UserID'}]
     get:
@@ -394,6 +446,30 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/JSONObject'}
         '400': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/service-accounts/{serviceAccountID}/policies/temporary:
+    parameters: [{$ref: '#/components/parameters/ServiceAccountID'}]
+    get:
+      tags: [Administration]
+      summary: List active temporary service-account policy assignments
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+    post:
+      tags: [Administration]
+      summary: Grant or renew a temporary service-account policy
+      description: Agent profiles remain read-only regardless of the granted policy.
+      requestBody: {$ref: '#/components/requestBodies/TemporaryPolicy'}
+      responses:
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/service-accounts/{serviceAccountID}/policies/temporary/{policyID}:
+    parameters: [{$ref: '#/components/parameters/ServiceAccountID'}, {$ref: '#/components/parameters/PolicyID'}]
+    delete:
+      tags: [Administration]
+      summary: Revoke a temporary service-account policy
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '404': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/service-accounts/{serviceAccountID}/groups:
     parameters: [{$ref: '#/components/parameters/ServiceAccountID'}]
     get:
@@ -413,15 +489,28 @@ paths:
     get:
       tags: [Administration]
       summary: Query audit events with cursor pagination
+      description: Use format=ndjson and after to export events in ascending order; X-Jolt-Next-After supplies the next cursor. When the hash chain has been enabled, new events include chain_data and chain_hash, and NDJSON checkpoint headers identify the chain boundary.
       parameters:
         - {name: before_id, in: query, schema: {type: integer, format: int64, minimum: 1}}
-        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+        - {name: after, in: query, schema: {type: integer, format: int64, minimum: 0}}
+        - {name: format, in: query, schema: {type: string, enum: [json, ndjson]}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500}}
         - {name: actor_type, in: query, schema: {type: string, enum: [user, service_account]}}
         - {name: action, in: query, schema: {type: string}}
         - {name: result, in: query, schema: {type: string, enum: [allowed, denied]}}
         - {name: correlation_id, in: query, schema: {type: string}}
       responses:
-        '200': {$ref: '#/components/responses/JSONObject'}
+        '200':
+          description: Audit events as JSON or newline-delimited JSON
+          headers:
+            X-Jolt-Next-After: {schema: {type: integer, format: int64}, description: Cursor for the next NDJSON page}
+            X-Jolt-Checkpoint-ID: {schema: {type: integer, format: int64}, description: Last retained chain checkpoint event ID}
+            X-Jolt-Checkpoint-Hash: {schema: {type: string}, description: SHA-256 hash at the checkpoint}
+            X-Jolt-Checkpoint-Reason: {schema: {type: string, enum: [activation, retention]}}
+            X-Jolt-Has-More: {schema: {type: boolean}}
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/JSONObject'}}
+            application/x-ndjson: {schema: {type: string}}
         '400': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/nodes:
@@ -802,12 +891,13 @@ paths:
     post:
       tags: [Node proxy]
       summary: Verify and atomically publish a completed upload
-      description: The destination is the one persisted with the session. A repeat may return the durable completion receipt; it must not require reupload.
+      description: The destination is the one persisted with the session. A repeat may return the durable completion receipt; it must not require reupload. Optional node upload inspection can reject content and remove the partial and session before publishing.
       responses:
         '200': {$ref: '#/components/responses/JSONObject'}
         '201': {$ref: '#/components/responses/JSONObject'}
         '403': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
   /api/v1/nodes/{nodeID}/jobs/events:
     parameters: [{$ref: '#/components/parameters/NodeID'}]
@@ -839,13 +929,16 @@ paths:
     get:
       tags: [Node proxy]
       summary: Authorized GET proxy to the node API
-      description: The exact node OpenAPI is available from the authenticated node at /openapi.yaml. The proxy validates resource and RBAC before forwarding and injects the operational token only server-side.
+      description: The exact node OpenAPI is available from the authenticated node at /openapi.yaml. The proxy validates resource and RBAC before forwarding and injects the operational token only server-side. Agent searches require a compatible node and are limited to 200 results, 10000 examined entries, depth 16 and 10 seconds; partial responses report truncated and truncated_reason. Agent file listings and search entries include a sanitized display_name; name and path remain canonical and can contain unsafe display characters. Agent content and ZIP reads require a compatible node and scan the first 64 KiB of each file before serving; detected secrets return secret_detected.
       responses:
         '200': {$ref: '#/components/responses/ProxyResult'}
         '206': {$ref: '#/components/responses/Binary'}
         '400': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
         '502': {$ref: '#/components/responses/Error'}
     post:
       tags: [Node proxy]
@@ -943,6 +1036,16 @@ components:
               type: array
               items: {type: string}
             example: {policy_ids: [pol_reader]}
+    TemporaryPolicy:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [policy_id]
+            properties:
+              policy_id: {type: string}
+              duration_seconds: {type: integer, minimum: 1, maximum: 3600, default: 900}
     ProxyBody:
       required: false
       content:
@@ -954,6 +1057,29 @@ components:
     JSONObject:
       type: object
       additionalProperties: true
+    AgentLimits:
+      type: object
+      required: [requests_per_minute, burst, max_concurrent, max_response_bytes, daily_bytes]
+      properties:
+        requests_per_minute: {type: integer, minimum: 1, maximum: 60000, default: 60}
+        burst: {type: integer, minimum: 1, maximum: 10000, default: 10}
+        max_concurrent: {type: integer, minimum: 1, maximum: 32, default: 2}
+        max_response_bytes: {type: integer, format: int64, minimum: 1024, maximum: 1073741824, default: 16777216}
+        daily_bytes: {type: integer, format: int64, minimum: 1024, default: 1073741824}
+        allowed_cidrs: {type: array, maxItems: 64, items: {type: string}, description: Empty allows any source address}
+        read_media_types: {type: array, maxItems: 64, uniqueItems: true, items: {type: string, example: text/plain}, description: Empty allows all media types. Exact types only; archive downloads and multipart ranges are refused while this restriction is active.}
+    ServiceAccountInput:
+      type: object
+      required: [name, group_ids]
+      properties:
+        name: {type: string}
+        description: {type: string}
+        enabled: {type: boolean}
+        kind: {type: string, enum: [automation, agent], default: automation, description: Immutable after creation}
+        group_ids: {type: array, items: {type: string}}
+        token_name: {type: string}
+        expires_at: {type: [string, 'null'], format: date-time}
+        agent_limits: {$ref: '#/components/schemas/AgentLimits'}
     BuildInfo:
       type: object
       required: [version, commit, build_date]

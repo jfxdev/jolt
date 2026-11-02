@@ -1,0 +1,22 @@
+[
+  {"name":"video class ignores case", "selector":{"classes":["VIDEO"]}, "entry":"Film.MKV", "is_file":true, "valid":true, "matches":true},
+  {"name":"audio class", "selector":{"classes":["audio"]}, "entry":"sound.FLAC", "is_file":true, "valid":true, "matches":true},
+  {"name":"image class", "selector":{"classes":["image"]}, "entry":"picture.PNG", "is_file":true, "valid":true, "matches":true},
+  {"name":"document class", "selector":{"classes":["document"]}, "entry":"notes.PDF", "is_file":true, "valid":true, "matches":true},
+  {"name":"archive class", "selector":{"classes":["archive"]}, "entry":"backup.ZIP", "is_file":true, "valid":true, "matches":true},
+  {"name":"executable class", "selector":{"classes":["executable"]}, "entry":"install.SH", "is_file":true, "valid":true, "matches":true},
+  {"name":"secret class exact name", "selector":{"classes":["secret"]}, "entry":"ACME.JSON", "is_file":true, "valid":true, "matches":true},
+  {"name":"secret class extension", "selector":{"classes":["secret"]}, "entry":"cert.PEM", "is_file":true, "valid":true, "matches":true},
+  {"name":"union custom extension", "selector":{"classes":["video"],"extensions":["srt"]}, "entry":"movie.SRT", "is_file":true, "valid":true, "matches":true},
+  {"name":"union exact name", "selector":{"extensions":["txt"],"names":["CONFIG"]}, "entry":"config", "is_file":true, "valid":true, "matches":true},
+  {"name":"exact name keeps spaces", "selector":{"names":[" config "]}, "entry":" config ", "is_file":true, "valid":true, "matches":true},
+  {"name":"dotfile is extension env", "selector":{"extensions":["env"]}, "entry":".env", "is_file":true, "valid":true, "matches":true},
+  {"name":"extension does not match prefix", "selector":{"extensions":["pem"]}, "entry":"key.pem.txt", "is_file":true, "valid":true, "matches":false},
+  {"name":"directory is not a file", "selector":{"extensions":["pem"]}, "entry":"folder.pem", "is_file":false, "valid":true, "matches":false},
+  {"name":"path is not a basename", "selector":{"names":["file.txt"]}, "entry":"dir/file.txt", "is_file":true, "valid":true, "matches":false},
+  {"name":"unknown class", "selector":{"classes":["unknown"]}, "entry":"file", "is_file":true, "valid":false, "matches":false},
+  {"name":"empty selector", "selector":{}, "entry":"file", "is_file":true, "valid":false, "matches":false},
+  {"name":"wildcard extension rejected", "selector":{"extensions":["*.pem"]}, "entry":"a.pem", "is_file":true, "valid":false, "matches":false},
+  {"name":"name path rejected", "selector":{"names":["dir/file"]}, "entry":"file", "is_file":true, "valid":false, "matches":false},
+  {"name":"duplicate selectors rejected", "selector":{"extensions":["TXT", "txt"]}, "entry":"x.txt", "is_file":true, "valid":false, "matches":false}
+]

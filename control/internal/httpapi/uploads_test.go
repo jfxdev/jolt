@@ -117,3 +117,12 @@ func TestUploadSessionListingDoesNotLeakOtherSubpaths(t *testing.T) {
 		t.Fatalf("status=%d body=%s error=%v", w.Code, w.Body.String(), err)
 	}
 }
+
+func TestRejectedUploadRecoveryIsNotReportedAsUnavailable(t *testing.T) {
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+	(&Server{}).writeUploadLookupError(w, r, &nodeAPIError{StatusCode: http.StatusUnprocessableEntity, Code: "upload_content_rejected"})
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "upload_content_rejected") {
+		t.Fatalf("rejection was not preserved: %d %s", w.Code, w.Body.String())
+	}
+}

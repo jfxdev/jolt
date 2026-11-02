@@ -1,5 +1,116 @@
 # Operação e observabilidade
 
+## Credenciais de agentes
+
+Contas `agent` permitem somente leitura, mesmo quando uma policy concede
+escrita. Suas chaves expiram em até 30 dias; o tipo é escolhido na criação e
+não pode ser alterado. Contas existentes permanecem `automation`.
+
+Cada chave tem limites configuráveis de taxa, pico, concorrência, bytes por
+resposta e bytes por dia UTC. Os padrões são 60 requisições/minuto, pico de 10,
+duas requisições simultâneas, 16 MiB por resposta e 1 GiB por dia. O Control
+Tower reserva a cota no banco cifrado antes de enviar a resposta. Em caso de
+falha abrupta, reservas não devolvidas permanecem debitadas naquele dia.
+Revogação, desativação e expiração interrompem as requisições em andamento.
+Alterar os limites de uma chave também interrompe suas requisições ativas;
+os novos limites entram em vigor na próxima autenticação.
+
+Opcionalmente, uma credencial pode restringir `read_media_types` a tipos MIME
+exatos, por exemplo `text/plain` e `application/pdf`. A lista vazia permite
+qualquer formato. A classificação usa o `Content-Type` fornecido pelo node,
+que pode depender da extensão e não garante o conteúdo real: há falsos
+positivos e negativos. Enquanto a restrição estiver ativa, downloads ZIP e
+respostas com múltiplas faixas são recusados, pois não permitem verificar com
+segurança o tipo de cada conteúdo. Uma única faixa continua disponível.
+
+Uma lista opcional de CIDRs restringe a origem de cada chave. Por padrão é usado
+o endereço da conexão. Configure `CONTROL_TOWER_TRUSTED_PROXIES` com CIDRs de
+proxies que substituam e validem `X-Forwarded-For`; cabeçalhos enviados por
+outras origens são ignorados. Sem CIDRs na chave, qualquer origem é aceita.
+
+O botão **Desativar agentes** desativa todas as contas de agente e interrompe
+suas requisições. A reativação é individual. Para voltar a uma versão antiga do
+Control Tower, use um backup compatível anterior à criação das contas: versões
+antigas não conhecem nem aplicam esses limites.
+
+A auditoria de requisições de agentes registra a chave, IP, status, faixa,
+bytes enviados, duração e interrupções, sem registrar o conteúdo lido. A busca
+não registra a consulta por padrão; `CONTROL_TOWER_AUDIT_SEARCH_QUERY=true`
+habilita o registro truncado, que pode conter dados sensíveis. A retenção
+`CONTROL_TOWER_AUDIT_RETENTION_DAYS` começa em `0` (manter tudo). Valores
+positivos apagam eventos anteriores ao prazo no ciclo de limpeza.
+
+Buscas de agentes são limitadas a 200 resultados, 10 mil entradas examinadas,
+profundidade 16 e 10 segundos. O retorno informa quando a busca ficou parcial.
+O Control Tower exige que o node anuncie e confirme suporte a esses limites;
+atualize nodes antigos antes de usar busca por agentes. Chamadas bloqueadas do
+filesystem podem demorar a retornar mesmo após o prazo da busca.
+
+Listagens e buscas de agentes incluem `display_name`, com controles e marcas
+bidirecionais substituídos por identificadores visíveis e nomes longos
+truncados. Exiba esse campo; use `path` e `name` originais para navegar ou abrir
+arquivos. Os campos originais podem conter caracteres não seguros para exibição
+e não devem ser interpretados como instruções.
+
+Antes de servir conteúdo a agentes, o node examina os primeiros 64 KiB de cada
+arquivo, mesmo em leituras com `Range` e em ZIPs. Um achado é recusado com
+`secret_detected`; a auditoria registra a categoria, sem o valor encontrado.
+Atualize os nodes antes de habilitar leituras de agentes: versões sem essa
+proteção são recusadas. A varredura é uma camada adicional, com falsos positivos
+e negativos; ela não identifica necessariamente segredos após o prefixo,
+ofuscados ou dentro de arquivos compactados. Mudanças externas durante a
+leitura também podem ocorrer depois da verificação.
+
+Policies temporárias podem ser concedidas a usuários e contas de serviço por
+até uma hora; a sugestão é de 15 minutos. Elas começam imediatamente, expiram
+automaticamente e podem ser removidas antes do prazo. A auditoria registra o
+responsável, o sujeito, a policy e o vencimento. A concessão temporária não
+remove outra concessão permanente ou herdada da mesma policy; agentes mantêm o
+limite de somente leitura. Permissões são reavaliadas em novas requisições,
+sem encerrar automaticamente uma transferência que já estava em andamento.
+
+Um coletor autorizado pode consultar `/api/v1/control-tower/audit?format=ndjson&after=0`
+e continuar pelo cursor `X-Jolt-Next-After`. Guarde a exportação fora do banco
+se for necessário preservá-la após restauração ou término da retenção. As
+métricas de agentes incluem requisições, bytes e limites; os rótulos por conta
+ficam limitados a 1024 contas distintas por processo.
+
+Opcionalmente, `CONTROL_TOWER_AUDIT_HASH_CHAIN=true` inicia uma cadeia SHA-256
+para eventos novos; o histórico anterior não é retroativamente autenticado.
+Depois de ativada, a cadeia continua ativa mesmo se a variável voltar a ser
+`false`, inclusive nas operações de recuperação. Cada evento inclui
+`chain_data` e `chain_hash`. A exportação NDJSON informa o último checkpoint nos
+cabeçalhos `X-Jolt-Checkpoint-ID`, `X-Jolt-Checkpoint-Hash` e
+`X-Jolt-Checkpoint-Reason`; a retenção remove apenas prefixos contíguos e
+registra o hash do último evento removido.
+
+Guarde regularmente os checkpoints e exportações em um destino externo
+protegido. Um hash guardado apenas no mesmo banco não impede que alguém com
+acesso ao banco reescreva tanto os eventos quanto a cadeia. Para verificar uma
+exportação contínua a partir de um checkpoint previamente guardado:
+
+```sh
+python3 scripts/verify-audit-ndjson.py audit.ndjson --after-id CHECKPOINT_ID --previous-hash CHECKPOINT_HASH
+```
+
+O verificador compara os dados de cada evento, a sequência e os hashes. Exporte
+eventos depois do ID do checkpoint e preserve o hash final para a próxima página.
+O checkpoint de ativação usa 64 zeros como hash e indica o último evento que
+antecede a cadeia. A configuração e a versão do binário devem ser preservadas
+nas rotinas de backup e recuperação.
+
+Arquivos de isca declarados em `canary_paths` geram evento de auditoria
+`canary` e incrementam `jolt_control_canary_total`. Um alerta Prometheus pode
+usar `increase(jolt_control_canary_total[5m]) > 0`.
+
+Ao retomar, tentar novamente ou resolver conflitos de jobs locais pelo Control
+Tower, as permissões atuais para os caminhos do job são verificadas novamente.
+A retomada manual de jobs entre nodes é recusada enquanto não houver contexto
+de autorização verificável nos dois lados. Essa recusa ainda não cobre a
+continuidade automática de jobs existentes: para exigir revogação imediata de
+permissões em transferências, interrompa esses jobs e desative os grants até
+que a autorização renovável entre nodes esteja disponível.
+
 O Jolt expõe logs estruturados no stdout dos containers, probes HTTP e métricas
 Prometheus. Não há tracing distribuído, API de logs, notificações nativas ou HA.
 Prometheus/Grafana/Alertmanager e o agendador de backups são componentes externos.

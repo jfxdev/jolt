@@ -57,6 +57,22 @@ func TestStrictYAMLConfiguration(t *testing.T) {
 	}
 }
 
+func TestUploadInspectionConfiguration(t *testing.T) {
+	defaults, err := Read(writeConfig(t, "version: 1\n"))
+	if err != nil || defaults.UploadInspection.Enabled || !defaults.UploadInspection.BlockExecutables {
+		t.Fatalf("defaults: %+v %v", defaults.UploadInspection, err)
+	}
+	cfg, err := Read(writeConfig(t, "version: 1\nupload_inspection:\n  enabled: true\n  allowed_media_types: ['TEXT/PLAIN', 'application/pdf']\n"))
+	if err != nil || !cfg.UploadInspection.Enabled || cfg.UploadInspection.AllowedMediaTypes[0] != "text/plain" || !cfg.UploadInspection.BlockExecutables {
+		t.Fatalf("inspection: %+v %v", cfg.UploadInspection, err)
+	}
+	for _, invalid := range []string{"['text/*']", "['text/plain; charset=utf-8']", "['text/plain', 'TEXT/PLAIN']", "['invalid']"} {
+		if _, err := Read(writeConfig(t, "version: 1\nupload_inspection:\n  allowed_media_types: "+invalid+"\n")); err == nil {
+			t.Fatalf("accepted %s", invalid)
+		}
+	}
+}
+
 func TestExternalKeyCannotBeIncludedInBackup(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "state.key")
@@ -97,6 +113,60 @@ func TestResourceValidationAndUnavailableMount(t *testing.T) {
 	for _, body := range []string{strings.Replace(base+grant, "mount_id: files", "mount_id: absent", 1), strings.Replace(base+grant, "path: .", "path: ../escape", 1), strings.Replace(base+grant, "path: .", "path: /absolute", 1), strings.Replace(base+grant, "{read: true}", "{write: true}", 1), strings.Replace(base+grant, "mode: read_write", "mode: invalid", 1), strings.Replace(base, "local_path: "+mount, "local_path: relative", 1)} {
 		if _, err := Read(writeConfig(t, body)); err == nil {
 			t.Fatal("invalid resource accepted")
+		}
+	}
+}
+
+func TestHiddenPatternsConfiguration(t *testing.T) {
+	root := t.TempDir()
+	base := "version: 1\nmounts:\n  - id: files\n    name: Files\n    local_path: " + root + "\n    mode: read_only\n    hidden_patterns: "
+	cfg, err := Read(writeConfig(t, base+"['.env', '*.pem']\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mounts, _ := cfg.Resources()
+	if len(mounts) != 1 || len(mounts[0].HiddenPatterns) != 2 {
+		t.Fatalf("patterns missing from resource: %+v", mounts)
+	}
+	for _, invalid := range []string{"['[']", "['dir/file']", "['']"} {
+		if _, err := Read(writeConfig(t, base+invalid+"\n")); err == nil {
+			t.Fatalf("accepted invalid patterns: %s", invalid)
+		}
+	}
+}
+
+func TestGrantExcludePatternsConfiguration(t *testing.T) {
+	root := t.TempDir()
+	base := "version: 1\nmounts:\n  - id: files\n    name: Files\n    local_path: " + root + "\n    mode: read_only\n    enabled: true\ntransfer_grants:\n  - id: send\n    peer_node_id: peer\n    mount_id: files\n    path: .\n    direction: send\n    permissions: {read: true}\n    enabled: true\n    exclude: "
+	cfg, err := Read(writeConfig(t, base+"['*.pem', 'private']\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, grants := cfg.Resources()
+	if len(grants) != 1 || len(grants[0].Exclude) != 2 {
+		t.Fatalf("exclude not persisted: %+v", grants)
+	}
+	for _, invalid := range []string{"['[invalid']", "['dir/file']", "['']"} {
+		if _, err := Read(writeConfig(t, base+invalid+"\n")); err == nil {
+			t.Fatalf("accepted %s", invalid)
+		}
+	}
+}
+
+func TestCanaryPathsConfiguration(t *testing.T) {
+	root := t.TempDir()
+	base := "version: 1\nmounts:\n  - id: files\n    name: Files\n    local_path: " + root + "\n    mode: read_only\n    canary_paths: "
+	cfg, err := Read(writeConfig(t, base+"['decoys/token.txt']\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mounts, _ := cfg.Resources()
+	if len(mounts) != 1 || len(mounts[0].CanaryPaths) != 1 {
+		t.Fatalf("canary paths missing: %+v", mounts)
+	}
+	for _, invalid := range []string{"['../secret']", "['/absolute']", "['.']", "['a/../b']", "['a', 'a']"} {
+		if _, err := Read(writeConfig(t, base+invalid+"\n")); err == nil {
+			t.Fatalf("accepted invalid canary: %s", invalid)
 		}
 	}
 }

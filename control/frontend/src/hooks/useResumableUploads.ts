@@ -184,6 +184,9 @@ export function useResumableUploads({
           patch(id, { status: "cancelled", resumable: !!entry.session });
           return;
         }
+        if ((error as { code?: string })?.code === "upload_content_rejected") {
+          entry.session = undefined;
+        }
         patch(id, {
           status: isConflict(error) ? "conflict" : "failed",
           resumable: !!entry.session,

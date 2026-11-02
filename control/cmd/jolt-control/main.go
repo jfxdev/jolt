@@ -96,6 +96,12 @@ func main() {
 		os.Exit(1)
 	}
 	defer storage.Close()
+	if cfg.AuditHashChain {
+		if err := storage.EnableAuditChain(context.Background()); err != nil {
+			logger.Error("enable audit hash chain", "error", err)
+			os.Exit(1)
+		}
+	}
 	storedCheck, checkErr := storage.Metadata(context.Background(), "encryption_key_check")
 	if errors.Is(checkErr, store.ErrNotFound) {
 		encryptedCheck, encryptErr := security.Encrypt(cfg.EncryptionKey, security.EncryptionKeyCheck)
@@ -135,6 +141,14 @@ func main() {
 		// kept for a grace period so the audit trail outlives the link.
 		Run: func(ctx context.Context, now time.Time) (int64, error) {
 			return storage.PurgeExpiredShares(ctx, now.Add(-expiredShareRetention))
+		},
+	}, sweep.Task{
+		Name: "audit_retention",
+		Run: func(ctx context.Context, now time.Time) (int64, error) {
+			if cfg.AuditRetentionDays == 0 {
+				return 0, nil
+			}
+			return storage.PurgeAuditBefore(ctx, now.Add(-time.Duration(cfg.AuditRetentionDays)*24*time.Hour))
 		},
 	})
 	go sweepRunner.Start(sweepCtx)

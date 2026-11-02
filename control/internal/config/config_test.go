@@ -89,3 +89,27 @@ func TestTransferMaxSourcePathsUsesDefaultAndRejectsInvalidValues(t *testing.T) 
 		t.Fatal("expected invalid transfer max source paths error")
 	}
 }
+
+func TestAgentProxyAndAuditConfiguration(t *testing.T) {
+	t.Setenv("CONTROL_TOWER_ADMIN_PASSWORD", "a-secure-admin-password")
+	t.Setenv("CONTROL_TOWER_DB_ENCRYPTION_KEY", "a-secure-encryption-key-that-is-long-enough")
+	t.Setenv("CONTROL_TOWER_TRUSTED_PROXIES", "10.0.0.1/8, 2001:db8::/32")
+	t.Setenv("CONTROL_TOWER_AUDIT_RETENTION_DAYS", "45")
+	t.Setenv("CONTROL_TOWER_AUDIT_SEARCH_QUERY", "true")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.TrustedProxies) != 2 || cfg.TrustedProxies[0].String() != "10.0.0.0/8" || cfg.AuditRetentionDays != 45 || !cfg.AuditSearchQuery {
+		t.Fatalf("agent config: %+v", cfg)
+	}
+	t.Setenv("CONTROL_TOWER_TRUSTED_PROXIES", "invalid")
+	if _, err := Load(); err == nil {
+		t.Fatal("invalid proxy CIDR accepted")
+	}
+	t.Setenv("CONTROL_TOWER_TRUSTED_PROXIES", "")
+	t.Setenv("CONTROL_TOWER_AUDIT_RETENTION_DAYS", "-1")
+	if _, err := Load(); err == nil {
+		t.Fatal("negative audit retention accepted")
+	}
+}

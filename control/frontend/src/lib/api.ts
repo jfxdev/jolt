@@ -151,6 +151,8 @@ export const api = {
     request<ListResponse<ServiceAccount>>(
       withSearch("/api/v1/control-tower/service-accounts", query),
     ),
+  disableAgentAccounts: () =>
+    request<{ disabled: number }>("/api/v1/control-tower/service-accounts/disable?kind=agent", { method: "POST" }),
   createServiceAccount: (account: object) =>
     request<{
       service_account: ServiceAccount;
@@ -195,6 +197,8 @@ export const api = {
       `/api/v1/control-tower/service-accounts/${encodeURIComponent(accountId)}/tokens/${encodeURIComponent(tokenId)}`,
       { method: "DELETE" },
     ),
+  updateAgentTokenLimits: (accountId: string, tokenId: string, limits: object) =>
+    request<null>(`/api/v1/control-tower/service-accounts/${encodeURIComponent(accountId)}/tokens/${encodeURIComponent(tokenId)}`, { method: "PATCH", body: JSON.stringify({ agent_limits: limits }) }),
   accessGroups: (query = "") =>
     request<ListResponse<AccessGroup>>(
       withSearch("/api/v1/control-tower/access-groups", query),
@@ -290,6 +294,12 @@ export const api = {
     request<{ policy_ids: string[] }>(
       `/api/v1/control-tower/users/${encodeURIComponent(userId)}/policies`,
     ),
+  temporaryPolicies: (subject: "users" | "service-accounts", id: string) =>
+    request<{ items: import("./types").TemporaryPolicyAssignment[] }>(`/api/v1/control-tower/${subject}/${encodeURIComponent(id)}/policies/temporary`),
+  grantTemporaryPolicy: (subject: "users" | "service-accounts", id: string, policyId: string, durationSeconds: number) =>
+    request<import("./types").TemporaryPolicyAssignment>(`/api/v1/control-tower/${subject}/${encodeURIComponent(id)}/policies/temporary`, { method: "POST", body: JSON.stringify({ policy_id: policyId, duration_seconds: durationSeconds }) }),
+  revokeTemporaryPolicy: (subject: "users" | "service-accounts", id: string, policyId: string) =>
+    request<null>(`/api/v1/control-tower/${subject}/${encodeURIComponent(id)}/policies/temporary/${encodeURIComponent(policyId)}`, { method: "DELETE" }),
   setUserPolicies: (userId: string, policyIds: string[]) =>
     request<null>(
       `/api/v1/control-tower/users/${encodeURIComponent(userId)}/policies`,

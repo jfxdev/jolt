@@ -24,12 +24,36 @@ The node never creates a missing mount directory. It reports it as unavailable
 and pending jobs wait for their destination mount to return.
 
 Mounts require `id`, `name`, `local_path` and `mode` (`read_only`/`read_write`).
+Optional `hidden_patterns` contains up to 64 case-insensitive basename globs,
+such as `['.env', '*.pem', 'private-keys']`. Patterns apply to every path
+component, including directories, and are validated at startup. Matching
+entries are excluded from listings, searches, archives and transfer manifests;
+direct reads return 404 and destinations with hidden names are rejected.
+Recursive deletes and moves fail if a protected descendant exists. Existing
+destinations containing protected descendants cannot be overwritten. This is
+name-based filtering, not content inspection; host-side access is unaffected.
+Moving a directory between nodes requires both peers to support protected-move
+validation. Older peers must be upgraded before a move; copy remains available.
+
+Optional `canary_paths` contains up to 64 normalized, mount-relative file paths
+that the operator has populated with decoy data. Reads and metadata requests,
+including archives containing a decoy, produce an internal signal consumed by
+the Control Tower. A canary does not override hidden patterns or access policy;
+never place real credentials in a decoy.
 Use explicit `enabled: true` and `published: true` when desired. Grants require
 `id`, `peer_node_id`, `mount_id`, a mount-relative `path`, `direction` and compatible
 `permissions`. Omitted `enabled`/`published`/permission booleans are false.
 Receiving grants default to conflict policy `fail`; send grants have no conflict
 policy. Grants can be declared before pairing and become effective only after
 trust and filesystem checks succeed. Trust never grants access by itself.
+
+An optional grant `exclude` lists up to 64 case-insensitive basename globs.
+Sending grants omit matching files and directories before manifest pagination
+and refuse direct reads or moves of protected content. Receiving grants filter
+excluded destination entries from copies, refuse moves involving them, and
+revalidate persisted job destinations on resume and before publication. Upgrade
+nodes before adding this field; older versions do not enforce the restriction
+and may refuse the configuration.
 
 IDs bind permanently to the mount root or the grant's peer/mount/path/direction.
 Changing that identity requires a new ID. Removing and readding the same ID does
@@ -109,6 +133,26 @@ state. Receipts follow `upload_session_ttl`, remain queryable by ID, and do not
 reserve an active upload slot. Recovery compares SHA-256 content before accepting
 a previously published destination. See [sharing and browsing](SHARING_AND_BROWSING.md)
 for verification pages, directory cursors and job summaries.
+
+Optional `upload_inspection` is disabled by default. When enabled, the node
+inspects bytes before publishing both ordinary and resumable uploads:
+
+```yaml
+upload_inspection:
+  enabled: true
+  block_executables: true
+  allowed_media_types: ["text/plain", "application/pdf"]
+```
+
+`block_executables` defaults to true and checks common executable and script
+signatures. The optional MIME allowlist uses content sniffing; an empty list
+allows any detected type. A rejection returns `upload_content_rejected`, removes
+the partial and upload session, and preserves an existing destination. These
+checks have false positives and negatives; they do not inspect contents inside
+archives or guarantee that a file is safe. Configuration takes effect only
+after restart. Rejection is persisted before cleanup; after an interruption,
+the next request for that session or a new upload on the mount completes cleanup
+without treating the rejected partial as a published file.
 
 Control Tower node-token rotation records its encrypted candidate before calling
 the node. Retrying after a lost response reconciles that same candidate. A node

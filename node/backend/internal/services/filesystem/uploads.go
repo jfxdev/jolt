@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 // Filesystem writers use a separate scope from the HTTP/state lifecycle lock.
@@ -167,6 +169,9 @@ func (s *Service) CompleteUpload(ctx context.Context, mountID, destination, uplo
 			return info.Size(), checksum, fmt.Errorf("%w: upload checksum mismatch", ErrInvalid)
 		}
 	}
+	if err := s.inspectUpload(partial); err != nil {
+		return info.Size(), checksum, err
+	}
 	if err := partial.Close(); err != nil {
 		return info.Size(), checksum, err
 	}
@@ -190,6 +195,19 @@ func (s *Service) CompleteUpload(ctx context.Context, mountID, destination, uplo
 // an error: aborting an upload that never sent a byte must still succeed.
 func (s *Service) AbortUpload(ctx context.Context, mountID, destination, uploadID string) error {
 	_, dst, err := s.resolve(ctx, mountID, destination, true)
+	if errors.Is(err, ErrHiddenName) {
+		// The operator may hide a destination while an upload is in progress.
+		// Cleanup can unlink only its internal partial, never the destination.
+		mount, mountErr := s.GetMount(ctx, mountID)
+		if mountErr != nil {
+			return mountErr
+		}
+		clean := cleanRelative(destination)
+		if filepath.IsAbs(destination) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return ErrTraversal
+		}
+		dst, err = filepath.Join(mount.LocalPath, clean), nil
+	}
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			// The destination's parent is gone, so the partial is gone with it.
