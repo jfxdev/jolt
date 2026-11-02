@@ -2880,6 +2880,9 @@ func (s *Server) rejectConnection(w http.ResponseWriter, r *http.Request) {
 // restored so the proxy can still forward it; everything else uses ?path=.
 func fileTargetsFromRequest(r *http.Request) (fileTargets, error) {
 	targets := fileTargets{}
+	if r.Method == http.MethodPut {
+		targets.Overwrite, _ = strconv.ParseBool(r.URL.Query().Get("overwrite"))
+	}
 	base := strings.TrimSpace(r.URL.Query().Get("path"))
 	if base != "" {
 		targets.Paths = append(targets.Paths, base)
@@ -2915,6 +2918,7 @@ func fileTargetsFromRequest(r *http.Request) (fileTargets, error) {
 	if strings.TrimSpace(payload.Path) != "" {
 		targets.Paths = append(targets.Paths, payload.Path)
 	}
+	targets.Overwrite = payload.Overwrite
 	targets.Source = payload.SourcePath
 	targets.Destination = payload.DestinationPath
 	targets.ConflictPolicy = strings.ToLower(strings.TrimSpace(payload.ConflictPolicy))
@@ -4064,6 +4068,7 @@ func requirementsFor(paths []string, capability string) []authorizationRequireme
 // sides need different capabilities.
 type fileTargets struct {
 	ConflictPolicy string
+	Overwrite      bool
 	Paths          []string
 	Source         string
 	Destination    string
@@ -4117,6 +4122,9 @@ func nodeAuthorizationRequirements(nodeID, resource, method string, targets file
 			switch method {
 			case http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodDelete:
 				requirements := requirementsFor(scopes, "create")
+				if targets.Overwrite && (method == http.MethodPost || method == http.MethodPatch) {
+					requirements = append(requirements, requirementsFor(scopes, "update")...)
+				}
 				if method == http.MethodPatch || method == http.MethodPost && len(segments) == 4 {
 					requirements = append(requirements, authorizationRequirement{Path: prefix + "/jobs", Capability: "create"})
 				}
@@ -4141,7 +4149,11 @@ func nodeAuthorizationRequirements(nodeID, resource, method string, targets file
 			}
 			return requirementsFor(scopes, "list")
 		case http.MethodPut:
-			return requirementsFor(scopes, "create")
+			requirements := requirementsFor(scopes, "create")
+			if targets.Overwrite {
+				requirements = append(requirements, requirementsFor(scopes, "update")...)
+			}
+			return requirements
 		case http.MethodDelete:
 			return requirementsFor(scopes, "delete")
 		case http.MethodPost:

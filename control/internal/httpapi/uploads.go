@@ -12,6 +12,7 @@ type uploadSessionView struct {
 	ID          string `json:"upload_id"`
 	MountID     string `json:"mount_id"`
 	Destination string `json:"destination_path"`
+	Overwrite   *bool  `json:"overwrite"`
 }
 
 // Resolve an upload ID through the node's persisted session, never through a
@@ -65,7 +66,12 @@ func (s *Server) uploadTargets(w http.ResponseWriter, r *http.Request, resource 
 		writeError(w, r, http.StatusBadGateway, "invalid_upload_session", "O node retornou uma sessão inválida.")
 		return fileTargets{}, true, false
 	}
-	return fileTargets{Paths: []string{session.Destination}}, false, true
+	if session.Overwrite == nil && (r.Method == http.MethodPost || r.Method == http.MethodPatch) {
+		writeError(w, r, http.StatusConflict, "node_upgrade_required", "O node não informou se o upload sobrescreve o destino. Atualize o node.")
+		return fileTargets{}, true, false
+	}
+	overwrite := session.Overwrite != nil && *session.Overwrite
+	return fileTargets{Paths: []string{session.Destination}, Overwrite: overwrite}, false, true
 }
 
 func (s *Server) writeUploadLookupError(w http.ResponseWriter, r *http.Request, err error) {
