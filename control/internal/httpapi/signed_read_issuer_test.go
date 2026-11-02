@@ -160,7 +160,7 @@ func TestIssueSignedLocalReadUsesCurrentTypedPoliciesAndDeadline(t *testing.T) {
 	})}
 	f := setupAgent(t, store.DefaultAgentLimits(), client)
 	now := time.Now().UTC().Truncate(time.Second)
-	policy := store.Policy{ID: "typed", Name: "typed", CreatedAt: now, UpdatedAt: now, Rules: []rbac.Rule{{Path: "nodes/n1/files/mounts/m/**", Capabilities: []string{"deny", "read"}, FileTypes: &filetypes.Selector{Extensions: []string{"pem"}}}}}
+	policy := store.Policy{ID: "typed", Name: "typed", CreatedAt: now, UpdatedAt: now, Rules: []rbac.Rule{{Path: "nodes/n1/files/mounts/m/**", Capabilities: []string{"DENY", "READ"}, FileTypes: &filetypes.Selector{Extensions: []string{"pem"}}}}}
 	if err := f.storage.CreatePolicy(context.Background(), policy); err != nil {
 		t.Fatal(err)
 	}
@@ -251,5 +251,17 @@ func TestIssueSignedLocalReadBoundsCredentialExpiryAndReloadsLimits(t *testing.T
 	}
 	if _, err := s.issueSignedLocalRead(r, "n1", "m", ".", "list", now); err == nil {
 		t.Fatal("stale agent limits were accepted")
+	}
+	limits.Capabilities = &[]string{"list"}
+	limits.AllowedCIDRs = []string{"10.0.0.0/8"}
+	if err := f.storage.UpdateAgentTokenLimits(context.Background(), f.accountID, credential.ID, limits); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.issueSignedLocalRead(r, "n1", "m", ".", "list", now); err == nil {
+		t.Fatal("changed CIDR was ignored")
+	}
+	r.RemoteAddr = "10.1.2.3:1234"
+	if _, err := s.issueSignedLocalRead(r, "n1", "m", ".", "list", now); err != nil {
+		t.Fatalf("allowed CIDR rejected: %v", err)
 	}
 }
