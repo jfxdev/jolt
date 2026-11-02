@@ -21,6 +21,7 @@ func (s *Server) archive(w http.ResponseWriter, r *http.Request) {
 	mountID := r.PathValue("mountID")
 	relative := r.URL.Query().Get("path")
 	options := filesystem.ArchiveOptions{
+		Filter:      signedAccessFilter(r),
 		Names:       archiveNames(r),
 		Compress:    boolQuery(r, "compress"),
 		MaxEntries:  s.config.ArchiveMaxEntries,
@@ -68,6 +69,7 @@ func (s *Server) archive(w http.ResponseWriter, r *http.Request) {
 func (s *Server) archivePlan(w http.ResponseWriter, r *http.Request) {
 	plan, err := s.files.PlanArchive(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path"),
 		filesystem.ArchiveOptions{
+			Filter:     signedAccessFilter(r),
 			Names:      archiveNames(r),
 			MaxEntries: s.config.ArchiveMaxEntries,
 			MaxBytes:   s.config.ArchiveMaxBytes,
@@ -104,6 +106,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Jolt-Agent-Search-Applied", "1")
 	}
 	options := filesystem.SearchOptions{
+		Filter:     signedAccessFilter(r),
 		Query:      r.URL.Query().Get("query"),
 		Type:       strings.ToLower(strings.TrimSpace(r.URL.Query().Get("type"))),
 		Extensions: splitList(r.URL.Query().Get("extensions")),
@@ -158,7 +161,7 @@ func (s *Server) diskUsage(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, s.config.DiskUsageTimeout)
 	defer cancel()
 	result, err := s.files.DiskUsage(ctx, r.PathValue("mountID"), r.URL.Query().Get("path"),
-		filesystem.DiskUsageOptions{MaxEntries: s.config.DiskUsageMaxEntries})
+		filesystem.DiskUsageOptions{MaxEntries: s.config.DiskUsageMaxEntries, Filter: signedAccessFilter(r)})
 	if err != nil {
 		s.fail(w, r, err)
 		return

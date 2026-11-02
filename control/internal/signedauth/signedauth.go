@@ -91,7 +91,7 @@ func VerifyLocalRead(token string, keys map[string]ed25519.PublicKey, receivingN
 	}
 	b := claims.Binding
 	switch operation {
-	case "list", "metadata", "content":
+	case "list", "metadata", "content", "archive", "archive_plan", "search", "disk_usage":
 	default:
 		return Claims{}, nil, ErrInvalid
 	}

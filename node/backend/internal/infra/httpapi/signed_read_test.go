@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
@@ -48,7 +50,7 @@ func TestSignedLocalReadsAndUnsupportedRoutes(t *testing.T) {
 	}
 	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
 	identity := entities.Identity{NodeID: "node"}
-	cfg := config.Config{ControlTowerToken: "secret", AuthorizationKeys: map[string]ed25519.PublicKey{"key": key.Public().(ed25519.PublicKey)}}
+	cfg := config.Config{ControlTowerToken: "secret", AuthorizationKeys: map[string]ed25519.PublicKey{"key": key.Public().(ed25519.PublicKey)}, SearchMaxResults: 200, SearchMaxEntries: 10000, SearchTimeout: 10 * time.Second, DiskUsageMaxEntries: 10000, DiskUsageTimeout: 10 * time.Second, ArchiveMaxEntries: 1000, ArchiveMaxBytes: 1 << 20}
 	handler := New(cfg, identity, files, jobs.New(store, files), pairing.New(store, identity), grants.New(store, files), slog.New(slog.NewTextHandler(io.Discard, nil)), metrics.NewRegistry())
 	contextJSON := json.RawMessage(`{"version":1,"rules":[{"policy_id":"allow","path":"nodes/node/files/mounts/editor/**","capabilities":["list","read"]},{"policy_id":"hidden","path":"nodes/node/files/mounts/editor/**","capabilities":["deny","read"],"file_types":{"extensions":["pem"]}},{"policy_id":"visible","path":"nodes/node/files/mounts/editor/**","capabilities":["deny","read"],"file_types":{"extensions":["lock"]},"visibility":"visible"}]}`)
 	sign := func(operation, mount, root string) string {
@@ -70,7 +72,7 @@ func TestSignedLocalReadsAndUnsupportedRoutes(t *testing.T) {
 		handler.ServeHTTP(w, r)
 		return w.ResponseRecorder
 	}
-	if node := call("GET", "/api/v1/node", ""); node.Code != 200 || !strings.Contains(node.Body.String(), "signed_local_read_v1") {
+	if node := call("GET", "/api/v1/node", ""); node.Code != 200 || !strings.Contains(node.Body.String(), "signed_local_read_v1") || !strings.Contains(node.Body.String(), "signed_local_tree_read_v1") {
 		t.Fatalf("configured node capability: %d %s", node.Code, node.Body)
 	}
 	list := call("GET", "/api/v1/mounts/editor/files", sign("list", "editor", "."))
@@ -113,10 +115,45 @@ func TestSignedLocalReadsAndUnsupportedRoutes(t *testing.T) {
 	if canaryResponse.Code != 404 || canaryResponse.Header().Get("X-Jolt-Canary") != "1" {
 		t.Fatalf("hidden canary: %d %s", canaryResponse.Code, canaryResponse.Body)
 	}
-	for _, route := range []string{"/api/v1/mounts/editor/files/search?query=x", "/api/v1/mounts/editor/files/archive", "/api/v1/jobs"} {
+	for _, route := range []string{"/api/v1/mounts/editor/files/uploads", "/api/v1/mounts/editor/files/archive/unknown", "/api/v1/jobs"} {
 		if w := call("GET", route, sign("list", "editor", ".")); w.Code != 409 {
 			t.Fatalf("unsupported %s: %d", route, w.Code)
 		}
+	}
+	search := call("GET", "/api/v1/mounts/editor/files/search?path=.&query=.", sign("search", "editor", "."))
+	if search.Code != 200 || strings.Contains(search.Body.String(), "secret.pem") || !strings.Contains(search.Body.String(), "good.txt") || !strings.Contains(search.Body.String(), `"blocked":true`) {
+		t.Fatalf("filtered search: %d %s", search.Code, search.Body)
+	}
+	var searchCounts struct {
+		Scanned int `json:"scanned"`
+	}
+	if err := json.Unmarshal(search.Body.Bytes(), &searchCounts); err != nil || searchCounts.Scanned != 2 {
+		t.Fatalf("hidden entry leaked in search count: %+v %v", searchCounts, err)
+	}
+	usage := call("GET", "/api/v1/mounts/editor/files/disk-usage?path=.", sign("disk_usage", "editor", "."))
+	if usage.Code != 200 || strings.Contains(usage.Body.String(), "secret.pem") || strings.Contains(usage.Body.String(), "blocked.lock") || !strings.Contains(usage.Body.String(), "good.txt") {
+		t.Fatalf("filtered usage: %d %s", usage.Code, usage.Body)
+	}
+	var usageCounts struct {
+		Scanned int `json:"scanned"`
+	}
+	if err := json.Unmarshal(usage.Body.Bytes(), &usageCounts); err != nil || usageCounts.Scanned != 1 {
+		t.Fatalf("hidden entry leaked in usage count: %+v %v", usageCounts, err)
+	}
+	plan := call("GET", "/api/v1/mounts/editor/files/archive/plan?path=.", sign("archive_plan", "editor", "."))
+	if plan.Code != 200 || !strings.Contains(plan.Body.String(), `"files":1`) {
+		t.Fatalf("filtered archive plan: %d %s", plan.Code, plan.Body)
+	}
+	archive := call("GET", "/api/v1/mounts/editor/files/archive?path=.", sign("archive", "editor", "."))
+	reader, err := zip.NewReader(bytes.NewReader(archive.Body.Bytes()), int64(archive.Body.Len()))
+	if archive.Code != 200 || err != nil || len(reader.File) != 1 || reader.File[0].Name != "good.txt" {
+		t.Fatalf("filtered archive: status=%d entries=%v error=%v", archive.Code, reader, err)
+	}
+	if w := call("GET", "/api/v1/mounts/editor/files/archive?path=.&name=secret.pem", sign("archive", "editor", ".")); w.Code != 404 {
+		t.Fatalf("hidden archive selection: %d %s", w.Code, w.Body)
+	}
+	if w := call("GET", "/api/v1/mounts/editor/files/archive/plan?path=.", sign("archive", "editor", ".")); w.Code != 403 {
+		t.Fatalf("archive token replayed for plan: %d %s", w.Code, w.Body)
 	}
 	if w := call("DELETE", "/api/v1/mounts/editor/files?path=good.txt", sign("list", "editor", ".")); w.Code != 409 {
 		t.Fatalf("signed mutation was not refused: %d", w.Code)
@@ -155,7 +192,7 @@ func TestSignedReadCapabilityRequiresConfiguredKeys(t *testing.T) {
 	r.Header.Set("Authorization", "Bearer secret")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
-	if w.Code != 200 || strings.Contains(w.Body.String(), "signed_local_read_v1") {
+	if w.Code != 200 || strings.Contains(w.Body.String(), "signed_local_read_v1") || strings.Contains(w.Body.String(), "signed_local_tree_read_v1") {
 		t.Fatalf("unconfigured node capability: %d %s", w.Code, w.Body)
 	}
 }

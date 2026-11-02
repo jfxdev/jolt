@@ -29,9 +29,12 @@ func (s *Server) guardSignedContext(next http.Handler) http.Handler {
 			return
 		}
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
-		valid := (r.Method == http.MethodGet || r.Method == http.MethodHead) && len(parts) >= 5 && len(parts) <= 6 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "mounts" && parts[3] != "" && parts[4] == "files"
+		valid := (r.Method == http.MethodGet || r.Method == http.MethodHead) && len(parts) >= 5 && len(parts) <= 7 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "mounts" && parts[3] != "" && parts[4] == "files"
 		if valid && len(parts) == 6 {
-			valid = parts[5] == "metadata" || parts[5] == "content"
+			valid = parts[5] == "metadata" || parts[5] == "content" || parts[5] == "archive" || parts[5] == "search" || parts[5] == "disk-usage"
+		}
+		if valid && len(parts) == 7 {
+			valid = parts[5] == "archive" && parts[6] == "plan"
 		}
 		if !valid {
 			writeError(w, r, http.StatusConflict, "signed_context_unsupported", "Esta operação ainda não suporta autorização assinada.", nil)
@@ -117,4 +120,14 @@ func (w *signedDeadlineWriter) Write(data []byte) (int, error) {
 		w.aborted = true
 	}
 	return n, err
+}
+
+func (w *signedDeadlineWriter) Flush() {
+	if w.ctx.Err() != nil {
+		w.aborted = true
+		return
+	}
+	if err := http.NewResponseController(w.ResponseWriter).Flush(); err != nil {
+		w.aborted = true
+	}
 }

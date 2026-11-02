@@ -97,10 +97,10 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/metadata", s.signedLocalRead("metadata", s.metadata))
 	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/content", s.signedLocalRead("content", s.download))
 	mux.HandleFunc("PUT /api/v1/mounts/{mountID}/files/content", s.upload)
-	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/archive", s.archive)
-	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/archive/plan", s.archivePlan)
-	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/search", s.search)
-	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/disk-usage", s.diskUsage)
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/archive", s.signedLocalRead("archive", s.archive))
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/archive/plan", s.signedLocalRead("archive_plan", s.archivePlan))
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/search", s.signedLocalRead("search", s.search))
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/disk-usage", s.signedLocalRead("disk_usage", s.diskUsage))
 	mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/directories", s.mkdir)
 	mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/copy/plan", s.planCopy)
 	mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/copy", s.copy)
@@ -353,7 +353,7 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 	capabilities := []string{"api_filesystem", "streaming_upload", "range_download", "durable_local_jobs", "job_controls", "job_events_sse", "job_eta", "bandwidth_limits", "waiting_mount", "waiting_validation", "directory_manifests", "directory_resume", "resumable_chunks", "conflict_policies", "manual_item_overrides", "checksum_verification", "source_change_policies", "transfer_path_grants", "cluster_grouping", "mtls_peer_listener", "mtls_certificate_rotation", "mtls_certificate_rollout_diagnostics", "mtls_certificate_revocation", "identity_handover", "mtls_peer_heartbeat", "direct_file_pull", "operational_token_rotation", "idempotency", "hidden_patterns_v1", "protected_move_v1", "canary_paths_v1", "agent_search_limits_v1", "agent_secret_scan_v1", "grant_exclude_send_v1", "grant_exclude_receive_v1", "upload_inspection_v1"}
 	if len(s.config.AuthorizationKeys) > 0 {
-		capabilities = append(capabilities, "signed_local_read_v1")
+		capabilities = append(capabilities, "signed_local_read_v1", "signed_local_tree_read_v1")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"configuration": map[string]any{"source": "yaml", "apply_mode": "restart", "mounts_mutable": false, "grants_mutable": false},
@@ -2084,10 +2084,16 @@ paths:
         - {in: query, name: name, schema: {type: array, items: {type: string}}, description: Direct children to include; omit for the whole directory}
         - {in: query, name: compress, schema: {type: boolean}, description: Deflate instead of Store; off by default because media is already compressed}
         - {in: header, name: X-Jolt-Scan, schema: {type: string, enum: [secrets]}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context for this exact local archive operation}
       responses:
-        "200": {description: ZIP stream}
+        "200":
+          description: ZIP stream
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
         "400": {description: Selection exceeds the configured entry or byte limit}
-        "403": {description: secret_detected when prefix scanning detects a secret}
+        "403": {description: secret_detected, file_type_not_allowed, or invalid_signed_context}
+        "404": {description: Hidden entry or path not found}
+        "503": {description: Signed request deadline enforcement unavailable}
   /api/v1/mounts/{mountID}/files/archive/plan:
     get:
       summary: Reports what an archive would contain without writing it
@@ -2095,8 +2101,15 @@ paths:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: query, name: path, required: true, schema: {type: string}}
         - {in: query, name: name, schema: {type: array, items: {type: string}}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context for this exact archive plan}
       responses:
-        "200": {description: File count, total bytes, skipped symlinks and the configured limits}
+        "200":
+          description: File count, total bytes, skipped symlinks and the configured limits
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
+        "403": {description: file_type_not_allowed or invalid_signed_context}
+        "404": {description: Hidden entry or path not found}
+        "503": {description: Signed request deadline enforcement unavailable}
   /api/v1/mounts/{mountID}/files/search:
     get:
       summary: Searches a subtree by name and metadata
@@ -2112,6 +2125,7 @@ paths:
         - {in: query, name: path, required: true, schema: {type: string}}
         - {in: query, name: query, schema: {type: string}, description: Case-insensitive substring of the entry name}
         - {in: header, name: X-Jolt-Agent-Search, schema: {type: string, enum: ["1"]}, description: Apply the bounded agent search profile}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context for this exact search}
         - {in: query, name: type, schema: {type: string, enum: [file, directory]}}
         - {in: query, name: extensions, schema: {type: string}, description: Comma-separated extensions}
         - {in: query, name: min_size, schema: {type: integer, format: int64}}
@@ -2120,8 +2134,14 @@ paths:
         - {in: query, name: modified_before, schema: {type: string, format: date-time}}
         - {in: query, name: limit, schema: {type: integer}}
       responses:
-        "200": {description: Matching entries plus scanned count and truncation state}
+        "200":
+          description: Matching entries plus scanned count and truncation state
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
         "400": {description: No query or filter was supplied}
+        "403": {description: file_type_not_allowed or invalid_signed_context}
+        "404": {description: Hidden entry or path not found}
+        "503": {description: Signed request deadline enforcement unavailable}
   /api/v1/mounts/{mountID}/files/disk-usage:
     get:
       summary: Measures allocated disk usage recursively, largest entries first
@@ -2133,8 +2153,15 @@ paths:
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: query, name: path, schema: {type: string}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context for this exact disk usage scan}
       responses:
-        "200": {description: Total allocated bytes, direct children and scan completeness}
+        "200":
+          description: Total allocated bytes, direct children and scan completeness
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
+        "403": {description: file_type_not_allowed or invalid_signed_context}
+        "404": {description: Hidden entry or path not found}
+        "503": {description: Signed request deadline enforcement unavailable}
   /api/v1/mounts/{mountID}/files/uploads:
     get:
       summary: Lists unfinished resumable uploads for a mount
