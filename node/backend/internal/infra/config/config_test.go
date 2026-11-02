@@ -1,12 +1,16 @@
 package config
 
 import (
+	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jfxdev/jolt/backend/internal/signedauth"
 )
 
 func writeConfig(t *testing.T, body string) string {
@@ -53,6 +57,35 @@ func TestStrictYAMLConfiguration(t *testing.T) {
 	for _, field := range []string{"node_name: 123", "public_healthcheck: yes", "max_concurrent_jobs: null", "max_concurrent_jobs: 2.0", "version: '1'", "mounts: {}"} {
 		if _, err := Read(writeConfig(t, "version: 1\n"+field+"\n")); err == nil {
 			t.Fatalf("coerced invalid field %s", field)
+		}
+	}
+}
+
+func TestAuthorizationPublicKeys(t *testing.T) {
+	private := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	key := base64.StdEncoding.EncodeToString(private.Public().(ed25519.PublicKey))
+	body := "version: 1\nauthorization_public_keys:\n  - id: old\n    key: " + key + "\n  - id: current\n    key: " + key + "\n"
+	cfg, err := Read(writeConfig(t, body))
+	if err != nil || len(cfg.AuthorizationKeys) != 2 || len(cfg.AuthorizationKeys["current"]) != 32 {
+		t.Fatalf("keys=%v error=%v", cfg.AuthorizationKeys, err)
+	}
+	binding := signedauth.Binding{ActorID: "actor", CredentialID: "credential", Operation: "read", RequestID: "request", SourceNodeID: "node", SourceMountID: "mount", SourceRoot: "."}
+	claims := signedauth.Claims{Version: signedauth.Version, KeyID: "current", Binding: binding, IssuedAt: 1700000000, ExpiresAt: 1700000030, Context: json.RawMessage(`{"version":1,"rules":[]}`)}
+	token, err := signedauth.Sign(claims, private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := signedauth.Verify(token, cfg.AuthorizationKeys, binding, "node", time.Unix(claims.IssuedAt, 0)); err != nil {
+		t.Fatalf("configured key failed verification: %v", err)
+	}
+	for _, invalid := range []string{
+		"  - id: old\n    key: bad\n",
+		"  - id: 'invalid/id'\n    key: " + key + "\n",
+		"  - id: same\n    key: " + key + "\n  - id: same\n    key: " + key + "\n",
+		"  - id: old\n    key: 123\n",
+	} {
+		if _, err := Read(writeConfig(t, "version: 1\nauthorization_public_keys:\n"+invalid)); err == nil {
+			t.Fatalf("invalid key accepted: %s", invalid)
 		}
 	}
 }

@@ -21,6 +21,7 @@
 
 - `hidden_patterns` e nomes internos protegidos no filesystem; filtros em acesso direto, listagem, busca, totais, ZIP, uploads, cópias e manifestos. Há pré-validação para impedir delete, move e sobrescrita de árvores com conteúdo protegido.
 - O node anuncia capacidades específicas, incluindo `hidden_patterns_v1` e `protected_move_v1`; há verificações de compatibilidade para recursos já integrados.
+- O `node.yaml` aceita chaves públicas de autorização identificadas para rotação, e o Control Tower pode carregar a chave privada de um arquivo PKCS#8. A configuração não ativa a aplicação dos envelopes.
 - Existem testes de nomes e árvores protegidas, inclusive caminhos de transferência e tráfego entre nodes.
 
 **Falta**

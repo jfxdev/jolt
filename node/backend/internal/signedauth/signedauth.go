@@ -152,6 +152,9 @@ func identifier(value string, required bool) bool {
 	return true
 }
 
+// ValidKeyID reports whether an identifier can be used to select a signing key.
+func ValidKeyID(value string) bool { return identifier(value, true) }
+
 func endpoint(node, grant, mount, root string) bool {
 	if node == "" {
 		return grant == "" && mount == "" && root == ""

@@ -1,10 +1,75 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/jfxdev/jolt/control/internal/signedauth"
 )
+
+func TestAuthorizationSigningKeyFile(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := x509.MarshalPKCS8PrivateKey(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "authorization.pem")
+	if err := os.WriteFile(file, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encoded}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readAuthorizationSigningKey("current", file)
+	if err != nil || !got.Equal(private) {
+		t.Fatalf("private key not loaded: %v", err)
+	}
+	t.Setenv("CONTROL_TOWER_ADMIN_PASSWORD", "a-secure-admin-password")
+	t.Setenv("CONTROL_TOWER_DB_ENCRYPTION_KEY", "a-secure-encryption-key-that-is-long-enough")
+	t.Setenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID", "current")
+	t.Setenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_FILE", file)
+	cfg, err := Load()
+	if err != nil || cfg.AuthorizationSigningKeyID != "current" || !cfg.AuthorizationSigningKey.Equal(private) {
+		t.Fatalf("key configuration failed: %v", err)
+	}
+	binding := signedauth.Binding{ActorID: "actor", CredentialID: "credential", Operation: "read", RequestID: "request", SourceNodeID: "node", SourceMountID: "mount", SourceRoot: "."}
+	claims := signedauth.Claims{Version: signedauth.Version, KeyID: cfg.AuthorizationSigningKeyID, Binding: binding, IssuedAt: 1700000000, ExpiresAt: 1700000030, Context: json.RawMessage(`{"version":1,"rules":[]}`)}
+	token, err := signedauth.Sign(claims, cfg.AuthorizationSigningKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := map[string]ed25519.PublicKey{"current": private.Public().(ed25519.PublicKey)}
+	if _, _, err := signedauth.Verify(token, keys, binding, "node", time.Unix(claims.IssuedAt, 0)); err != nil {
+		t.Fatalf("configured key failed signing: %v", err)
+	}
+	encodedConfig, err := json.Marshal(cfg)
+	if err != nil || strings.Contains(string(encodedConfig), "AuthorizationSigningKey\"") {
+		t.Fatal("private signing key was serialized")
+	}
+	t.Setenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_FILE", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("partial key configuration accepted")
+	}
+	for _, tc := range []struct{ id, file string }{{"", file}, {"bad/id", file}, {"current", ""}, {"current", file + "-missing"}} {
+		if _, err := readAuthorizationSigningKey(tc.id, tc.file); err == nil {
+			t.Fatalf("invalid key source accepted: %+v", tc)
+		}
+	}
+	if err := os.WriteFile(file, []byte("not a key"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readAuthorizationSigningKey("current", file); err == nil {
+		t.Fatal("invalid key accepted")
+	}
+}
 
 func TestValidateNodeEndpoint(t *testing.T) {
 	got, err := ValidateNodeEndpoint("https://node.example.test:8443/api?ignored=true")

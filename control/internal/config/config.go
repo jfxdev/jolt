@@ -1,36 +1,44 @@
 package config
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/jfxdev/jolt/control/internal/signedauth"
 )
 
 type Config struct {
-	AuditRetentionDays     int
-	AuditHashChain         bool
-	AuditSearchQuery       bool
-	TrustedProxies         []netip.Prefix
-	Address                string
-	DataDir                string
-	StaticDir              string
-	AdminUsername          string
-	AdminPassword          string
-	EncryptionKey          []byte
-	SecureCookies          bool
-	TransferMaxSourcePaths int
-	NodeCAFile             string
-	NodeClientCertFile     string
-	NodeClientKeyFile      string
-	PublicBaseURL          string
-	MetricsToken           string
+	AuthorizationSigningKeyID string
+	AuthorizationSigningKey   ed25519.PrivateKey `json:"-"`
+	AuditRetentionDays        int
+	AuditHashChain            bool
+	AuditSearchQuery          bool
+	TrustedProxies            []netip.Prefix
+	Address                   string
+	DataDir                   string
+	StaticDir                 string
+	AdminUsername             string
+	AdminPassword             string
+	EncryptionKey             []byte
+	SecureCookies             bool
+	TransferMaxSourcePaths    int
+	NodeCAFile                string
+	NodeClientCertFile        string
+	NodeClientKeyFile         string
+	PublicBaseURL             string
+	MetricsToken              string
 }
 
 func Load() (Config, error) {
@@ -50,6 +58,14 @@ func Load() (Config, error) {
 		PublicBaseURL:          strings.TrimRight(value("CONTROL_TOWER_PUBLIC_BASE_URL", ""), "/"),
 	}
 	var err error
+	cfg.AuthorizationSigningKeyID = strings.TrimSpace(os.Getenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID"))
+	keyFile := strings.TrimSpace(os.Getenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_FILE"))
+	if cfg.AuthorizationSigningKeyID != "" || keyFile != "" {
+		cfg.AuthorizationSigningKey, err = readAuthorizationSigningKey(cfg.AuthorizationSigningKeyID, keyFile)
+		if err != nil {
+			return Config{}, err
+		}
+	}
 	if raw := strings.TrimSpace(os.Getenv("CONTROL_TOWER_TRUSTED_PROXIES")); raw != "" {
 		for _, part := range strings.Split(raw, ",") {
 			prefix, parseErr := netip.ParsePrefix(strings.TrimSpace(part))
@@ -108,6 +124,36 @@ func Load() (Config, error) {
 	}
 	cfg.DataDir = absolute
 	return cfg, nil
+}
+
+// readAuthorizationSigningKey accepts a single unencrypted Ed25519 PKCS#8
+// private key from a file; it never stores the key in the database.
+func readAuthorizationSigningKey(id, file string) (ed25519.PrivateKey, error) {
+	if !signedauth.ValidKeyID(id) || file == "" {
+		return nil, errors.New("authorization signing key ID and file are both required")
+	}
+	f, err := os.Open(file)
+	if err != nil {
+		return nil, fmt.Errorf("open authorization signing key: %w", err)
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, 16385))
+	if err != nil || len(raw) > 16384 {
+		return nil, errors.New("cannot read authorization signing key")
+	}
+	block, rest := pem.Decode(raw)
+	if block == nil || block.Type != "PRIVATE KEY" || len(block.Headers) != 0 || len(strings.TrimSpace(string(rest))) != 0 {
+		return nil, errors.New("authorization signing key must be one unencrypted PKCS#8 PEM key")
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, errors.New("invalid authorization signing key")
+	}
+	key, ok := parsed.(ed25519.PrivateKey)
+	if !ok || len(key) != ed25519.PrivateKeySize {
+		return nil, errors.New("authorization signing key must be Ed25519")
+	}
+	return key, nil
 }
 
 func SecretValue(key string) (string, error) {

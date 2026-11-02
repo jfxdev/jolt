@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -17,6 +18,7 @@ import (
 	"github.com/jfxdev/jolt/backend/internal/entities"
 	"github.com/jfxdev/jolt/backend/internal/filepolicy"
 	"github.com/jfxdev/jolt/backend/internal/infra/yamlutil"
+	"github.com/jfxdev/jolt/backend/internal/signedauth"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -47,54 +49,62 @@ type UploadInspectionConfig struct {
 	BlockExecutables  bool     `yaml:"block_executables" json:"block_executables"`
 	AllowedMediaTypes []string `yaml:"allowed_media_types" json:"allowed_media_types"`
 }
+
+type AuthorizationPublicKey struct {
+	ID  string `yaml:"id"`
+	Key string `yaml:"key"`
+}
+
 type Config struct {
-	UploadInspection         UploadInspectionConfig `yaml:"upload_inspection"`
-	Version                  int                    `yaml:"version"`
-	Mounts                   []MountConfig          `yaml:"mounts"`
-	TransferGrants           []GrantConfig          `yaml:"transfer_grants"`
-	FilePath                 string                 `yaml:"-"`
-	Revision                 string                 `yaml:"-"`
-	PublicYAML               string                 `yaml:"-"`
-	UploadMaxBytes           int64                  `yaml:"upload_max_bytes"`
-	UploadMinFreeBytes       int64                  `yaml:"upload_min_free_bytes"`
-	UploadMaxSessions        int                    `yaml:"upload_max_sessions"`
-	UploadMaxReservedBytes   int64                  `yaml:"upload_max_reserved_bytes"`
-	NodeName                 string                 `yaml:"node_name"`
-	APIAddress               string                 `yaml:"api_address"`
-	APITLSCertFile           string                 `yaml:"api_tls_cert_file"`
-	APITLSKeyFile            string                 `yaml:"api_tls_key_file"`
-	APITLSClientCAFile       string                 `yaml:"api_tls_client_ca_file"`
-	MTLSAddress              string                 `yaml:"mtls_address"`
-	MTLSPublicEndpoint       string                 `yaml:"mtls_public_endpoint"`
-	DataDir                  string                 `yaml:"data_dir"`
-	KeysDir                  string                 `yaml:"keys_dir"`
-	ControlTowerToken        string                 `yaml:"-"`
-	MetricsToken             string                 `yaml:"-"`
-	EncryptionKey            []byte                 `yaml:"-"`
-	PublicHealth             bool                   `yaml:"public_healthcheck"`
-	ShutdownTimeout          time.Duration          `yaml:"shutdown_timeout"`
-	MaxConcurrentJobs        int                    `yaml:"max_concurrent_jobs"`
-	JobMaxAttempts           int                    `yaml:"job_max_attempts"`
-	CopyChunkSize            int64                  `yaml:"copy_chunk_size_bytes"`
-	NodeBandwidthLimit       int64                  `yaml:"node_bandwidth_limit_bytes_per_second"`
-	MaxParallelFilesPerJob   int                    `yaml:"max_parallel_files_per_job"`
-	MaxParallelChunksPerFile int                    `yaml:"max_parallel_chunks_per_file"`
-	TransferConnectTimeout   time.Duration          `yaml:"transfer_connect_timeout"`
-	TransferIdleReadTimeout  time.Duration          `yaml:"transfer_idle_read_timeout"`
-	TransferChunkTimeout     time.Duration          `yaml:"transfer_chunk_timeout"`
-	JobValidationTimeout     time.Duration          `yaml:"job_validation_timeout"`
-	JobNoProgressTimeout     time.Duration          `yaml:"job_no_progress_timeout"`
-	PeerHeartbeatInterval    time.Duration          `yaml:"peer_heartbeat_interval"`
-	PeerHeartbeatTimeout     time.Duration          `yaml:"peer_heartbeat_timeout"`
-	PeerFailureThreshold     int                    `yaml:"peer_failure_threshold"`
-	SearchMaxResults         int                    `yaml:"search_max_results"`
-	SearchMaxEntries         int                    `yaml:"search_max_entries"`
-	SearchTimeout            time.Duration          `yaml:"search_timeout"`
-	DiskUsageMaxEntries      int                    `yaml:"disk_usage_max_entries"`
-	DiskUsageTimeout         time.Duration          `yaml:"disk_usage_timeout"`
-	ArchiveMaxEntries        int                    `yaml:"archive_max_entries"`
-	ArchiveMaxBytes          int64                  `yaml:"archive_max_bytes"`
-	UploadSessionTTL         time.Duration          `yaml:"upload_session_ttl"`
+	AuthorizationPublicKeys  []AuthorizationPublicKey     `yaml:"authorization_public_keys,omitempty"`
+	AuthorizationKeys        map[string]ed25519.PublicKey `yaml:"-" json:"-"`
+	UploadInspection         UploadInspectionConfig       `yaml:"upload_inspection"`
+	Version                  int                          `yaml:"version"`
+	Mounts                   []MountConfig                `yaml:"mounts"`
+	TransferGrants           []GrantConfig                `yaml:"transfer_grants"`
+	FilePath                 string                       `yaml:"-"`
+	Revision                 string                       `yaml:"-"`
+	PublicYAML               string                       `yaml:"-"`
+	UploadMaxBytes           int64                        `yaml:"upload_max_bytes"`
+	UploadMinFreeBytes       int64                        `yaml:"upload_min_free_bytes"`
+	UploadMaxSessions        int                          `yaml:"upload_max_sessions"`
+	UploadMaxReservedBytes   int64                        `yaml:"upload_max_reserved_bytes"`
+	NodeName                 string                       `yaml:"node_name"`
+	APIAddress               string                       `yaml:"api_address"`
+	APITLSCertFile           string                       `yaml:"api_tls_cert_file"`
+	APITLSKeyFile            string                       `yaml:"api_tls_key_file"`
+	APITLSClientCAFile       string                       `yaml:"api_tls_client_ca_file"`
+	MTLSAddress              string                       `yaml:"mtls_address"`
+	MTLSPublicEndpoint       string                       `yaml:"mtls_public_endpoint"`
+	DataDir                  string                       `yaml:"data_dir"`
+	KeysDir                  string                       `yaml:"keys_dir"`
+	ControlTowerToken        string                       `yaml:"-"`
+	MetricsToken             string                       `yaml:"-"`
+	EncryptionKey            []byte                       `yaml:"-"`
+	PublicHealth             bool                         `yaml:"public_healthcheck"`
+	ShutdownTimeout          time.Duration                `yaml:"shutdown_timeout"`
+	MaxConcurrentJobs        int                          `yaml:"max_concurrent_jobs"`
+	JobMaxAttempts           int                          `yaml:"job_max_attempts"`
+	CopyChunkSize            int64                        `yaml:"copy_chunk_size_bytes"`
+	NodeBandwidthLimit       int64                        `yaml:"node_bandwidth_limit_bytes_per_second"`
+	MaxParallelFilesPerJob   int                          `yaml:"max_parallel_files_per_job"`
+	MaxParallelChunksPerFile int                          `yaml:"max_parallel_chunks_per_file"`
+	TransferConnectTimeout   time.Duration                `yaml:"transfer_connect_timeout"`
+	TransferIdleReadTimeout  time.Duration                `yaml:"transfer_idle_read_timeout"`
+	TransferChunkTimeout     time.Duration                `yaml:"transfer_chunk_timeout"`
+	JobValidationTimeout     time.Duration                `yaml:"job_validation_timeout"`
+	JobNoProgressTimeout     time.Duration                `yaml:"job_no_progress_timeout"`
+	PeerHeartbeatInterval    time.Duration                `yaml:"peer_heartbeat_interval"`
+	PeerHeartbeatTimeout     time.Duration                `yaml:"peer_heartbeat_timeout"`
+	PeerFailureThreshold     int                          `yaml:"peer_failure_threshold"`
+	SearchMaxResults         int                          `yaml:"search_max_results"`
+	SearchMaxEntries         int                          `yaml:"search_max_entries"`
+	SearchTimeout            time.Duration                `yaml:"search_timeout"`
+	DiskUsageMaxEntries      int                          `yaml:"disk_usage_max_entries"`
+	DiskUsageTimeout         time.Duration                `yaml:"disk_usage_timeout"`
+	ArchiveMaxEntries        int                          `yaml:"archive_max_entries"`
+	ArchiveMaxBytes          int64                        `yaml:"archive_max_bytes"`
+	UploadSessionTTL         time.Duration                `yaml:"upload_session_ttl"`
 }
 
 func (c Config) APITLSEnabled() bool { return c.APITLSCertFile != "" && c.APITLSKeyFile != "" }
@@ -188,6 +198,17 @@ func Read(file string) (Config, error) {
 	}
 	if c.Version != 1 {
 		return c, fail("version", "must be 1")
+	}
+	if len(c.AuthorizationPublicKeys) > 16 {
+		return c, fail("authorization_public_keys", "at most 16 keys are allowed")
+	}
+	c.AuthorizationKeys = make(map[string]ed25519.PublicKey, len(c.AuthorizationPublicKeys))
+	for _, entry := range c.AuthorizationPublicKeys {
+		key, decodeErr := base64.StdEncoding.Strict().DecodeString(entry.Key)
+		if !signedauth.ValidKeyID(entry.ID) || decodeErr != nil || len(key) != ed25519.PublicKeySize || c.AuthorizationKeys[entry.ID] != nil {
+			return c, fail("authorization_public_keys", "invalid or duplicate key identifier or Ed25519 public key")
+		}
+		c.AuthorizationKeys[entry.ID] = ed25519.PublicKey(key)
 	}
 	if c.UploadMaxBytes < 1 || c.UploadMaxBytes > 1<<50 {
 		return c, fail("upload_max_bytes", "value outside supported limits")

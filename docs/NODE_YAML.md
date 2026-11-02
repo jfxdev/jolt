@@ -68,6 +68,22 @@ include `configured_enabled` and `inactive_reason`.
 
 ## State and keys
 
+The in-progress signed-authorization integration accepts a list of trusted
+Ed25519 public keys in `node.yaml`, using a unique `id` and a standard Base64
+encoding of the 32-byte public key. Multiple keys allow a rotation overlap:
+
+```yaml
+authorization_public_keys:
+  - id: current
+    key: "BASE64_ENCODED_32_BYTE_PUBLIC_KEY"
+```
+
+The Control Tower can load the corresponding unencrypted PKCS#8 PEM private
+key from `CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_FILE` with its matching
+`CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID`. Both values must be supplied
+together. These settings only provision keys: signed contexts are not yet
+enforced by node endpoints or used to renew jobs.
+
 Generate a random key with `openssl rand -base64 32`, save it outside the data,
 identity and configuration files, and supply exactly one of
 `JOLT_STATE_ENCRYPTION_KEY` or `JOLT_STATE_ENCRYPTION_KEY_FILE`. Passphrases and
