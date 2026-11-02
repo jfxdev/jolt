@@ -117,6 +117,10 @@ func validateUniqueJSON(data []byte) error {
 	return nil
 }
 
+// ValidateUniqueJSON rejects duplicate keys and excessive nesting before
+// security-sensitive JSON is decoded into a struct.
+func ValidateUniqueJSON(data []byte) error { return validateUniqueJSON(data) }
+
 func (c Context) Compile() (*Filter, error) {
 	if c.Version != 1 || len(c.Rules) > MaxContextRules {
 		return nil, errors.New("unsupported context")

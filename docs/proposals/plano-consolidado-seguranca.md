@@ -61,6 +61,7 @@
 **Código existente**
 
 - Seletores e avaliadores de contexto versionado nos dois módulos, com casos dourados comuns, limites de tamanho e validação estrita.
+- Ambos os módulos possuem um envelope interno Ed25519 com contexto limitado, validade máxima de 30 segundos, verificação de destinatário e vínculo completo da operação; os testes compartilham um vetor determinístico. Esse envelope ainda não está conectado aos handlers nem renova jobs.
 - O store do Control Tower já preserva seletores e visibilidade em migração aditiva; regras tipadas gravadas internamente elevam o marcador mínimo para a versão 2. O avaliador legado recusa permissões tipadas e trata negações tipadas de forma conservadora.
 - Filtros internos no filesystem para leitura direta, listagem, busca, uso de disco, ZIP, criação de diretório, upload simples, cópia de arquivo e árvore, e pré-validação de delete e move. A implementação inclui testes focados de ocultação, destinos e sobrescritas.
 - A API recusa `file_types` e `visibility` enquanto não há aplicação integral. Os métodos internos não estão integrados aos endpoints de produção e não devem ser tratados como proteção ativa por policy.
