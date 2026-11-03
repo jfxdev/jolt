@@ -3,6 +3,9 @@ package workload
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -171,6 +174,42 @@ func TestSVIDValidationUsesTrustDomainBundleAndStrictExpiry(t *testing.T) {
 				t.Fatal("invalid SVID accepted")
 			}
 		})
+	}
+}
+
+func TestSVIDBundleRequiresAUsableAuthority(t *testing.T) {
+	edPublic, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaKey := signingKey(t)
+	ed := jose.JSONWebKey{Key: edPublic, KeyID: "ed", Use: "sig", Algorithm: "EdDSA"}
+	badEC := jose.JSONWebKey{Key: &ecKey.PublicKey, KeyID: "ec", Use: "sig", Algorithm: "ES384"}
+	rsaAuthority := jose.JSONWebKey{Key: &rsaKey.PublicKey, KeyID: "rsa", Use: "sig", Algorithm: "RS256"}
+	bundle := func(keys ...jose.JSONWebKey) []byte {
+		t.Helper()
+		encoded, err := json.Marshal(jose.JSONWebKeySet{Keys: keys})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return encoded
+	}
+	for _, keys := range [][]jose.JSONWebKey{{ed}, {badEC}} {
+		if _, err := NewSVIDValidator("provider", "example.org", "jolt", bundle(keys...)); err == nil {
+			t.Fatal("bundle without a usable SVID authority accepted")
+		}
+	}
+	v, err := NewSVIDValidator("provider", "example.org", "jolt", bundle(ed, badEC, rsaAuthority))
+	if err != nil || len(v.keys) != 1 {
+		t.Fatalf("mixed bundle: validator=%+v error=%v", v, err)
+	}
+	claims := jwt.Claims{Subject: "spiffe://example.org/workload", Audience: jwt.Audience{"jolt"}, Expiry: jwt.NewNumericDate(time.Now().Add(time.Minute))}
+	if _, err := v.Verify(sign(t, rsaKey, "rsa", claims)); err != nil {
+		t.Fatalf("usable authority rejected: %v", err)
 	}
 }
 

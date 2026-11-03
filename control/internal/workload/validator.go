@@ -188,12 +188,36 @@ func NewSVIDValidator(providerID, trustDomain, audience string, bundleJSON []byt
 		return nil, ErrInvalid
 	}
 	bundle := jwtbundle.New(td)
+	usable := make(map[string]jose.JSONWebKey, len(keys))
 	for id, key := range keys {
+		// go-spiffe's JWT-SVID parser accepts RSA, RSA-PSS and ECDSA,
+		// but not EdDSA. Ignore unusable keys in mixed bundles and fail
+		// provider loading if no usable authority remains.
+		if !usableSVIDKey(key) {
+			continue
+		}
 		if err := bundle.AddJWTAuthority(id, key.Key); err != nil {
 			return nil, ErrInvalid
 		}
+		usable[id] = key
 	}
-	return &SVIDValidator{providerID: providerID, audience: audience, trustDomain: td, bundle: bundle, keys: keys}, nil
+	if len(usable) == 0 {
+		return nil, ErrInvalid
+	}
+	return &SVIDValidator{providerID: providerID, audience: audience, trustDomain: td, bundle: bundle, keys: usable}, nil
+}
+
+func usableSVIDKey(key jose.JSONWebKey) bool {
+	switch public := key.Key.(type) {
+	case *rsa.PublicKey:
+		switch key.Algorithm {
+		case "", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512":
+			return true
+		}
+	case *ecdsa.PublicKey:
+		return key.Algorithm == "" || public.Curve == elliptic.P256() && key.Algorithm == "ES256" || public.Curve == elliptic.P384() && key.Algorithm == "ES384" || public.Curve == elliptic.P521() && key.Algorithm == "ES512"
+	}
+	return false
 }
 
 func (v *SVIDValidator) Verify(token string) (Identity, error) {
