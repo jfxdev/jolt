@@ -104,6 +104,14 @@ AES-256-GCM ciphertext. Operational records and snapshots are serialized as YAML
 inside the ciphertext. Identity JSON and certificate/key PEM files retain their
 existing formats in the separate keys directory.
 
+The first upload session persisted with an authorization identity upgrades the
+authenticated state header to version 2 before writing that session. Nodes
+that only understand version 1 refuse to open the upgraded state; existing
+version 1 records remain readable by version 2. The signed upload admission
+path is not yet enabled. Before activating it, upgrade nodes and keep a
+compatible pre-upgrade backup for rollback; older binaries that do not check
+the envelope version cannot be made safe by this marker alone.
+
 A transaction is acknowledged only after file synchronization, atomic rename
 and directory synchronization, followed by a durable authenticated sequence head.
 Missing confirmed transactions fail startup instead of silently reverting state. A single writer serializes mutations; a process

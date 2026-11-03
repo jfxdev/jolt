@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/entities"
+	"go.yaml.in/yaml/v3"
 )
 
 func TestUploadAuthorizationIdentityIsDurableAndImmutable(t *testing.T) {
@@ -83,5 +86,196 @@ func TestUploadAuthorizationIdentityIsDurableAndImmutable(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestUploadBindingSecurityVersionUpgradeSurvivesFailure(t *testing.T) {
+	for _, point := range []string{"before_file_sync", "after_file_sync", "after_rename", "after_directory_sync"} {
+		t.Run(point, func(t *testing.T) {
+			s, dir := openTest(t)
+			ctx := context.Background()
+			legacy := entities.UploadSession{ID: "legacy", MountID: "files", Destination: "legacy.txt"}
+			if err := s.CreateUploadSession(ctx, legacy); err != nil {
+				t.Fatal(err)
+			}
+			s.fault = func(at string) error {
+				if at == point {
+					return errors.New("injected failure")
+				}
+				return nil
+			}
+			bound := entities.UploadSession{ID: "bound", MountID: "files", Destination: "bound.txt", AuthorizationActorID: "actor", AuthorizationCredentialID: "credential"}
+			if err := s.CreateUploadSession(ctx, bound); !errors.Is(err, contracts.ErrStateUnavailable) {
+				t.Fatalf("upgrade failure = %v", err)
+			}
+			if _, err := s.GetUploadSession(ctx, legacy.ID); !errors.Is(err, contracts.ErrStateUnavailable) {
+				t.Fatalf("store did not stop after uncertain upgrade: %v", err)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, "store.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var header envelope
+			if err := yaml.Unmarshal(raw, &header); err != nil {
+				t.Fatal(err)
+			}
+			want := 1
+			if point == "after_rename" || point == "after_directory_sync" {
+				want = 2
+			}
+			if header.Version != want {
+				t.Fatalf("header version=%d want=%d", header.Version, want)
+			}
+			reopened, err := Open(dir, testKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			if _, err := reopened.GetUploadSession(ctx, legacy.ID); err != nil {
+				t.Fatalf("legacy data unavailable: %v", err)
+			}
+			if _, err := reopened.GetUploadSession(ctx, bound.ID); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("binding persisted before version upgrade completed: %v", err)
+			}
+		})
+	}
+}
+
+func TestVersionTwoUploadRecoveryAfterInterruptedTransaction(t *testing.T) {
+	for _, point := range []string{"before_file_sync", "after_file_sync", "after_rename", "after_directory_sync"} {
+		t.Run(point, func(t *testing.T) {
+			s, dir := openTest(t)
+			ctx := context.Background()
+			bound := entities.UploadSession{ID: "bound", MountID: "files", Destination: "file.txt", State: "open", AuthorizationActorID: "actor", AuthorizationCredentialID: "credential"}
+			if err := s.CreateUploadSession(ctx, bound); err != nil {
+				t.Fatal(err)
+			}
+			s.fault = func(at string) error {
+				if at == point {
+					return errors.New("injected failure")
+				}
+				return nil
+			}
+			bound.State = "publishing"
+			if err := s.UpdateUploadSession(ctx, bound); !errors.Is(err, contracts.ErrStateUnavailable) {
+				t.Fatalf("interrupted update = %v", err)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := Open(dir, testKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			got, err := reopened.GetUploadSession(ctx, bound.ID)
+			want := "open"
+			if point == "after_rename" || point == "after_directory_sync" {
+				want = "publishing"
+			}
+			if err != nil || got.State != want || got.AuthorizationActorID != "actor" || got.AuthorizationCredentialID != "credential" || reopened.envelopeVersion != 2 {
+				t.Fatalf("recovered session=%+v version=%d err=%v", got, reopened.envelopeVersion, err)
+			}
+		})
+	}
+}
+
+func TestUploadBindingUpgradesHeaderAndKeepsLegacyRecords(t *testing.T) {
+	s, dir := openTest(t)
+	ctx := context.Background()
+	legacy := entities.UploadSession{ID: "legacy", MountID: "files", Destination: "old.txt"}
+	bound := entities.UploadSession{ID: "bound", MountID: "files", Destination: "new.txt", AuthorizationActorID: "actor", AuthorizationCredentialID: "credential"}
+	if err := s.CreateUploadSession(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if s.envelopeVersion != 1 {
+		t.Fatal("legacy session unnecessarily upgraded state")
+	}
+	if err := s.CreateUploadSession(ctx, bound); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "store.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var header envelope
+	if err := yaml.Unmarshal(raw, &header); err != nil || header.Version != 2 {
+		t.Fatalf("header not upgraded: %+v %v", header, err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = OpenExisting(dir, testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, expected := range []entities.UploadSession{legacy, bound} {
+		got, err := s.GetUploadSession(ctx, expected.ID)
+		if err != nil || got.Destination != expected.Destination || got.AuthorizationActorID != expected.AuthorizationActorID || got.AuthorizationCredentialID != expected.AuthorizationCredentialID {
+			t.Fatalf("mixed-version session %s: %+v %v", expected.ID, got, err)
+		}
+	}
+}
+
+func TestStateEnvelopeVersionIsAuthenticated(t *testing.T) {
+	s, dir := openTest(t)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	headerPath := filepath.Join(dir, "store.yaml")
+	raw, err := os.ReadFile(headerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var header envelope
+	if err := yaml.Unmarshal(raw, &header); err != nil {
+		t.Fatal(err)
+	}
+	header.Version = 2
+	raw, err = yaml.Marshal(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(headerPath, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if reopened, err := Open(dir, testKey); err == nil {
+		reopened.Close()
+		t.Fatal("unauthenticated version change accepted")
+	}
+}
+
+func TestPreviousStateReaderRejectsBoundUpload(t *testing.T) {
+	checker := os.Getenv("JOLT_PREVIOUS_STATE_CHECKER")
+	if checker == "" {
+		t.Skip("set JOLT_PREVIOUS_STATE_CHECKER to a state reader built from the previous version")
+	}
+	s, dir := openTest(t)
+	ctx := context.Background()
+	if err := s.CreateUploadSession(ctx, entities.UploadSession{ID: "legacy", MountID: "files", Destination: "old.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(checker, dir).CombinedOutput(); err != nil {
+		t.Fatalf("previous reader rejected legacy state: %v %s", err, out)
+	}
+	s, err := Open(dir, testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateUploadSession(ctx, entities.UploadSession{ID: "bound", MountID: "files", Destination: "new.txt", AuthorizationActorID: "actor", AuthorizationCredentialID: "credential"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(checker, dir).CombinedOutput(); err == nil || !strings.Contains(string(out), "state envelope identity mismatch") {
+		t.Fatalf("previous reader did not reject version 2: %v %s", err, out)
 	}
 }

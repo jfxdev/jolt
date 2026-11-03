@@ -31,6 +31,7 @@ import (
 const compactTransactions = 1024
 const compactBytes = 64 << 20
 const cacheLimit = 16 << 20
+const currentEnvelopeVersion = 2
 
 // Error aliases are provided for callers of the concrete storage adapter.
 var (
@@ -93,6 +94,7 @@ type Store struct {
 	historyPages              []string
 	pendingHistory            map[string]map[string]bool
 	sequence                  uint64
+	envelopeVersion           int
 	snapshotSequence          uint64
 	journalCount              int
 	journalBytes              int64
@@ -189,7 +191,7 @@ func open(dir string, key []byte, existing, readOnly bool) (*Store, error) {
 	}
 	block, _ := aes.NewCipher(key)
 	aead, _ := cipher.NewGCM(block)
-	s := &Store{failure: make(chan struct{}), dir: dir, aead: aead, lock: lock, fileLock: fileLock, readOnly: readOnly, ordered: map[indexSelection][]string{}, pendingHistory: map[string]map[string]bool{}, index: map[string]map[string]reference{}, cache: map[string]cacheEntry{}}
+	s := &Store{failure: make(chan struct{}), dir: dir, aead: aead, lock: lock, fileLock: fileLock, readOnly: readOnly, envelopeVersion: 1, ordered: map[indexSelection][]string{}, pendingHistory: map[string]map[string]bool{}, index: map[string]map[string]reference{}, cache: map[string]cacheEntry{}}
 	success := false
 	defer func() {
 		if !success {
@@ -764,7 +766,7 @@ func (s *Store) read(name, kind string, seq uint64, value any) (uint64, error) {
 	if err := yamlutil.Decode(raw, &e); err != nil {
 		return 0, err
 	}
-	if e.Version != 1 || e.Kind != kind || (seq != ^uint64(0) && e.Sequence != seq) || e.StorageID == "" || (s.id != "" && s.id != e.StorageID) {
+	if e.Version < 1 || e.Version > currentEnvelopeVersion || (kind != "header" && e.Version > s.envelopeVersion) || e.Kind != kind || (seq != ^uint64(0) && e.Sequence != seq) || e.StorageID == "" || (s.id != "" && s.id != e.StorageID) {
 		return 0, errors.New("state envelope identity mismatch")
 	}
 	nonce, err := base64.StdEncoding.DecodeString(e.Nonce)
@@ -775,13 +777,16 @@ func (s *Store) read(name, kind string, seq uint64, value any) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	aad := fmt.Sprintf("jolt-state:1:%s:%s:%d:%s", e.StorageID, e.Kind, e.Sequence, name)
+	aad := fmt.Sprintf("jolt-state:%d:%s:%s:%d:%s", e.Version, e.StorageID, e.Kind, e.Sequence, name)
 	plain, err := s.aead.Open(nil, nonce, data, []byte(aad))
 	if err != nil {
 		return 0, errors.New("cannot authenticate state: wrong key or corrupted file")
 	}
 	if err := yamlutil.Decode(plain, value); err != nil {
 		return 0, err
+	}
+	if kind == "header" {
+		s.envelopeVersion = e.Version
 	}
 	s.id = e.StorageID
 	return e.Sequence, nil
@@ -795,8 +800,8 @@ func (s *Store) write(name, kind string, seq uint64, value any) (int, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return 0, err
 	}
-	aad := fmt.Sprintf("jolt-state:1:%s:%s:%d:%s", s.id, kind, seq, name)
-	e := envelope{1, s.id, kind, seq, base64.StdEncoding.EncodeToString(nonce), base64.StdEncoding.EncodeToString(s.aead.Seal(nil, nonce, plain, []byte(aad)))}
+	aad := fmt.Sprintf("jolt-state:%d:%s:%s:%d:%s", s.envelopeVersion, s.id, kind, seq, name)
+	e := envelope{s.envelopeVersion, s.id, kind, seq, base64.StdEncoding.EncodeToString(nonce), base64.StdEncoding.EncodeToString(s.aead.Seal(nil, nonce, plain, []byte(aad)))}
 	raw, err := yaml.Marshal(e)
 	if err != nil {
 		return 0, err

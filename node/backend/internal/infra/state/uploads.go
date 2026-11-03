@@ -3,8 +3,10 @@ package state
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
+	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/entities"
 	"github.com/jfxdev/jolt/backend/internal/signedauth"
 )
@@ -26,6 +28,18 @@ func (s *Store) CreateUploadSession(ctx context.Context, v entities.UploadSessio
 			}
 			if other.Destination == v.Destination && other.State != "completed" {
 				return ErrUploadSessionExists
+			}
+		}
+		if v.AuthorizationActorID != "" && s.envelopeVersion < 2 {
+			// Upgrade the authenticated header and fsync it before a record
+			// requiring the new contract can be written. Old binaries reject
+			// version 2 before reading any transactions or serving requests.
+			s.envelopeVersion = 2
+			if _, err := s.write("store.yaml", "header", 0, struct {
+				Format string `yaml:"format"`
+			}{"jolt-yaml-state"}); err != nil {
+				s.poison()
+				return fmt.Errorf("%w: security version: %v", contracts.ErrStateUnavailable, err)
 			}
 		}
 		return tx.put("uploads", v.ID, v.MountID, order(v.CreatedAt), v)
