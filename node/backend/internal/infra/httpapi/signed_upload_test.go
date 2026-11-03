@@ -189,4 +189,71 @@ func TestSignedUploadEnforcesSessionAndCurrentFilter(t *testing.T) {
 	if data, _ := os.ReadFile(filepath.Join(root, "file.txt")); string(data) != "new" {
 		t.Fatalf("expired chunk changed destination: %q", data)
 	}
+	query := "path=simple.txt&overwrite=false"
+	simpleToken := func(actor, query, idempotency string, context json.RawMessage) string {
+		now := time.Now().Unix()
+		claims := signedauth.Claims{Version: 1, KeyID: "key", IssuedAt: now, ExpiresAt: now + 20, Context: context,
+			Binding: signedauth.Binding{ActorID: actor, CredentialID: "credential", Operation: "upload_simple", RequestID: "request", DestinationNodeID: "node", DestinationMountID: "m", DestinationRoot: "simple.txt", PlanID: signedauth.SimpleUploadPlanID(query, idempotency)}}
+		token, err := signedauth.Sign(claims, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+	simpleCall := func(query, token, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPut, "/api/v1/mounts/m/files/content?"+query, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer secret")
+		r.Header.Set(signedAuthorizationHeader, token)
+		r.Header.Set("Idempotency-Key", "same-key")
+		w := &signedUploadRecorder{httptest.NewRecorder()}
+		h.ServeHTTP(w, r)
+		return w.ResponseRecorder
+	}
+	simple := simpleToken("actor", query, "same-key", policy(`["create","update"]`))
+	if w := simpleCall("path=simple.txt&overwrite=true", simple, "bad"); w.Code != 403 {
+		t.Fatalf("changed simple upload options: %d %s", w.Code, w.Body)
+	}
+	if w := simpleCall(query, simpleToken("actor", query, "same-key", denied), "bad"); w.Code != 403 {
+		t.Fatalf("typed simple upload denial: %d %s", w.Code, w.Body)
+	}
+	if w := simpleCall(query, simple, "ok"); w.Code != 201 {
+		t.Fatalf("simple upload: %d %s", w.Code, w.Body)
+	}
+	if w := simpleCall(query, simple, "different"); w.Code != 200 {
+		t.Fatalf("simple upload retry: %d %s", w.Code, w.Body)
+	}
+	if w := simpleCall(query, simpleToken("other", query, "same-key", policy(`["create","update"]`)), "different"); w.Code != 409 {
+		t.Fatalf("cross-actor idempotency: %d %s", w.Code, w.Body)
+	}
+	if data, _ := os.ReadFile(filepath.Join(root, "simple.txt")); string(data) != "ok" {
+		t.Fatalf("simple destination changed: %q", data)
+	}
+	slowQuery := "path=slow.txt&overwrite=false"
+	now = time.Now().Unix()
+	slowToken, err := signedauth.Sign(signedauth.Claims{Version: 1, KeyID: "key", IssuedAt: now, ExpiresAt: now + 2, Context: policy(`["create","update"]`),
+		Binding: signedauth.Binding{ActorID: "actor", CredentialID: "credential", Operation: "upload_simple", RequestID: "request", DestinationNodeID: "node", DestinationMountID: "m", DestinationRoot: "slow.txt", PlanID: signedauth.SimpleUploadPlanID(slowQuery, "")}}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slowConn, err := net.Dial("tcp", server.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer slowConn.Close()
+	if _, err := fmt.Fprintf(slowConn, "PUT /api/v1/mounts/m/files/content?%s HTTP/1.1\r\nHost: node\r\nAuthorization: Bearer secret\r\nX-Jolt-Access-Authorization: %s\r\nContent-Length: 3\r\n\r\nn", slowQuery, slowToken); err != nil {
+		t.Fatal(err)
+	}
+	if err := slowConn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	n, err = slowConn.Read(response[:])
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		t.Fatal("slow simple upload exceeded its authorization deadline")
+	}
+	if n > 0 && (strings.Contains(string(response[:n]), " 200 ") || strings.Contains(string(response[:n]), " 201 ")) {
+		t.Fatalf("slow simple upload reported success: %s", response[:n])
+	}
+	if _, err := os.Stat(filepath.Join(root, "slow.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expired simple upload was published: %v", err)
+	}
 }

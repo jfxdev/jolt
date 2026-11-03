@@ -142,6 +142,24 @@ func UploadAdmissionBodyID(body []byte) string {
 	return fmt.Sprintf("sha256-%x", sha256.Sum256(body))
 }
 
+// SimpleUploadPlanID binds all query options and the idempotency key without
+// buffering the streamed file contents.
+func SimpleUploadPlanID(rawQuery, idempotencyKey string) string {
+	return fmt.Sprintf("upload-%x", sha256.Sum256([]byte(fmt.Sprintf("%d:%s%d:%s", len(rawQuery), rawQuery, len(idempotencyKey), idempotencyKey))))
+}
+
+func VerifySimpleUpload(token string, keys map[string]ed25519.PublicKey, receivingNode, mountID, destination, rawQuery, idempotencyKey string, now time.Time) (Claims, *filetypes.Filter, error) {
+	claims, filter, err := verifySigned(token, keys, now)
+	if err != nil {
+		return Claims{}, nil, ErrInvalid
+	}
+	b := claims.Binding
+	if receivingNode == "" || destination == "" || destination == "." || b.Operation != "upload_simple" || b.PlanID != SimpleUploadPlanID(rawQuery, idempotencyKey) || b.DestinationNodeID != receivingNode || b.DestinationMountID != mountID || b.DestinationRoot != destination || b.DestinationGrantID != "" || b.SourceNodeID != "" || b.SourceGrantID != "" || b.SourceMountID != "" || b.SourceRoot != "" {
+		return Claims{}, nil, ErrInvalid
+	}
+	return claims, filter, nil
+}
+
 // VerifyUploadReauthorization accepts a freshly authorized actor for an
 // unbound session, or a new credential for the already bound actor. The
 // previously persisted actor must come from trusted, locked session state.

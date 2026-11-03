@@ -3124,7 +3124,7 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, http.StatusServiceUnavailable, "signed_authorization_unavailable", "Não foi possível limitar o prazo desta leitura.")
 			return
 		}
-		if uploadOperation == "upload_chunk" && controller.SetReadDeadline(deadline) != nil {
+		if (uploadOperation == "upload_chunk" || uploadOperation == "upload_simple") && controller.SetReadDeadline(deadline) != nil {
 			_ = controller.SetWriteDeadline(time.Time{})
 			writeError(w, r, http.StatusServiceUnavailable, "signed_authorization_unavailable", "Não foi possível limitar o prazo do envio.")
 			return
@@ -3137,7 +3137,7 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 				panic(http.ErrAbortHandler)
 			}
 			_ = controller.SetWriteDeadline(time.Time{})
-			if uploadOperation == "upload_chunk" {
+			if uploadOperation == "upload_chunk" || uploadOperation == "upload_simple" {
 				_ = controller.SetReadDeadline(time.Time{})
 			}
 		}()

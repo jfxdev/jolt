@@ -824,6 +824,38 @@ paths:
         '401': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '410': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/mounts/{mountID}/files/content:
+    parameters:
+      - {$ref: '#/components/parameters/NodeID'}
+      - {$ref: '#/components/parameters/MountID'}
+      - {name: path, in: query, required: true, schema: {type: string}}
+    get:
+      tags: [Node proxy]
+      summary: Read file content
+      responses:
+        '200': {$ref: '#/components/responses/Binary'}
+        '206': {$ref: '#/components/responses/Binary'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    put:
+      tags: [Node proxy]
+      summary: Upload file content
+      description: Requires create and, when overwriting, update on the final destination. When signed uploads are enabled, the context binds the destination, query options and idempotency key, and the upload must complete before expiration.
+      parameters:
+        - {name: overwrite, in: query, schema: {type: boolean}}
+        - {name: editor, in: query, schema: {type: boolean}}
+        - {name: Idempotency-Key, in: header, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
   /api/v1/nodes/{nodeID}/mounts/{mountID}/files/uploads:
     parameters:
       - {$ref: '#/components/parameters/NodeID'}

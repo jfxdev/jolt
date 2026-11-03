@@ -122,3 +122,30 @@ func TestVerifyUploadReauthorizationRequiresCurrentBinding(t *testing.T) {
 		t.Fatal("accepted a previous authorization revision")
 	}
 }
+
+func TestVerifySimpleUploadBindsQueryAndIdempotency(t *testing.T) {
+	claims, key, keys := fixture()
+	claims.Binding.SourceNodeID, claims.Binding.SourceMountID, claims.Binding.SourceRoot, claims.Binding.SourceGrantID = "", "", "", ""
+	claims.Binding.DestinationNodeID, claims.Binding.DestinationMountID, claims.Binding.DestinationRoot, claims.Binding.DestinationGrantID = "node", "mount", "file.txt", ""
+	query, idem := "path=file.txt&overwrite=true", "request-key"
+	claims.Binding.Operation, claims.Binding.PlanID = "upload_simple", SimpleUploadPlanID(query, idem)
+	token, err := Sign(claims, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(claims.IssuedAt, 0)
+	if _, _, err := VerifySimpleUpload(token, keys, "node", "mount", "file.txt", query, idem, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range [][5]string{
+		{"other", "mount", "file.txt", query, idem},
+		{"node", "other", "file.txt", query, idem},
+		{"node", "mount", "other.txt", query, idem},
+		{"node", "mount", "file.txt", "path=file.txt&overwrite=false", idem},
+		{"node", "mount", "file.txt", query, "other-key"},
+	} {
+		if _, _, err := VerifySimpleUpload(token, keys, tc[0], tc[1], tc[2], tc[3], tc[4], now); err == nil {
+			t.Fatalf("accepted changed upload request: %v", tc)
+		}
+	}
+}

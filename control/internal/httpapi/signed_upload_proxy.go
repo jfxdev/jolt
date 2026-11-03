@@ -14,6 +14,9 @@ import (
 
 func signedUploadOperation(resource, method string) (operation, sessionID string) {
 	parts := strings.Split(resource, "/")
+	if len(parts) == 4 && parts[0] == "mounts" && validPathIdentifier(parts[1]) && parts[2] == "files" && parts[3] == "content" && method == http.MethodPut {
+		return "upload_simple", ""
+	}
 	if len(parts) < 4 || parts[0] != "mounts" || !validPathIdentifier(parts[1]) || parts[2] != "files" || parts[3] != "uploads" {
 		return "", ""
 	}
@@ -48,6 +51,8 @@ func (s *Server) prepareSignedProxyUpload(w http.ResponseWriter, r *http.Request
 	requiredCapability := "signed_upload_sessions_v1"
 	if operation == "upload_reauthorize" {
 		requiredCapability = "signed_upload_reauthorize_v1"
+	} else if operation == "upload_simple" {
+		requiredCapability = "signed_simple_upload_v1"
 	}
 	for _, capability := range info.Capabilities {
 		found = found || capability == requiredCapability
@@ -63,6 +68,13 @@ func (s *Server) prepareSignedProxyUpload(w http.ResponseWriter, r *http.Request
 	root := targets.Paths[0]
 	plan := sessionID
 	var body []byte
+	if operation == "upload_simple" {
+		if len(r.URL.Query()["path"]) != 1 || len(r.Header.Values("Idempotency-Key")) > 1 {
+			writeError(w, r, http.StatusBadRequest, "invalid_file_request", "Caminho ou chave de idempotência inválida.")
+			return "", time.Time{}, false
+		}
+		plan = signedauth.SimpleUploadPlanID(r.URL.RawQuery, r.Header.Get("Idempotency-Key"))
+	}
 	if operation == "upload_create" {
 		var err error
 		body, err = io.ReadAll(io.LimitReader(r.Body, (1<<20)+1))
@@ -89,6 +101,8 @@ func (s *Server) prepareSignedProxyUpload(w http.ResponseWriter, r *http.Request
 	var claims signedauth.Claims
 	if operation == "upload_create" {
 		claims, _, err = signedauth.VerifyUploadAdmission(token, keys, node.ID, mount, root, body, now)
+	} else if operation == "upload_simple" {
+		claims, _, err = signedauth.VerifySimpleUpload(token, keys, node.ID, mount, root, r.URL.RawQuery, r.Header.Get("Idempotency-Key"), now)
 	} else if operation == "upload_reauthorize" {
 		claims, _, err = signedauth.VerifyUploadReauthorization(token, keys, targets.PreviousActorID, targets.PreviousCredentialID, node.ID, mount, root, sessionID, targets.AuthorizationRevision, now)
 	} else {

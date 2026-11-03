@@ -3,8 +3,10 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -22,7 +24,7 @@ func (s *Server) signedUpload(operation string, next http.HandlerFunc) http.Hand
 	return func(w http.ResponseWriter, r *http.Request) {
 		headers := r.Header.Values(signedAuthorizationHeader)
 		var session entities.UploadSession
-		if operation != "upload_create" {
+		if operation != "upload_create" && operation != "upload_simple" {
 			var err error
 			session, err = s.store.GetUploadSession(r.Context(), r.PathValue("uploadID"))
 			if err != nil && !errors.Is(err, contracts.ErrNotFound) {
@@ -58,6 +60,13 @@ func (s *Server) signedUpload(operation string, next http.HandlerFunc) http.Hand
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
 			claims, compiled, err = signedauth.VerifyUploadAdmission(headers[0], s.config.AuthorizationKeys, s.identity.NodeID, r.PathValue("mountID"), input.Path, body, time.Now())
+		} else if operation == "upload_simple" {
+			paths := r.URL.Query()["path"]
+			if len(paths) != 1 || len(r.Header.Values("Idempotency-Key")) > 1 {
+				writeError(w, r, http.StatusBadRequest, "invalid_file_request", "Caminho ou chave de idempotência inválida.", nil)
+				return
+			}
+			claims, compiled, err = signedauth.VerifySimpleUpload(headers[0], s.config.AuthorizationKeys, s.identity.NodeID, r.PathValue("mountID"), paths[0], r.URL.RawQuery, r.Header.Get("Idempotency-Key"), time.Now())
 		} else if operation == "upload_reauthorize" {
 			if (session.AuthorizationActorID == "") != (session.AuthorizationCredentialID == "") {
 				writeError(w, r, http.StatusForbidden, "invalid_signed_context", "Vínculo de autorização da sessão inválido.", nil)
@@ -82,7 +91,7 @@ func (s *Server) signedUpload(operation string, next http.HandlerFunc) http.Hand
 			writeError(w, r, http.StatusServiceUnavailable, "signed_context_unavailable", "Não foi possível aplicar o prazo da autorização.", nil)
 			return
 		}
-		if operation == "upload_chunk" && controller.SetReadDeadline(deadline) != nil {
+		if (operation == "upload_chunk" || operation == "upload_simple") && controller.SetReadDeadline(deadline) != nil {
 			_ = controller.SetWriteDeadline(time.Time{})
 			writeError(w, r, http.StatusServiceUnavailable, "signed_context_unavailable", "Não foi possível limitar o prazo do envio.", nil)
 			return
@@ -96,7 +105,7 @@ func (s *Server) signedUpload(operation string, next http.HandlerFunc) http.Hand
 				panic(http.ErrAbortHandler)
 			}
 			_ = controller.SetWriteDeadline(time.Time{})
-			if operation == "upload_chunk" {
+			if operation == "upload_chunk" || operation == "upload_simple" {
 				_ = controller.SetReadDeadline(time.Time{})
 			}
 		}()
@@ -105,4 +114,17 @@ func (s *Server) signedUpload(operation string, next http.HandlerFunc) http.Hand
 		w.Header().Set("X-Jolt-Access-Applied", "v1")
 		next(limited, r.WithContext(ctx))
 	}
+}
+
+func signedSimpleUploadIdempotency(r *http.Request) string {
+	key := idempotencyKey(r)
+	if key == "" {
+		return ""
+	}
+	binding, ok := r.Context().Value(signedUploadIdentityKey{}).(signedauth.Binding)
+	if !ok || binding.Operation != "upload_simple" {
+		return key
+	}
+	sum := sha256.Sum256([]byte(binding.ActorID + "\x00" + binding.CredentialID + "\x00" + binding.DestinationNodeID + "\x00" + binding.DestinationMountID + "\x00" + binding.DestinationRoot + "\x00" + binding.PlanID))
+	return fmt.Sprintf("signed-upload-%x", sum)
 }

@@ -96,7 +96,7 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files", s.signedLocalRead("list", s.listFiles))
 	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/metadata", s.signedLocalRead("metadata", s.metadata))
 	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/content", s.signedLocalRead("content", s.download))
-	mux.HandleFunc("PUT /api/v1/mounts/{mountID}/files/content", s.upload)
+	mux.HandleFunc("PUT /api/v1/mounts/{mountID}/files/content", s.signedUpload("upload_simple", s.upload))
 	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/archive", s.signedLocalRead("archive", s.archive))
 	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/archive/plan", s.signedLocalRead("archive_plan", s.archivePlan))
 	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/search", s.signedLocalRead("search", s.search))
@@ -356,7 +356,7 @@ func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 	if len(s.config.AuthorizationKeys) > 0 {
 		capabilities = append(capabilities, "signed_local_read_v1", "signed_local_tree_read_v1")
 		if s.store != nil {
-			capabilities = append(capabilities, "signed_upload_sessions_v1", "signed_upload_reauthorize_v1")
+			capabilities = append(capabilities, "signed_upload_sessions_v1", "signed_upload_reauthorize_v1", "signed_simple_upload_v1")
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -942,6 +942,30 @@ func encodeRFC5987(value string) string {
 
 func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
+	filter := signedAccessFilter(r)
+	idempotency := signedSimpleUploadIdempotency(r)
+	if filter != nil {
+		candidate := entities.UploadSession{ID: "simple", MountID: r.PathValue("mountID"), Destination: path, Overwrite: boolQuery(r, "overwrite")}
+		if idempotency != "" && s.store != nil {
+			if err := s.files.ValidateUploadReauthorizationFiltered(r.Context(), candidate, filter); err != nil {
+				s.fail(w, r, err)
+				return
+			}
+			job, _, found, err := s.store.FindJobByIdempotency(r.Context(), idempotency)
+			if err != nil {
+				s.fail(w, r, err)
+				return
+			}
+			if found {
+				writeJSON(w, http.StatusOK, job)
+				return
+			}
+		}
+		if err := s.files.ValidateUploadDestinationFiltered(r.Context(), candidate, filter); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+	}
 	if boolQuery(r, "editor") {
 		if r.ContentLength > editorMaxBytes {
 			writeError(w, r, http.StatusRequestEntityTooLarge, "editor_content_too_large",
@@ -963,7 +987,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		Type: "upload", MountID: r.PathValue("mountID"), Destination: path,
 		CorrelationID: r.Header.Get("X-Correlation-ID"), Overwrite: boolQuery(r, "overwrite"),
 		BandwidthLimit: bandwidthLimit,
-	}, idempotencyKey(r))
+	}, idempotency)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -973,8 +997,15 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.jobs.ReleaseBandwidthLimiter(job.ID)
-	bytes, operationErr := s.files.Upload(r.Context(), r.PathValue("mountID"), path, r.Body,
-		boolQuery(r, "overwrite"), s.jobs.BandwidthLimiter(job))
+	var bytes int64
+	var operationErr error
+	if filter != nil {
+		bytes, operationErr = s.files.UploadFiltered(r.Context(), r.PathValue("mountID"), path, r.Body,
+			boolQuery(r, "overwrite"), filter, s.jobs.BandwidthLimiter(job))
+	} else {
+		bytes, operationErr = s.files.Upload(r.Context(), r.PathValue("mountID"), path, r.Body,
+			boolQuery(r, "overwrite"), s.jobs.BandwidthLimiter(job))
+	}
 	_ = s.jobs.Complete(r.Context(), &job, bytes, operationErr)
 	if operationErr != nil {
 		s.fail(w, r, operationErr)
@@ -2013,13 +2044,21 @@ paths:
         - {in: query, name: overwrite, schema: {type: boolean}}
         - {in: query, name: editor, schema: {type: boolean}, description: Enables the 512 KB text-editor limit}
         - {in: query, name: bandwidth_limit_bytes_per_second, schema: {type: integer, format: int64, minimum: 0}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context binding the exact query and idempotency key}
+        - {in: header, name: Idempotency-Key, schema: {type: string}}
       requestBody:
         required: true
         content:
           application/octet-stream:
             schema: {type: string, format: binary}
       responses:
-        "201": {description: Completed upload job}
+        "200": {description: Previously completed idempotent upload job}
+        "201":
+          description: Completed upload job
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
+        "403": {description: Invalid signed context or destination denied}
+        "404": {description: Hidden destination or parent not found}
         "422": {description: hidden_name or upload_content_rejected by the configured upload inspection}
   /api/v1/mounts/{mountID}/files/metadata:
     get:

@@ -708,6 +708,9 @@ func (s *Service) uploadFiltered(ctx context.Context, mountID, relative string, 
 			return written, err
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return written, err
+	}
 	if err := publishPath(tempName, destination, overwrite); err != nil {
 		return written, err
 	}

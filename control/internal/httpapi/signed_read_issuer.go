@@ -47,7 +47,7 @@ func (s *Server) issueSignedAccess(r *http.Request, nodeID, mountID, root, opera
 		capability, kinds = "read", []string{"file", "directory"}
 	case "archive", "archive_plan":
 		capability = "read"
-	case "upload_create", "upload_chunk", "upload_complete", "upload_abort", "upload_reauthorize":
+	case "upload_create", "upload_chunk", "upload_complete", "upload_abort", "upload_reauthorize", "upload_simple":
 		if planID == "" {
 			return "", errSignedReadUnavailable
 		}

@@ -93,7 +93,9 @@ enables signed resumable upload creation, chunks, completion and abort. The
 node requires fresh signed contexts for bound sessions and enforces filtering
 before publication. An explicit resume or discard reauthorizes an old unbound
 session or a new credential for the original actor after checking current
-permissions. A stale reauthorization cannot replace a newer binding. Simple uploads and the remaining
+permissions. A stale reauthorization cannot replace a newer binding. The same
+option also signs simple uploads, binding their destination, query and
+idempotency key; streams must finish before authorization expires. The remaining
 operations do not yet enforce these contexts. File-type policies remain
 disabled until all required operations are integrated.
 

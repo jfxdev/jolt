@@ -25,7 +25,7 @@ func TestSignedUploadProxyRequiresCapabilityAndConfirmation(t *testing.T) {
 		if r.URL.Path == "/api/v1/node" {
 			caps := `[]`
 			if capability {
-				caps = `["signed_upload_sessions_v1","signed_upload_reauthorize_v1"]`
+				caps = `["signed_upload_sessions_v1","signed_upload_reauthorize_v1","signed_simple_upload_v1"]`
 			}
 			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"node_id":"n1","capabilities":` + caps + `}`))}, nil
 		}
@@ -43,6 +43,8 @@ func TestSignedUploadProxyRequiresCapabilityAndConfirmation(t *testing.T) {
 		if operation == "upload_create" {
 			body, _ := io.ReadAll(r.Body)
 			_, _, err = signedauth.VerifyUploadAdmission(r.Header.Get(signedAuthorizationHeader), keys, "n1", "m", "file.txt", body, time.Now())
+		} else if operation == "upload_simple" {
+			_, _, err = signedauth.VerifySimpleUpload(r.Header.Get(signedAuthorizationHeader), keys, "n1", "m", "file.txt", r.URL.RawQuery, r.Header.Get("Idempotency-Key"), time.Now())
 		} else if operation == "upload_reauthorize" {
 			_, _, err = signedauth.VerifyUploadReauthorization(r.Header.Get(signedAuthorizationHeader), keys, "admin", "old", "n1", "m", "file.txt", id, 2, time.Now())
 		} else {
@@ -64,6 +66,7 @@ func TestSignedUploadProxyRequiresCapabilityAndConfirmation(t *testing.T) {
 	h := newHandler(config.Config{EncryptionKey: make([]byte, 32), StaticDir: t.TempDir(), SignedUploads: true, AuthorizationSigningKeyID: "key", AuthorizationSigningKey: key}, f.storage, slog.New(slog.NewTextHandler(io.Discard, nil)), client)
 	base := "/api/v1/nodes/n1/mounts/m/files/uploads"
 	for _, tc := range []struct{ method, path, body string }{
+		{http.MethodPut, "/api/v1/nodes/n1/mounts/m/files/content?path=file.txt", "new"},
 		{http.MethodPost, base, `{"path":"file.txt","size":3}`},
 		{http.MethodPatch, base + "/upl", "new"},
 		{http.MethodPost, base + "/upl/complete", `{}`},
@@ -81,18 +84,18 @@ func TestSignedUploadProxyRequiresCapabilityAndConfirmation(t *testing.T) {
 	capability = false
 	w := &deadlineRecorder{httptest.NewRecorder()}
 	h.ServeHTTP(w, authenticatedRequest(http.MethodPost, base, session, []byte(`{"path":"file.txt","size":3}`)))
-	if w.Code != http.StatusConflict || mutations != 5 {
+	if w.Code != http.StatusConflict || mutations != 6 {
 		t.Fatalf("missing capability: %d mutations=%d", w.Code, mutations)
 	}
 	capability, confirmation = true, false
 	w = &deadlineRecorder{httptest.NewRecorder()}
 	h.ServeHTTP(w, authenticatedRequest(http.MethodPost, base, session, []byte(`{"path":"file.txt","size":3}`)))
-	if w.Code != http.StatusConflict || mutations != 6 {
+	if w.Code != http.StatusConflict || mutations != 7 {
 		t.Fatalf("missing confirmation: %d mutations=%d", w.Code, mutations)
 	}
 	w = &deadlineRecorder{httptest.NewRecorder()}
 	h.ServeHTTP(w, f.request(http.MethodPost, base))
-	if w.Code != http.StatusForbidden || mutations != 6 {
+	if w.Code != http.StatusForbidden || mutations != 7 {
 		t.Fatalf("agent write: %d mutations=%d", w.Code, mutations)
 	}
 }

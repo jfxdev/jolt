@@ -174,6 +174,13 @@ transfer_grants: []
                 assert b"hide.pem" not in response[1]
             print("PASS: signed proxy and node: list, hidden name, range, metadata, search, disk usage and ZIP")
 
+            simple_path = prefix + "/content?path=simple.txt"
+            simple_headers = {"Idempotency-Key": "simple-smoke"}
+            expect(request(control_base, "PUT", simple_path, b"first", cookie=cookie, headers=simple_headers), 201)
+            expect(request(control_base, "PUT", simple_path, b"second", cookie=cookie, headers=simple_headers), 200)
+            assert (root / "files" / "simple.txt").read_bytes() == b"first"
+            print("PASS: signed simple upload and idempotent retry")
+
             upload = expect(request(
                 control_base, "POST", prefix + "/uploads",
                 {"path": "upload.txt", "size": 3, "overwrite": False}, cookie=cookie,
