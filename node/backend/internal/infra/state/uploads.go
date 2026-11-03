@@ -2,11 +2,19 @@ package state
 
 import (
 	"context"
-	"github.com/jfxdev/jolt/backend/internal/entities"
+	"errors"
 	"time"
+
+	"github.com/jfxdev/jolt/backend/internal/entities"
+	"github.com/jfxdev/jolt/backend/internal/signedauth"
 )
 
 func (s *Store) CreateUploadSession(ctx context.Context, v entities.UploadSession) error {
+	if v.AuthorizationActorID != "" || v.AuthorizationCredentialID != "" {
+		if !signedauth.ValidKeyID(v.AuthorizationActorID) || !signedauth.ValidKeyID(v.AuthorizationCredentialID) {
+			return errors.New("invalid upload authorization identity")
+		}
+	}
 	return s.update(ctx, func(tx *transaction) error {
 		if _, exists := s.index["uploads"][v.ID]; exists {
 			return ErrUploadSessionExists
@@ -79,7 +87,7 @@ func (s *Store) UpdateUploadSession(ctx context.Context, v entities.UploadSessio
 		if err != nil {
 			return err
 		}
-		if old.MountID != v.MountID || old.Destination != v.Destination || old.Size != v.Size {
+		if old.MountID != v.MountID || old.Destination != v.Destination || old.Size != v.Size || old.Overwrite != v.Overwrite || old.AuthorizationActorID != v.AuthorizationActorID || old.AuthorizationCredentialID != v.AuthorizationCredentialID {
 			return ErrInUse
 		}
 		return tx.put("uploads", v.ID, v.MountID, order(v.CreatedAt), v)
