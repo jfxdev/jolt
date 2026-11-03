@@ -161,6 +161,8 @@ Referências para retomada:
 
 ### Evidências locais já executadas
 
+- Em 2026-11-03, `make acceptance` passou no macOS/ARM64 com o perfil `quick`: cópia de arquivo com interrupção e retomada, diretório de 1.024 arquivos e histórico cifrado. O teste do diretório levou aproximadamente 191 segundos; não é o perfil completo de carga nem validação entre hosts.
+- Na correção das permissões de transferências, passaram `go test ./...`, `go test -race ./internal/httpapi` e `go vet ./...` no Control Tower. Os testes verificam as rotas lógicas e diretas, recusa antes do encaminhamento e permissões de atualização na origem e no destino.
 - No Control Tower, `go test ./...` passou após a implementação do emissor; os testes de HTTP, store, RBAC e assinatura também passaram com `-race`. Após `9da246d`, o teste de HTTP com `-race` passou novamente.
 - Na integração opcional do proxy posterior a `9da246d`, passaram `go test ./...`, `go test -race ./internal/httpapi ./internal/config` e `go vet ./...` no Control Tower. Os testes focados exercitam emissão por usuário e agente, vínculo de operação e caminho, recusa de node sem capacidade ou confirmação e interrupção de cliente lento.
 - Uma jornada local entre processos reais do Control Tower e node passou para listagem, ocultação por nome, conteúdo com `Range`, metadados, busca, uso de disco, plano de ZIP e ZIP. Chave incompatível e ausência da capacidade produziram recusa. Reproduzir com `python3 scripts/signed-read-smoke.py --node-bin /caminho/jolt-node --control-bin /caminho/jolt-control`, após compilar os binários; exige OpenSSL com Ed25519 e portas de loopback. Essa jornada não habilita policies por tipo nem substitui a validação integrada das demais operações.
@@ -174,7 +176,7 @@ Referências para retomada:
 - No node, os testes do estado cifrado passaram com `-race`, cobrindo recuperação do vínculo após reinício, ausência de identidade em JSON e nos arquivos cifrados, imutabilidade e sessões antigas. A elevação do cabeçalho e as transações na versão 2 foram exercitadas em falhas de sincronização e rename; um leitor compilado da revisão `80e7980` aceitou estado legado e recusou o estado elevado. Passaram também `CGO_ENABLED=0 go test ./...` e `CGO_ENABLED=0 go vet ./...` do node no ambiente local.
 - No node, `go test ./...` passou com acesso às portas locais durante a etapa que originou `f8676a9`, antes do ajuste final de canary. Nas alterações posteriores, os testes focados de filesystem e HTTP passaram com `-race`, incluindo leitura assinada, `Range` em HTTP real, ZIP, ocultação, conflitos e mudança de filtro durante upload; vet e build com `CGO_ENABLED=0` passaram. A revogação integrada durante um upload ainda precisa ser validada.
 - No frontend, 43 testes e dois cenários Playwright de segurança de agente, em desktop e mobile, passaram na etapa `05d56d0`. Não houve mudanças posteriores no frontend até `9da246d`.
-- Estes resultados são registros das execuções anteriores no ambiente local macOS/ARM64; não foram repetidos nesta atualização dos documentos e não constituem aceite integrado nem de release.
+- Estes resultados são registros de execuções no ambiente local macOS/ARM64; cada item indica o escopo exercitado e nenhum constitui aceite integrado nem de release.
 
 ### Ainda necessário
 
