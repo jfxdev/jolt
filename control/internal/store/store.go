@@ -21,7 +21,7 @@ var (
 	ErrLastAdmin = errors.New("at least one enabled administrator is required")
 )
 
-const supportedSecurityVersion = 3
+const supportedSecurityVersion = 4
 
 type User struct {
 	ID           string    `json:"user_id"`
@@ -246,6 +246,13 @@ CREATE TABLE IF NOT EXISTS service_account_tokens (
 CREATE TABLE IF NOT EXISTS agent_usage (
  token_id TEXT NOT NULL, day TEXT NOT NULL, charged_bytes INTEGER NOT NULL DEFAULT 0,
  PRIMARY KEY(token_id,day), FOREIGN KEY(token_id) REFERENCES service_account_tokens(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS workload_identities (
+ credential_id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, issuer TEXT NOT NULL,
+ subject TEXT NOT NULL, audience TEXT NOT NULL, enabled INTEGER NOT NULL,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ UNIQUE(provider_id,issuer,subject,audience),
+ FOREIGN KEY(credential_id) REFERENCES service_account_tokens(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS policies (
  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL,

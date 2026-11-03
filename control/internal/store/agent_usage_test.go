@@ -65,7 +65,7 @@ func TestAgentReservationsAreAtomicAndPersistAcrossRestart(t *testing.T) {
 	if amount, err := s.ReserveAgentBytes(ctx, "key", day, 1024, 4096); err != nil || amount != 1024 {
 		t.Fatalf("after refund: %d %v", amount, err)
 	}
-	if _, err := s.db.Exec(`UPDATE metadata SET value='4' WHERE key='minimum_security_version'`); err != nil {
+	if _, err := s.db.Exec(`UPDATE metadata SET value='5' WHERE key='minimum_security_version'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
