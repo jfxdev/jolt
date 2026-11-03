@@ -88,8 +88,15 @@ signed contexts for these proxy reads. The option defaults to false and requires
 the signing key; enabled reads fail closed if the node lacks the capability or
 does not confirm enforcement. Each signed response expires within 30 seconds,
 including for a slow client. Other node operations reject signed contexts, and
-jobs do not yet renew them.
-File-type policies remain disabled until all required operations are integrated.
+jobs do not yet renew them. `CONTROL_TOWER_SIGNED_UPLOADS=true` separately
+enables signed resumable upload creation, chunks, completion and abort. The
+node requires fresh signed contexts for bound sessions and enforces filtering
+before publication. Existing unbound sessions cannot be resumed with this
+option enabled; a new session is required until explicit reauthorization is
+implemented. A new login uses a different session credential and likewise
+cannot resume an already bound upload. Simple uploads and the remaining
+operations do not yet enforce these contexts. File-type policies remain
+disabled until all required operations are integrated.
 
 Generate a random key with `openssl rand -base64 32`, save it outside the data,
 identity and configuration files, and supply exactly one of
@@ -107,8 +114,8 @@ existing formats in the separate keys directory.
 The first upload session persisted with an authorization identity upgrades the
 authenticated state header to version 2 before writing that session. Nodes
 that only understand version 1 refuse to open the upgraded state; existing
-version 1 records remain readable by version 2. The signed upload admission
-path is not yet enabled. Before activating it, upgrade nodes and keep a
+version 1 records remain readable by version 2. Signed upload admission is
+disabled by default. Before activating it, upgrade nodes and keep a
 compatible pre-upgrade backup for rollback; older binaries that do not check
 the envelope version cannot be made safe by this marker alone.
 

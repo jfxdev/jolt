@@ -42,6 +42,30 @@ func (s *Service) ValidateUploadDestinationFiltered(ctx context.Context, session
 	return validateFilteredFileDestination(ctx, mount, destination, session.Overwrite, filter)
 }
 
+// ValidateUploadCleanupFiltered authorizes removing only the session's partial,
+// without requiring the destination to be absent or overwritable.
+func (s *Service) ValidateUploadCleanupFiltered(ctx context.Context, session entities.UploadSession, filter *AccessFilter) error {
+	if filter == nil || filter.context == nil || session.ID == "" || cleanRelative(session.Destination) == "." {
+		return ErrInvalid
+	}
+	mount, destination, err := s.resolve(ctx, session.MountID, session.Destination, true)
+	if err != nil {
+		return err
+	}
+	relative, err := filepath.Rel(mount.LocalPath, destination)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return ErrInvalid
+	}
+	relative = filepath.ToSlash(relative)
+	if err := filter.checkAncestors(relative); err != nil {
+		return err
+	}
+	if !filter.context.Evaluate(filter.base+"/"+relative, "create", "file").Allowed {
+		return ErrFilteredBlocked
+	}
+	return ctx.Err()
+}
+
 // AppendUploadFiltered checks the persisted target before accepting a chunk.
 // It remains internal until the API supplies a verified authorization context.
 func (s *Service) AppendUploadFiltered(ctx context.Context, session entities.UploadSession, offset int64, input io.Reader, filter *AccessFilter, limiters ...ByteRateLimiter) (int64, error) {
@@ -282,6 +306,9 @@ func (s *Service) AbortUpload(ctx context.Context, mountID, destination, uploadI
 		return err
 	}
 	defer unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := safeRemove(resumablePartialPath(dst, uploadID)); err != nil && !os.IsNotExist(err) {
 		return err
 	}

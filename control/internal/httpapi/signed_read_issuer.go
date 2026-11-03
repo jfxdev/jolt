@@ -21,6 +21,10 @@ var errSignedReadUnavailable = errors.New("signed local read unavailable")
 // subject's current policies. Other operations still require separate
 // integration before typed policies can be enabled.
 func (s *Server) issueSignedLocalRead(r *http.Request, nodeID, mountID, root, operation string, now time.Time) (string, error) {
+	return s.issueSignedAccess(r, nodeID, mountID, root, operation, "", now)
+}
+
+func (s *Server) issueSignedAccess(r *http.Request, nodeID, mountID, root, operation, planID string, now time.Time) (string, error) {
 	if len(s.config.AuthorizationSigningKey) == 0 || !signedauth.ValidKeyID(s.config.AuthorizationSigningKeyID) || !validPathIdentifier(nodeID) || !validPathIdentifier(mountID) {
 		return "", errSignedReadUnavailable
 	}
@@ -43,6 +47,11 @@ func (s *Server) issueSignedLocalRead(r *http.Request, nodeID, mountID, root, op
 		capability, kinds = "read", []string{"file", "directory"}
 	case "archive", "archive_plan":
 		capability = "read"
+	case "upload_create", "upload_chunk", "upload_complete", "upload_abort":
+		if planID == "" {
+			return "", errSignedReadUnavailable
+		}
+		capability, kinds = "create", []string{"file"}
 	default:
 		return "", errSignedReadUnavailable
 	}
@@ -70,6 +79,9 @@ func (s *Server) issueSignedLocalRead(r *http.Request, nodeID, mountID, root, op
 		credentialExpiry = key.ExpiresAt
 		_, hasAgentContext := r.Context().Value(agentKey).(agentContext)
 		if account.Kind == "agent" {
+			if capability == "create" {
+				return "", errSignedReadUnavailable
+			}
 			if !hasAgentContext || key.ExpiresAt == nil || !key.ExpiresAt.After(now) {
 				return "", errSignedReadUnavailable
 			}
@@ -116,7 +128,7 @@ func (s *Server) issueSignedLocalRead(r *http.Request, nodeID, mountID, root, op
 	if actorType == "user" && actor.Role == "admin" {
 		// Existing admins bypass legacy policies, but new typed denies still
 		// take precedence over the built-in grant when a node evaluates a file.
-		adminPolicies := []rbac.Policy{{ID: "builtin-admin", Rules: []rbac.Rule{{Path: base + "/**", Capabilities: []string{"read", "list"}}}}}
+		adminPolicies := []rbac.Policy{{ID: "builtin-admin", Rules: []rbac.Rule{{Path: base + "/**", Capabilities: []string{"read", "list", "create", "update"}}}}}
 		for _, policy := range policies {
 			var denies []rbac.Rule
 			for _, rule := range policy.Rules {
@@ -204,8 +216,14 @@ func (s *Server) issueSignedLocalRead(r *http.Request, nodeID, mountID, root, op
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return "", err
 	}
+	binding := signedauth.Binding{ActorID: actor.ID, CredentialID: credential, Operation: operation, RequestID: "auth_" + hex.EncodeToString(nonce[:])}
+	if capability == "create" {
+		binding.DestinationNodeID, binding.DestinationMountID, binding.DestinationRoot, binding.PlanID = nodeID, mountID, root, planID
+	} else {
+		binding.SourceNodeID, binding.SourceMountID, binding.SourceRoot = nodeID, mountID, root
+	}
 	claims := signedauth.Claims{Version: signedauth.Version, KeyID: s.config.AuthorizationSigningKeyID,
-		Binding:  signedauth.Binding{ActorID: actor.ID, CredentialID: credential, Operation: operation, RequestID: "auth_" + hex.EncodeToString(nonce[:]), SourceNodeID: nodeID, SourceMountID: mountID, SourceRoot: root},
+		Binding:  binding,
 		IssuedAt: now.Unix(), ExpiresAt: expires.Unix(), Context: contextJSON}
 	if err := r.Context().Err(); err != nil {
 		return "", err

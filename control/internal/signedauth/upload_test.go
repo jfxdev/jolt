@@ -11,7 +11,7 @@ func TestVerifyLocalUploadBindsPersistedSession(t *testing.T) {
 	claims.Binding.DestinationNodeID, claims.Binding.DestinationMountID = "node", "mount"
 	claims.Binding.DestinationRoot, claims.Binding.DestinationGrantID, claims.Binding.PlanID = "folder/file.txt", "", "upload-1"
 	now := time.Unix(claims.IssuedAt, 0)
-	for _, operation := range []string{"upload_chunk", "upload_complete"} {
+	for _, operation := range []string{"upload_chunk", "upload_complete", "upload_abort"} {
 		claims.Binding.Operation = operation
 		token, err := Sign(claims, key)
 		if err != nil {
@@ -47,6 +47,7 @@ func TestVerifyLocalUploadBindsPersistedSession(t *testing.T) {
 		}
 	}
 	claims.Binding.DestinationGrantID = "grant"
+	claims.Binding.Operation = "upload_complete"
 	token, err := Sign(claims, key)
 	if err != nil {
 		t.Fatal(err)
@@ -62,5 +63,38 @@ func TestVerifyLocalUploadBindsPersistedSession(t *testing.T) {
 	}
 	if _, _, err := VerifyLocalUpload(token, keys, "user-1", "credential-1", "node", "upload_complete", "mount", "folder/file.txt", "upload-1", now); err == nil {
 		t.Fatal("accepted source node for local upload")
+	}
+}
+
+func TestVerifyUploadAdmissionBindsDestination(t *testing.T) {
+	claims, key, keys := fixture()
+	body := []byte(`{"path":"folder/file.txt","overwrite":false}`)
+	claims.Binding.SourceNodeID, claims.Binding.SourceMountID, claims.Binding.SourceRoot, claims.Binding.SourceGrantID = "", "", "", ""
+	claims.Binding.DestinationNodeID, claims.Binding.DestinationMountID = "node", "mount"
+	claims.Binding.DestinationRoot, claims.Binding.DestinationGrantID, claims.Binding.PlanID = "folder/file.txt", "", UploadAdmissionBodyID(body)
+	claims.Binding.Operation = "upload_create"
+	token, err := Sign(claims, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(claims.IssuedAt, 0)
+	if _, _, err := VerifyUploadAdmission(token, keys, "node", "mount", "folder/file.txt", body, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range [][3]string{{"other", "mount", "folder/file.txt"}, {"node", "other", "folder/file.txt"}, {"node", "mount", "other.txt"}, {"node", "mount", "."}} {
+		if _, _, err := VerifyUploadAdmission(token, keys, tc[0], tc[1], tc[2], body, now); err == nil {
+			t.Fatalf("accepted different admission target: %v", tc)
+		}
+	}
+	if _, _, err := VerifyUploadAdmission(token, keys, "node", "mount", "folder/file.txt", []byte(`{"path":"folder/file.txt","overwrite":true}`), now); err == nil {
+		t.Fatal("accepted changed upload admission body")
+	}
+	claims.Binding.Operation, claims.Binding.PlanID = "upload_complete", "upload-1"
+	token, err = Sign(claims, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := VerifyUploadAdmission(token, keys, "node", "mount", "folder/file.txt", body, now); err == nil {
+		t.Fatal("accepted completion token as admission")
 	}
 }

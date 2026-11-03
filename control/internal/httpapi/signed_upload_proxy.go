@@ -1,0 +1,90 @@
+package httpapi
+
+import (
+	"bytes"
+	"crypto/ed25519"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/jfxdev/jolt/control/internal/signedauth"
+	"github.com/jfxdev/jolt/control/internal/store"
+)
+
+func signedUploadOperation(resource, method string) (operation, sessionID string) {
+	parts := strings.Split(resource, "/")
+	if len(parts) < 4 || parts[0] != "mounts" || !validPathIdentifier(parts[1]) || parts[2] != "files" || parts[3] != "uploads" {
+		return "", ""
+	}
+	if len(parts) == 4 && method == http.MethodPost {
+		return "upload_create", ""
+	}
+	if len(parts) == 5 && validPathIdentifier(parts[4]) && method == http.MethodPatch {
+		return "upload_chunk", parts[4]
+	}
+	if len(parts) == 5 && validPathIdentifier(parts[4]) && method == http.MethodDelete {
+		return "upload_abort", parts[4]
+	}
+	if len(parts) == 6 && validPathIdentifier(parts[4]) && parts[5] == "complete" && method == http.MethodPost {
+		return "upload_complete", parts[4]
+	}
+	return "", ""
+}
+
+func (s *Server) prepareSignedProxyUpload(w http.ResponseWriter, r *http.Request, node store.Node, resource, operation, sessionID string, targets fileTargets) (string, time.Time, bool) {
+	var info struct {
+		NodeID       string   `json:"node_id"`
+		Capabilities []string `json:"capabilities"`
+	}
+	if err := s.callNodeJSON(r.Context(), node, http.MethodGet, "/api/v1/node", nil, &info, r.Header.Get("X-Correlation-ID")); err != nil {
+		writeError(w, r, http.StatusBadGateway, "node_unavailable", "Não foi possível verificar a autorização de upload no node.")
+		return "", time.Time{}, false
+	}
+	found := false
+	for _, capability := range info.Capabilities {
+		found = found || capability == "signed_upload_sessions_v1"
+	}
+	if info.NodeID != node.ID || !found {
+		writeError(w, r, http.StatusConflict, "node_upgrade_required", "Atualize o node e configure as chaves para uploads autorizados.")
+		return "", time.Time{}, false
+	}
+	if len(targets.Paths) != 1 || targets.Paths[0] == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_file_request", "Não foi possível determinar o destino do upload.")
+		return "", time.Time{}, false
+	}
+	root := targets.Paths[0]
+	plan := sessionID
+	var body []byte
+	if operation == "upload_create" {
+		var err error
+		body, err = io.ReadAll(io.LimitReader(r.Body, (1<<20)+1))
+		if err != nil || len(body) == 0 || len(body) > 1<<20 {
+			writeError(w, r, http.StatusBadRequest, "invalid_file_request", "O corpo do upload é inválido.")
+			return "", time.Time{}, false
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		plan = signedauth.UploadAdmissionBodyID(body)
+	}
+	mount := mountIDFromResource(resource)
+	now := time.Now()
+	token, err := s.issueSignedAccess(r, node.ID, mount, root, operation, plan, now)
+	if err != nil {
+		writeError(w, r, http.StatusForbidden, "signed_authorization_unavailable", "Não foi possível autorizar o upload com as permissões atuais.")
+		return "", time.Time{}, false
+	}
+	key := s.config.AuthorizationSigningKey.Public().(ed25519.PublicKey)
+	keys := map[string]ed25519.PublicKey{s.config.AuthorizationSigningKeyID: key}
+	var claims signedauth.Claims
+	if operation == "upload_create" {
+		claims, _, err = signedauth.VerifyUploadAdmission(token, keys, node.ID, mount, root, body, now)
+	} else {
+		credential, _ := r.Context().Value(credentialKey).(string)
+		claims, _, err = signedauth.VerifyLocalUpload(token, keys, currentUser(r).ID, credential, node.ID, operation, mount, root, sessionID, now)
+	}
+	if err != nil {
+		writeError(w, r, http.StatusServiceUnavailable, "signed_authorization_unavailable", "Não foi possível validar a autorização do upload.")
+		return "", time.Time{}, false
+	}
+	return token, time.Unix(claims.ExpiresAt, 0), true
+}

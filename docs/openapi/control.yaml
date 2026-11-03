@@ -837,7 +837,7 @@ paths:
     post:
       tags: [Node proxy]
       summary: Open a resumable upload session
-      description: The Control Tower authorizes the persisted mount and destination. Chunk offsets are durable on the node; the browser must reselect the same source file after reload.
+      description: The Control Tower authorizes the mount and destination, requiring create and, for overwrite, update. With signed uploads enabled the exact admission body and credential are bound to the session. Existing unbound sessions and sessions from another login require a new upload until reauthorization is implemented. Chunk offsets are durable on the node; the browser must reselect the same source file after reload.
       requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
       responses:
         '201': {$ref: '#/components/responses/JSONObject'}
@@ -861,7 +861,7 @@ paths:
     patch:
       tags: [Node proxy]
       summary: Append one chunk at the durable offset
-      description: Send Content-Range with the exact current offset. Authorization is resolved from the persisted session, not a client-supplied path.
+      description: Send Content-Range with the exact current offset. Authorization is resolved from the persisted session, not a client-supplied path. Signed sessions require the same actor and credential and expire within 30 seconds per request.
       parameters:
         - {name: Content-Range, in: header, required: true, schema: {type: string, example: 'bytes 0-16777215/33554432'}}
       requestBody:
@@ -879,6 +879,7 @@ paths:
     delete:
       tags: [Node proxy]
       summary: Abort a resumable upload and remove its partial
+      description: Signed sessions require current authorization by the bound actor and credential.
       responses:
         '204': {$ref: '#/components/responses/NoContent'}
         '403': {$ref: '#/components/responses/Error'}

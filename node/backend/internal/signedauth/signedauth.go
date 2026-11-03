@@ -5,9 +5,11 @@ package signedauth
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"path"
 	"strings"
@@ -111,7 +113,7 @@ func VerifyLocalUpload(token string, keys map[string]ed25519.PublicKey, actorID,
 	if err != nil {
 		return Claims{}, nil, ErrInvalid
 	}
-	if operation != "upload_chunk" && operation != "upload_complete" {
+	if operation != "upload_chunk" && operation != "upload_complete" && operation != "upload_abort" {
 		return Claims{}, nil, ErrInvalid
 	}
 	b := claims.Binding
@@ -119,6 +121,25 @@ func VerifyLocalUpload(token string, keys map[string]ed25519.PublicKey, actorID,
 		return Claims{}, nil, ErrInvalid
 	}
 	return claims, filter, nil
+}
+
+// VerifyUploadAdmission verifies the node and exact destination before the
+// node creates a session. The verified actor and credential become the
+// immutable session binding; admission is not valid for later operations.
+func VerifyUploadAdmission(token string, keys map[string]ed25519.PublicKey, receivingNode, mountID, destination string, body []byte, now time.Time) (Claims, *filetypes.Filter, error) {
+	claims, filter, err := verifySigned(token, keys, now)
+	if err != nil {
+		return Claims{}, nil, ErrInvalid
+	}
+	b := claims.Binding
+	if receivingNode == "" || destination == "" || destination == "." || len(body) == 0 || b.Operation != "upload_create" || b.PlanID != UploadAdmissionBodyID(body) || b.DestinationNodeID != receivingNode || b.DestinationMountID != mountID || b.DestinationRoot != destination || b.DestinationGrantID != "" || b.SourceNodeID != "" || b.SourceGrantID != "" || b.SourceMountID != "" || b.SourceRoot != "" {
+		return Claims{}, nil, ErrInvalid
+	}
+	return claims, filter, nil
+}
+
+func UploadAdmissionBodyID(body []byte) string {
+	return fmt.Sprintf("sha256-%x", sha256.Sum256(body))
 }
 
 func verifySigned(token string, keys map[string]ed25519.PublicKey, now time.Time) (Claims, *filetypes.Filter, error) {

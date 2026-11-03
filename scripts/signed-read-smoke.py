@@ -124,6 +124,7 @@ transfer_grants: []
             CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_FILE=str(private),
             CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID="smoke",
             CONTROL_TOWER_SIGNED_LOCAL_READS="true",
+            CONTROL_TOWER_SIGNED_UPLOADS="true",
         )
         node_log = (root / "node.log").open("w+")
         control_log = (root / "control.log").open("w+")
@@ -172,6 +173,27 @@ transfer_grants: []
                 response = expect(request(control_base, "GET", prefix + path, cookie=cookie), 200)
                 assert b"hide.pem" not in response[1]
             print("PASS: signed proxy and node: list, hidden name, range, metadata, search, disk usage and ZIP")
+
+            upload = expect(request(
+                control_base, "POST", prefix + "/uploads",
+                {"path": "upload.txt", "size": 3, "overwrite": False}, cookie=cookie,
+            ), 201)
+            upload_id = json.loads(upload[1])["upload_id"]
+            node_upload = "/api/v1/mounts/files/files/uploads/" + upload_id
+            upload_path = prefix + "/uploads/" + upload_id
+            chunk_headers = {"Content-Range": "bytes 0-2/3"}
+            expect(request(node_base, "PATCH", node_upload, b"new", token=node_token, headers=chunk_headers), 403)
+            expect(request(control_base, "PATCH", upload_path, b"new", cookie=cookie, headers=chunk_headers), 200)
+            expect(request(control_base, "POST", upload_path + "/complete", {}, cookie=cookie), 201)
+            assert expect(request(control_base, "GET", prefix + "/content?path=upload.txt", cookie=cookie), 200)[1] == b"new"
+            pending = expect(request(
+                control_base, "POST", prefix + "/uploads",
+                {"path": "abort.txt", "size": 3, "overwrite": False}, cookie=cookie,
+            ), 201)
+            pending_path = prefix + "/uploads/" + json.loads(pending[1])["upload_id"]
+            expect(request(control_base, "DELETE", pending_path, cookie=cookie), 204)
+            assert not (root / "files" / "abort.txt").exists()
+            print("PASS: signed upload admission, chunk, publication, abort and unsigned replay refusal")
 
             node.terminate()
             node.wait(timeout=10)

@@ -306,8 +306,17 @@ func validateFilteredFileDestination(ctx context.Context, mount entities.Mount, 
 	if !info.Mode().IsRegular() {
 		return ErrProtectedTree
 	}
-	if err := filter.checkRoot(relative, info); err != nil {
-		return err
+	// An explicit visibility restriction protects an existing file even when
+	// create/update are otherwise granted. A legacy write-only grant, however,
+	// need not acquire read or list access merely to overwrite a file.
+	for _, capability := range []string{"read", "list"} {
+		decision := filter.context.Evaluate(resource, capability, "file")
+		if !decision.Allowed && decision.Restricted {
+			if decision.Visibility == "visible" {
+				return ErrFilteredBlocked
+			}
+			return ErrFilteredHidden
+		}
 	}
 	if !filter.context.Evaluate(resource, "update", "file").Allowed {
 		return ErrFilteredBlocked

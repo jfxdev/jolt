@@ -108,12 +108,12 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 	mux.HandleFunc("DELETE /api/v1/mounts/{mountID}/files", s.deleteFile)
 	if s.store != nil {
 		mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/uploads", s.listUploadSessions)
-		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads", s.createUploadSession)
+		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads", s.signedUpload("upload_create", s.createUploadSession))
 		mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/uploads/{uploadID}/verification", s.uploadLocked(s.verifyUploadSession))
 		mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.uploadLocked(s.getUploadSession))
-		mux.HandleFunc("PATCH /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.uploadLocked(s.appendUploadChunk))
-		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads/{uploadID}/complete", s.uploadLocked(s.completeUploadSession))
-		mux.HandleFunc("DELETE /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.uploadLocked(s.abortUploadSession))
+		mux.HandleFunc("PATCH /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.uploadLocked(s.signedUpload("upload_chunk", s.appendUploadChunk)))
+		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads/{uploadID}/complete", s.uploadLocked(s.signedUpload("upload_complete", s.completeUploadSession)))
+		mux.HandleFunc("DELETE /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.uploadLocked(s.signedUpload("upload_abort", s.abortUploadSession)))
 	}
 	mux.HandleFunc("GET /api/v1/jobs", s.listJobs)
 	mux.HandleFunc("GET /api/v1/jobs/summary", s.jobSummary)
@@ -354,6 +354,9 @@ func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 	capabilities := []string{"api_filesystem", "streaming_upload", "range_download", "durable_local_jobs", "job_controls", "job_events_sse", "job_eta", "bandwidth_limits", "waiting_mount", "waiting_validation", "directory_manifests", "directory_resume", "resumable_chunks", "conflict_policies", "manual_item_overrides", "checksum_verification", "source_change_policies", "transfer_path_grants", "cluster_grouping", "mtls_peer_listener", "mtls_certificate_rotation", "mtls_certificate_rollout_diagnostics", "mtls_certificate_revocation", "identity_handover", "mtls_peer_heartbeat", "direct_file_pull", "operational_token_rotation", "idempotency", "hidden_patterns_v1", "protected_move_v1", "canary_paths_v1", "agent_search_limits_v1", "agent_secret_scan_v1", "grant_exclude_send_v1", "grant_exclude_receive_v1", "upload_inspection_v1"}
 	if len(s.config.AuthorizationKeys) > 0 {
 		capabilities = append(capabilities, "signed_local_read_v1", "signed_local_tree_read_v1")
+		if s.store != nil {
+			capabilities = append(capabilities, "signed_upload_sessions_v1")
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"configuration": map[string]any{"source": "yaml", "apply_mode": "restart", "mounts_mutable": false, "grants_mutable": false},
@@ -2174,9 +2177,12 @@ paths:
       description: >
         The declared size caps what the node will write and is verified before
         the file is published, so a truncated upload can never replace a good
-        file. One destination may hold only one open session.
+        file. One destination may hold only one open session. An internal signed
+        context binds the exact request body and creates a session bound to the
+        authenticated actor and credential when signed_upload_sessions_v1 is advertised.
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed upload admission context}
       requestBody:
         required: true
         content:
@@ -2191,7 +2197,11 @@ paths:
                 checksum: {type: string, description: Optional SHA-256 verified before publishing}
                 chunk_size: {type: integer, format: int64}
       responses:
-        "201": {description: Created session}
+        "201":
+          description: Created session
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
+        "403": {description: Signed context invalid or destination denied}
         "409": {description: Another unfinished upload already targets this destination}
         "413": {description: Declared size exceeds UPLOAD_MAX_BYTES}
         "422": {description: hidden_name - the destination is hidden by mount configuration}
@@ -2216,13 +2226,18 @@ paths:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: path, name: uploadID, required: true, schema: {type: string}}
         - {in: header, name: Content-Range, required: true, schema: {type: string}, description: "bytes <start>-<end>/<total>"}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context required for a bound session}
       requestBody:
         required: true
         content:
           application/octet-stream:
             schema: {type: string, format: binary}
       responses:
-        "200": {description: Session with the new offset}
+        "200":
+          description: Session with the new offset
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
+        "403": {description: Signed context required or invalid, or destination denied}
         "409": {description: Offset mismatch; X-Jolt-Upload-Offset carries the stored offset}
         "413": {description: Chunk exceeds the session chunk_size or upload limit}
         "507": {description: Available disk safety margin exhausted}
@@ -2231,8 +2246,13 @@ paths:
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: path, name: uploadID, required: true, schema: {type: string}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context required for a bound session}
       responses:
-        "204": {description: Upload discarded}
+        "204":
+          description: Upload discarded
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
+        "403": {description: Signed context required or invalid, or destination denied}
   /api/v1/mounts/{mountID}/files/uploads/{uploadID}/verification:
     get:
       summary: SHA-256 verification of every received byte for safe source re-selection
@@ -2268,9 +2288,14 @@ paths:
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: path, name: uploadID, required: true, schema: {type: string}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context required for a bound session}
       responses:
-        "201": {description: Durable completion receipt including upload_id, destination_path, size, SHA-256 checksum, state and completed_at; repeat returns the same receipt until expiry}
+        "201":
+          description: Durable completion receipt including upload_id, destination_path, size, SHA-256 checksum, state and completed_at; repeat returns the same receipt until expiry
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
         "400": {description: The upload is short of the declared size or its checksum does not match}
+        "403": {description: Signed context required or invalid, or destination denied}
         "409": {description: The destination exists and the session does not allow overwrite}
         "422": {description: upload_content_rejected; the rejected partial and upload session are removed}
   /api/v1/mounts/{mountID}/files/copy/plan:

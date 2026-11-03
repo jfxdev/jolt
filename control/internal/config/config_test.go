@@ -37,13 +37,22 @@ func TestAuthorizationSigningKeyFile(t *testing.T) {
 	t.Setenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID", "current")
 	t.Setenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_FILE", file)
 	cfg, err := Load()
-	if err != nil || cfg.SignedLocalReads || cfg.AuthorizationSigningKeyID != "current" || !cfg.AuthorizationSigningKey.Equal(private) {
+	if err != nil || cfg.SignedLocalReads || cfg.SignedUploads || cfg.AuthorizationSigningKeyID != "current" || !cfg.AuthorizationSigningKey.Equal(private) {
 		t.Fatalf("key configuration failed: %v", err)
 	}
 	t.Setenv("CONTROL_TOWER_SIGNED_LOCAL_READS", "true")
+	t.Setenv("CONTROL_TOWER_SIGNED_UPLOADS", "true")
 	if activated, err := Load(); err != nil || !activated.SignedLocalReads {
 		t.Fatalf("signed read activation failed: %v", err)
 	}
+	if activated, err := Load(); err != nil || !activated.SignedUploads {
+		t.Fatalf("signed upload activation failed: %v", err)
+	}
+	t.Setenv("CONTROL_TOWER_SIGNED_UPLOADS", "invalid")
+	if _, err := Load(); err == nil {
+		t.Fatal("invalid upload activation value accepted")
+	}
+	t.Setenv("CONTROL_TOWER_SIGNED_UPLOADS", "true")
 	t.Setenv("CONTROL_TOWER_SIGNED_LOCAL_READS", "invalid")
 	if _, err := Load(); err == nil {
 		t.Fatal("invalid activation value accepted")
@@ -70,6 +79,10 @@ func TestAuthorizationSigningKeyFile(t *testing.T) {
 	t.Setenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID", "")
 	if _, err := Load(); err == nil {
 		t.Fatal("signed reads without key accepted")
+	}
+	t.Setenv("CONTROL_TOWER_SIGNED_LOCAL_READS", "false")
+	if _, err := Load(); err == nil {
+		t.Fatal("signed uploads without key accepted")
 	}
 	for _, tc := range []struct{ id, file string }{{"", file}, {"bad/id", file}, {"current", ""}, {"current", file + "-missing"}} {
 		if _, err := readAuthorizationSigningKey(tc.id, tc.file); err == nil {

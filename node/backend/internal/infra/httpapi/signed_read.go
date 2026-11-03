@@ -29,6 +29,11 @@ func (s *Server) guardSignedContext(next http.Handler) http.Handler {
 			return
 		}
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
+		upload := len(parts) >= 6 && len(parts) <= 8 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "mounts" && parts[3] != "" && parts[4] == "files" && parts[5] == "uploads" && ((len(parts) == 6 && r.Method == http.MethodPost) || (len(parts) == 7 && (r.Method == http.MethodPatch || r.Method == http.MethodDelete)) || (len(parts) == 8 && parts[7] == "complete" && r.Method == http.MethodPost))
+		if upload {
+			next.ServeHTTP(w, r)
+			return
+		}
 		valid := (r.Method == http.MethodGet || r.Method == http.MethodHead) && len(parts) >= 5 && len(parts) <= 7 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "mounts" && parts[3] != "" && parts[4] == "files"
 		if valid && len(parts) == 6 {
 			valid = parts[5] == "metadata" || parts[5] == "content" || parts[5] == "archive" || parts[5] == "search" || parts[5] == "disk-usage"

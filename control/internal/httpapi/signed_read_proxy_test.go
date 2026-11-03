@@ -21,6 +21,7 @@ import (
 type deadlineRecorder struct{ *httptest.ResponseRecorder }
 
 func (w *deadlineRecorder) SetWriteDeadline(time.Time) error { return nil }
+func (w *deadlineRecorder) SetReadDeadline(time.Time) error  { return nil }
 
 func TestSignedProxyReadsRequireNodeEnforcement(t *testing.T) {
 	private := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))

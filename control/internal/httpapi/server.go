@@ -3106,16 +3106,27 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	signedToken := ""
-	if operation := signedReadOperation(resource, r.Method); s.config.SignedLocalReads && operation != "" {
+	readOperation := signedReadOperation(resource, r.Method)
+	uploadOperation, uploadSessionID := signedUploadOperation(resource, r.Method)
+	if (s.config.SignedLocalReads && readOperation != "") || (s.config.SignedUploads && uploadOperation != "") {
 		var deadline time.Time
 		var ok bool
-		signedToken, deadline, ok = s.prepareSignedProxyRead(w, r, node, resource, operation)
+		if uploadOperation != "" {
+			signedToken, deadline, ok = s.prepareSignedProxyUpload(w, r, node, resource, uploadOperation, uploadSessionID, targets)
+		} else {
+			signedToken, deadline, ok = s.prepareSignedProxyRead(w, r, node, resource, readOperation)
+		}
 		if !ok {
 			return
 		}
 		controller := http.NewResponseController(w)
 		if err := controller.SetWriteDeadline(deadline); err != nil {
 			writeError(w, r, http.StatusServiceUnavailable, "signed_authorization_unavailable", "Não foi possível limitar o prazo desta leitura.")
+			return
+		}
+		if uploadOperation == "upload_chunk" && controller.SetReadDeadline(deadline) != nil {
+			_ = controller.SetWriteDeadline(time.Time{})
+			writeError(w, r, http.StatusServiceUnavailable, "signed_authorization_unavailable", "Não foi possível limitar o prazo do envio.")
 			return
 		}
 		ctx, cancel := context.WithDeadline(r.Context(), deadline)
@@ -3126,6 +3137,9 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 				panic(http.ErrAbortHandler)
 			}
 			_ = controller.SetWriteDeadline(time.Time{})
+			if uploadOperation == "upload_chunk" {
+				_ = controller.SetReadDeadline(time.Time{})
+			}
 		}()
 		r = r.WithContext(ctx)
 		w = &signedProxyWriter{ResponseWriter: w, ctx: ctx}
