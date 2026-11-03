@@ -28,3 +28,5 @@ O suporte está em implementação: o Control Tower já valida a configuração 
 ```
 
 O bundle SPIFFE é um JWKS com chaves públicas e seu caminho relativo é resolvido a partir do arquivo de provedores. URLs JWKS exigem HTTPS, exceto para emissores de teste em loopback. O carregador recusa campos desconhecidos, rotas duplicadas, algoritmos simétricos e configurações incompletas; a seleção ambígua entre provedores é recusada. Não inclua credenciais privadas no arquivo.
+
+Na edição de uma conta de serviço, a seção **Identidades de workload** permite cadastrar, desativar, reativar e revogar mapeamentos para os provedores configurados. Para JWT, informe emissor, sujeito e audiência exatos; para JWT-SVID, deixe o emissor vazio e informe o SPIFFE ID completo como sujeito. Em contas de agente, o vínculo recebe os limites exibidos no formulário e pode ter esses limites atualizados. A rotação de uma API key estática não revoga os vínculos de workload. A identidade pode ser preparada agora, mas ainda não autentica requisições.

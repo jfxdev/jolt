@@ -594,7 +594,7 @@ func (s *Store) CreateServiceAccountToken(ctx context.Context, token ServiceAcco
 	}
 	if revokeExisting {
 		now := token.CreatedAt.Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx, `UPDATE service_account_tokens SET revoked_at=? WHERE service_account_id=? AND revoked_at IS NULL`,
+		if _, err := tx.ExecContext(ctx, `UPDATE service_account_tokens SET revoked_at=? WHERE service_account_id=? AND revoked_at IS NULL AND NOT EXISTS(SELECT 1 FROM workload_identities w WHERE w.credential_id=service_account_tokens.id)`,
 			now, token.ServiceAccountID); err != nil {
 			return err
 		}
@@ -622,7 +622,7 @@ func (s *Store) ListServiceAccountTokens(ctx context.Context, accountID string) 
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id,service_account_id,name,token_hash,expires_at,last_used_at,revoked_at,created_at,agent_limits
-FROM service_account_tokens WHERE service_account_id=? ORDER BY created_at DESC`, accountID)
+FROM service_account_tokens t WHERE service_account_id=? AND NOT EXISTS (SELECT 1 FROM workload_identities w WHERE w.credential_id=t.id) ORDER BY created_at DESC`, accountID)
 	if err != nil {
 		return nil, err
 	}

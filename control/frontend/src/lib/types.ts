@@ -77,6 +77,23 @@ export interface ServiceCredential extends ServiceAccountToken {
   token: string;
 }
 
+export interface WorkloadIdentityInput {
+  provider_id: string;
+  issuer: string;
+  subject: string;
+  audience: string;
+  agent_limits?: AgentLimits;
+}
+
+export interface WorkloadIdentity extends WorkloadIdentityInput {
+  credential_id: string;
+  service_account_id: string;
+  enabled: boolean;
+  revoked: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface PolicyRule {
   path: string;
   capabilities: Capability[];

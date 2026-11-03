@@ -35,6 +35,7 @@ import {
 } from "@/components/ui/dialog";
 import type { AdminDialogProps } from "./types";
 import { TemporaryPoliciesEditor } from "./TemporaryPoliciesEditor";
+import { WorkloadIdentitiesEditor } from "./WorkloadIdentitiesEditor";
 import {
   AdminEntityDialog,
   EntityDialogFormLayout,
@@ -243,7 +244,7 @@ export function ServiceAccountsDialog({
       const t = await api.serviceAccountTokens(editingId);
       setTokens(t.items || []);
       toast.success(
-        "Credencial rotacionada. As credenciais anteriores foram revogadas.",
+        "Credencial rotacionada. As API keys estáticas anteriores foram revogadas.",
       );
     } catch (error) {
       handleError(error);
@@ -671,7 +672,7 @@ export function ServiceAccountsDialog({
                 <div className="flex items-baseline justify-between">
                   <h3 className="font-semibold">Credenciais</h3>
                   <small className="text-muted-foreground">
-                    Rotação revoga todas as anteriores.
+                    Rotação revoga as API keys estáticas anteriores.
                   </small>
                 </div>
                 <div className="grid gap-2">
@@ -741,6 +742,8 @@ export function ServiceAccountsDialog({
                 </div>
               </div>
             )}
+
+            {editingId && <WorkloadIdentitiesEditor key={editingId} accountId={editingId} agentLimits={form.kind === "agent" ? { ...form.limits, allowed_cidrs: form.cidrs.split(",").map((item) => item.trim()).filter(Boolean), read_media_types: form.mediaTypes.split(",").map((item) => item.trim()).filter(Boolean) } : undefined} onLoadLimits={(limits) => setForm((current) => ({ ...current, limits, cidrs: limits.allowed_cidrs?.join(", ") || "", mediaTypes: limits.read_media_types?.join(", ") || "" }))} />}
 
             <div className="flex justify-end gap-2">
               <Button type="submit" disabled={busy}>

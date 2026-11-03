@@ -14,15 +14,17 @@ import (
 // WorkloadIdentity is a durable mapping, not a bearer credential. JWTs are
 // never stored; credential ID remains stable when the issuer rotates them.
 type WorkloadIdentity struct {
-	CredentialID     string    `json:"credential_id"`
-	ServiceAccountID string    `json:"service_account_id"`
-	ProviderID       string    `json:"provider_id"`
-	Issuer           string    `json:"issuer"`
-	Subject          string    `json:"subject"`
-	Audience         string    `json:"audience"`
-	Enabled          bool      `json:"enabled"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	AgentLimits      *AgentLimits `json:"agent_limits,omitempty"`
+	CredentialID     string       `json:"credential_id"`
+	ServiceAccountID string       `json:"service_account_id"`
+	ProviderID       string       `json:"provider_id"`
+	Issuer           string       `json:"issuer"`
+	Subject          string       `json:"subject"`
+	Audience         string       `json:"audience"`
+	Enabled          bool         `json:"enabled"`
+	Revoked          bool         `json:"revoked"`
+	CreatedAt        time.Time    `json:"created_at"`
+	UpdatedAt        time.Time    `json:"updated_at"`
 }
 
 // CreateWorkloadIdentity creates both the mapping and its quota-bearing
@@ -117,14 +119,14 @@ WHERE w.provider_id=? AND w.issuer=? AND w.subject=? AND w.audience=? AND w.enab
 
 // SetWorkloadIdentityEnabled preserves the credential and its quota history.
 // The future HTTP integration must also cancel active requests when disabling.
-func (s *Store) SetWorkloadIdentityEnabled(ctx context.Context, id string, enabled bool, actorID, actorType, correlationID string) error {
+func (s *Store) SetWorkloadIdentityEnabled(ctx context.Context, accountID, id string, enabled bool, actorID, actorType, correlationID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	result, err := tx.ExecContext(ctx, `UPDATE workload_identities SET enabled=?,updated_at=? WHERE credential_id=?`, boolInt(enabled), now, id)
+	result, err := tx.ExecContext(ctx, `UPDATE workload_identities SET enabled=?,updated_at=? WHERE credential_id=? AND EXISTS(SELECT 1 FROM service_account_tokens WHERE id=credential_id AND service_account_id=?)`, boolInt(enabled), now, id, accountID)
 	if err != nil {
 		return err
 	}
@@ -141,6 +143,61 @@ func (s *Store) SetWorkloadIdentityEnabled(ctx context.Context, id string, enabl
 		return err
 	}
 	return tx.Commit()
+}
+
+func scanWorkloadIdentity(scanner interface{ Scan(...any) error }) (WorkloadIdentity, error) {
+	var identity WorkloadIdentity
+	var created, updated, limits string
+	var enabled int
+	var revoked sql.NullString
+	err := scanner.Scan(&identity.CredentialID, &identity.ServiceAccountID, &identity.ProviderID, &identity.Issuer, &identity.Subject, &identity.Audience, &enabled, &created, &updated, &revoked, &limits)
+	if err != nil {
+		return WorkloadIdentity{}, err
+	}
+	identity.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return WorkloadIdentity{}, err
+	}
+	identity.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
+	if err != nil {
+		return WorkloadIdentity{}, err
+	}
+	if err := json.Unmarshal([]byte(limits), &identity.AgentLimits); err != nil {
+		return WorkloadIdentity{}, err
+	}
+	identity.Enabled, identity.Revoked = enabled != 0, revoked.Valid
+	return identity, nil
+}
+
+const workloadIdentitySelect = `SELECT w.credential_id,t.service_account_id,w.provider_id,w.issuer,w.subject,w.audience,w.enabled,w.created_at,w.updated_at,t.revoked_at,t.agent_limits
+FROM workload_identities w JOIN service_account_tokens t ON t.id=w.credential_id `
+
+func (s *Store) GetWorkloadIdentity(ctx context.Context, accountID, id string) (WorkloadIdentity, error) {
+	identity, err := scanWorkloadIdentity(s.db.QueryRowContext(ctx, workloadIdentitySelect+`WHERE t.service_account_id=? AND w.credential_id=?`, accountID, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkloadIdentity{}, ErrNotFound
+	}
+	return identity, err
+}
+
+func (s *Store) ListWorkloadIdentities(ctx context.Context, accountID string) ([]WorkloadIdentity, error) {
+	if _, err := s.GetServiceAccount(ctx, accountID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, workloadIdentitySelect+`WHERE t.service_account_id=? ORDER BY w.created_at,w.credential_id`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	identities := []WorkloadIdentity{}
+	for rows.Next() {
+		identity, err := scanWorkloadIdentity(rows)
+		if err != nil {
+			return nil, err
+		}
+		identities = append(identities, identity)
+	}
+	return identities, rows.Err()
 }
 
 func validWorkloadField(value string, empty bool, max int) bool {

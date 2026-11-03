@@ -228,6 +228,64 @@ paths:
         '201': {$ref: '#/components/responses/JSONObject'}
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/service-accounts/{serviceAccountID}/workload-identities:
+    parameters: [{$ref: '#/components/parameters/ServiceAccountID'}]
+    get:
+      tags: [Administration]
+      summary: List workload identity mappings for a service account
+      responses:
+        '200':
+          description: Mappings and credential limits; no bearer tokens
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/WorkloadIdentity'}}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    post:
+      tags: [Administration]
+      summary: Create an explicit workload identity mapping
+      description: The provider must be configured. Creating a mapping does not yet enable JWT authentication.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WorkloadIdentityInput'}
+      responses:
+        '201':
+          description: Created mapping with a stable credential ID
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WorkloadIdentity'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/service-accounts/{serviceAccountID}/workload-identities/{credentialID}:
+    parameters:
+      - {$ref: '#/components/parameters/ServiceAccountID'}
+      - {name: credentialID, in: path, required: true, schema: {type: string}}
+    patch:
+      tags: [Administration]
+      summary: Enable or disable a mapping while preserving its credential quota
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: {type: boolean}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/service-accounts/{serviceAccountID}/tokens/{tokenID}:
     parameters:
       - {$ref: '#/components/parameters/ServiceAccountID'}
@@ -1126,6 +1184,27 @@ components:
         allowed_cidrs: {type: array, maxItems: 64, items: {type: string}, description: Empty allows any source address}
         read_media_types: {type: array, maxItems: 64, uniqueItems: true, items: {type: string, example: text/plain}, description: Empty allows all media types. Exact types only; archive downloads and multipart ranges are refused while this restriction is active.}
         capabilities: {type: array, maxItems: 2, uniqueItems: true, items: {type: string, enum: [list, read]}, description: Optional capability ceiling. Omitted permits list and read; an empty array permits neither. Policies remain required.}
+    WorkloadIdentityInput:
+      type: object
+      required: [provider_id, issuer, subject, audience]
+      properties:
+        provider_id: {type: string}
+        issuer: {type: string, description: Empty for JWT-SVID providers}
+        subject: {type: string}
+        audience: {type: string}
+        agent_limits: {$ref: '#/components/schemas/AgentLimits'}
+    WorkloadIdentity:
+      allOf:
+        - {$ref: '#/components/schemas/WorkloadIdentityInput'}
+        - type: object
+          required: [credential_id, service_account_id, enabled, revoked, created_at, updated_at]
+          properties:
+            credential_id: {type: string}
+            service_account_id: {type: string}
+            enabled: {type: boolean}
+            revoked: {type: boolean}
+            created_at: {type: string, format: date-time}
+            updated_at: {type: string, format: date-time}
     ServiceAccountInput:
       type: object
       required: [name, group_ids]

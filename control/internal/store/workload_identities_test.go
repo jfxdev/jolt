@@ -31,6 +31,9 @@ func TestWorkloadIdentityKeepsCredentialQuotaAcrossRestartAndDisable(t *testing.
 	if err := s.CreateWorkloadIdentity(ctx, identity, nil, "admin", "user", "correlation"); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.SetWorkloadIdentityEnabled(ctx, "different-account", identity.CredentialID, false, "admin", "user", ""); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another account modified mapping: %v", err)
+	}
 	if version, err := s.Metadata(ctx, "minimum_security_version"); err != nil || version != "4" {
 		t.Fatalf("version=%q err=%v", version, err)
 	}
@@ -41,7 +44,7 @@ func TestWorkloadIdentityKeepsCredentialQuotaAcrossRestartAndDisable(t *testing.
 	if _, err := s.ReserveAgentBytes(ctx, identity.CredentialID, day, 4096, 4096); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetWorkloadIdentityEnabled(ctx, identity.CredentialID, false, "admin", "user", ""); err != nil {
+	if err := s.SetWorkloadIdentityEnabled(ctx, identity.ServiceAccountID, identity.CredentialID, false, "admin", "user", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ActiveWorkloadIdentity(ctx, "provider", "issuer", "subject", "jolt"); !errors.Is(err, ErrNotFound) {
@@ -52,7 +55,7 @@ func TestWorkloadIdentityKeepsCredentialQuotaAcrossRestartAndDisable(t *testing.
 	if err := s.CreateWorkloadIdentity(ctx, duplicate, nil, "admin", "user", ""); !errors.Is(err, ErrConflict) {
 		t.Fatalf("disabled mapping recreated with fresh quota: %v", err)
 	}
-	if err := s.SetWorkloadIdentityEnabled(ctx, identity.CredentialID, true, "admin", "user", ""); err != nil {
+	if err := s.SetWorkloadIdentityEnabled(ctx, identity.ServiceAccountID, identity.CredentialID, true, "admin", "user", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -69,6 +72,18 @@ func TestWorkloadIdentityKeepsCredentialQuotaAcrossRestartAndDisable(t *testing.
 	}
 	if _, err := s.ReserveAgentBytes(ctx, resolved.CredentialID, day, 1024, 4096); !errors.Is(err, ErrAgentQuota) {
 		t.Fatalf("quota reset: %v", err)
+	}
+	expires := time.Now().Add(time.Hour)
+	for index, token := range []ServiceAccountToken{
+		{ID: "static-1", ServiceAccountID: "agent", TokenHash: security.Digest("static-1"), ExpiresAt: &expires, CreatedAt: time.Now()},
+		{ID: "static-2", ServiceAccountID: "agent", TokenHash: security.Digest("static-2"), ExpiresAt: &expires, CreatedAt: time.Now()},
+	} {
+		if err := s.CreateServiceAccountToken(ctx, token, index == 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.ActiveWorkloadIdentity(ctx, "provider", "issuer", "subject", "jolt"); err != nil {
+		t.Fatalf("static key rotation revoked workload identity: %v", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE service_account_tokens SET expires_at='malformed' WHERE id=?`, identity.CredentialID); err != nil {
 		t.Fatal(err)
@@ -160,9 +175,13 @@ func TestDuplicateWorkloadMappingsCannotCreateExtraCredentials(t *testing.T) {
 	if succeeded.Load() != 1 {
 		t.Fatalf("created=%d", succeeded.Load())
 	}
+	identities, err := s.ListWorkloadIdentities(ctx, "svc")
+	if err != nil || len(identities) != 1 {
+		t.Fatalf("duplicate or missing mappings: %+v %v", identities, err)
+	}
 	tokens, err := s.ListServiceAccountTokens(ctx, "svc")
-	if err != nil || len(tokens) != 1 {
-		t.Fatalf("orphan credentials: %+v %v", tokens, err)
+	if err != nil || len(tokens) != 0 {
+		t.Fatalf("workload credential appeared as static key: %+v %v", tokens, err)
 	}
 }
 

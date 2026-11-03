@@ -30,6 +30,8 @@ import type {
 	TransferTargetsResponse,
   TrustView,
   User,
+  WorkloadIdentity,
+  WorkloadIdentityInput,
 } from "./types";
 
 interface RequestOptions extends RequestInit {}
@@ -181,6 +183,12 @@ export const api = {
     request<ListResponse<ServiceAccountToken>>(
       `/api/v1/control-tower/service-accounts/${encodeURIComponent(accountId)}/tokens`,
     ),
+  workloadIdentities: (accountId: string) =>
+    request<ListResponse<WorkloadIdentity>>(`/api/v1/control-tower/service-accounts/${encodeURIComponent(accountId)}/workload-identities`),
+  createWorkloadIdentity: (accountId: string, identity: WorkloadIdentityInput) =>
+    request<WorkloadIdentity>(`/api/v1/control-tower/service-accounts/${encodeURIComponent(accountId)}/workload-identities`, { method: "POST", body: JSON.stringify(identity) }),
+  setWorkloadIdentityEnabled: (accountId: string, credentialId: string, enabled: boolean) =>
+    request<null>(`/api/v1/control-tower/service-accounts/${encodeURIComponent(accountId)}/workload-identities/${encodeURIComponent(credentialId)}`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
   rotateServiceAccountToken: (
     accountId: string,
     credential: object,
