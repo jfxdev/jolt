@@ -141,6 +141,13 @@ func (s *Server) serveAgent(next http.Handler, w http.ResponseWriter, r *http.Re
 		writeError(w, r, http.StatusUnauthorized, "invalid_service_token", "Credencial de agente inválida ou revogada.")
 		return
 	}
+	groups, err := s.store.ServiceAccountGroupIDs(r.Context(), account.ID, true)
+	if err != nil || len(groups) == 0 {
+		s.agentMu.Unlock()
+		writeError(w, r, http.StatusUnauthorized, "api_key_without_active_group", "A API key não possui um grupo de acesso ativo.")
+		return
+	}
+	r = r.WithContext(context.WithValue(r.Context(), groupKey, groups))
 	limits, err = normalizeAgentLimits(currentToken.AgentLimits)
 	if err != nil || !addressAllowed(r, limits, s.config.TrustedProxies) {
 		s.agentMu.Unlock()

@@ -656,3 +656,86 @@ func asError(value any) error {
 	}
 	return fmt.Errorf("%v", value)
 }
+
+func TestAgentStreamsStopWhenAuthorizationChanges(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, path, body string
+		status                   int
+	}{
+		{"disable group", "PATCH", "/api/v1/control-tower/access-groups/group", `{"enabled":false}`, 200},
+		{"delete group", "DELETE", "/api/v1/control-tower/access-groups/group", "", 204},
+		{"group nodes", "PUT", "/api/v1/control-tower/access-groups/group/nodes", `{"ids":[]}`, 200},
+		{"group policies", "PUT", "/api/v1/control-tower/access-groups/group/policies", `{"ids":[]}`, 200},
+		{"account groups", "PUT", "/api/v1/control-tower/service-accounts/ACCOUNT/groups", `{"ids":["alternate"]}`, 200},
+		{"update policy", "PATCH", "/api/v1/control-tower/policies/wide", `{"name":"wide","rules":[{"path":"nodes/n1/files/mounts/m/**","capabilities":["list"]}]}`, 200},
+		{"delete policy", "DELETE", "/api/v1/control-tower/policies/wide", "", 204},
+		{"account policies", "PUT", "/api/v1/control-tower/service-accounts/ACCOUNT/policies", `{"policy_ids":[]}`, 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ready := make(chan struct{})
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, ContentLength: -1, Header: http.Header{"Content-Type": []string{"application/octet-stream"}}, Body: &cancelBody{ctx: r.Context(), ready: ready}}, nil
+			})}
+			f := setupAgent(t, store.DefaultAgentLimits(), client)
+			now := time.Now().UTC()
+			if err := f.storage.CreateAccessGroup(context.Background(), store.AccessGroup{ID: "alternate", Name: "alternate", Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			done := make(chan any, 1)
+			go func() {
+				defer func() { done <- recover() }()
+				f.handler.ServeHTTP(httptest.NewRecorder(), f.request("GET", "/api/v1/nodes/n1/mounts/m/files/content?path=x").WithContext(ctx))
+			}()
+			select {
+			case <-ready:
+			case <-ctx.Done():
+				t.Fatal("stream did not start")
+			}
+			response := httptest.NewRecorder()
+			path := strings.ReplaceAll(tc.path, "ACCOUNT", f.accountID)
+			f.handler.ServeHTTP(response, authenticatedRequest(tc.method, path, f.adminSession, []byte(tc.body)))
+			if response.Code != tc.status {
+				t.Fatalf("authorization change: %d %s", response.Code, response.Body)
+			}
+			select {
+			case value := <-done:
+				if !errors.Is(asError(value), http.ErrAbortHandler) {
+					t.Fatalf("stream did not abort: %v", value)
+				}
+			case <-ctx.Done():
+				t.Fatal("stream was not cancelled")
+			}
+		})
+	}
+}
+
+func TestAgentAdmissionReloadsGroupsAfterAuthentication(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})}
+	f := setupAgent(t, store.DefaultAgentLimits(), client)
+	account, token, err := f.storage.AuthenticateServiceAccount(context.Background(), security.Digest(f.token))
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err := f.storage.GetAccessGroup(context.Background(), "group")
+	if err != nil {
+		t.Fatal(err)
+	}
+	group.Enabled = false
+	if err := f.storage.UpdateAccessGroup(context.Background(), group); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: f.storage, agentTokens: map[string]*agentTokenState{}}
+	ctx := context.WithValue(context.Background(), credentialDigestKey, security.Digest(f.token))
+	ctx = context.WithValue(ctx, groupKey, []string{"group"})
+	r := httptest.NewRequest("GET", "/", nil).WithContext(ctx)
+	called := false
+	w := httptest.NewRecorder()
+	s.serveAgent(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), w, r, account, token)
+	if called || w.Code != http.StatusUnauthorized {
+		t.Fatalf("stale group accepted: called=%v status=%d", called, w.Code)
+	}
+}

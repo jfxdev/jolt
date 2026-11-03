@@ -1384,7 +1384,13 @@ func (s *Server) updateAccessGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	group.UpdatedAt = time.Now().UTC()
-	if err := s.store.UpdateAccessGroup(r.Context(), group); err != nil {
+	s.agentMu.Lock()
+	err = s.store.UpdateAccessGroup(r.Context(), group)
+	if err == nil {
+		s.cancelAgentLocked("", "")
+	}
+	s.agentMu.Unlock()
+	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(w, r, http.StatusConflict, "access_group_conflict", "Já existe um grupo com esse nome.")
 			return
@@ -1402,7 +1408,13 @@ func (s *Server) deleteAccessGroup(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r, "delete", resource) {
 		return
 	}
-	if err := s.store.DeleteAccessGroup(r.Context(), id); err != nil {
+	s.agentMu.Lock()
+	err := s.store.DeleteAccessGroup(r.Context(), id)
+	if err == nil {
+		s.cancelAgentLocked("", "")
+	}
+	s.agentMu.Unlock()
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "access_group_not_found", "Grupo de acesso não encontrado.")
 			return
@@ -1482,11 +1494,16 @@ func (s *Server) assignAccessGroupIDs(w http.ResponseWriter, r *http.Request, ki
 	}
 	input.IDs = uniqueNonEmpty(input.IDs)
 	var err error
+	s.agentMu.Lock()
 	if kind == "nodes" {
 		err = s.store.SetAccessGroupNodes(r.Context(), id, input.IDs)
 	} else {
 		err = s.store.SetAccessGroupPolicies(r.Context(), id, input.IDs)
 	}
+	if err == nil {
+		s.cancelAgentLocked("", "")
+	}
+	s.agentMu.Unlock()
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "assignment_target_not_found", "Grupo, node ou policy não encontrado.")
@@ -1603,7 +1620,13 @@ func (s *Server) updatePolicy(w http.ResponseWriter, r *http.Request) {
 	current.Description = input.Description
 	current.Rules = input.Rules
 	current.UpdatedAt = time.Now().UTC()
-	if err := s.store.UpdatePolicy(r.Context(), current); err != nil {
+	s.agentMu.Lock()
+	err = s.store.UpdatePolicy(r.Context(), current)
+	if err == nil {
+		s.cancelAgentLocked("", "")
+	}
+	s.agentMu.Unlock()
+	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			s.audit(r, "update", resource, "denied")
 			writeError(w, r, http.StatusConflict, "policy_conflict", "Já existe uma policy com esse nome.")
@@ -1622,7 +1645,13 @@ func (s *Server) deletePolicy(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r, "delete", resource) {
 		return
 	}
-	if err := s.store.DeletePolicy(r.Context(), id); err != nil {
+	s.agentMu.Lock()
+	err := s.store.DeletePolicy(r.Context(), id)
+	if err == nil {
+		s.cancelAgentLocked("", "")
+	}
+	s.agentMu.Unlock()
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "policy_not_found", "Policy não encontrada.")
 			return
@@ -1859,7 +1888,13 @@ func (s *Server) assignServiceAccountGroups(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
-	if err := s.store.SetServiceAccountGroups(r.Context(), id, input.IDs); err != nil {
+	s.agentMu.Lock()
+	err := s.store.SetServiceAccountGroups(r.Context(), id, input.IDs)
+	if err == nil {
+		s.cancelAgentLocked(id, "")
+	}
+	s.agentMu.Unlock()
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "assignment_target_not_found", "API key ou grupo não encontrado.")
 			return
@@ -1910,7 +1945,13 @@ func (s *Server) assignSubjectPolicies(w http.ResponseWriter, r *http.Request, s
 			return
 		}
 	}
-	if err := s.store.SetSubjectPolicies(r.Context(), subjectType, subjectID, input.PolicyIDs); err != nil {
+	s.agentMu.Lock()
+	err := s.store.SetSubjectPolicies(r.Context(), subjectType, subjectID, input.PolicyIDs)
+	if err == nil && subjectType == "service_account" {
+		s.cancelAgentLocked(subjectID, "")
+	}
+	s.agentMu.Unlock()
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			s.audit(r, "update", resource, "denied")
 			writeError(w, r, http.StatusNotFound, "assignment_target_not_found", "Usuário, conta de serviço ou policy não encontrado.")
