@@ -3407,6 +3407,9 @@ func (s *Server) transferTargets(w http.ResponseWriter, r *http.Request) {
 		if operation == "move" && !s.authorizeFileTree(w, r, scope, "delete") {
 			return
 		}
+		if operation == "move" && !s.authorizeFileTree(w, r, scope, "update") {
+			return
+		}
 	}
 	sourceNode, err := s.store.GetNode(r.Context(), sourceNodeID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -3616,9 +3619,16 @@ func (s *Server) resolveLogicalTransferRequest(w http.ResponseWriter, r *http.Re
 		if operation == "move" && !s.authorizeFileTree(w, r, scope, "delete") {
 			return resolvedLogicalTransfer{}, false
 		}
+		if operation == "move" && !s.authorizeFileTree(w, r, scope, "update") {
+			return resolvedLogicalTransfer{}, false
+		}
 	}
-	if !s.authorizeFileTree(w, r, fileScope(destinationBase, destinationPath), "create") ||
+	destinationScope := fileScope(destinationBase, destinationPath)
+	if !s.authorizeFileTree(w, r, destinationScope, "create") ||
 		!s.authorize(w, r, "nodes/"+destinationNodeID+"/transfers", transferCapability, "permission_denied", "Você não pode executar transferências neste node.") {
+		return resolvedLogicalTransfer{}, false
+	}
+	if transferMayOverwrite(request.ConflictPolicy) && !s.authorizeFileTree(w, r, destinationScope, "update") {
 		return resolvedLogicalTransfer{}, false
 	}
 	sourceNode, err := s.store.GetNode(r.Context(), request.Source.NodeID)
@@ -3755,6 +3765,10 @@ func validConflictPolicy(policy string) bool {
 	default:
 		return false
 	}
+}
+
+func transferMayOverwrite(policy string) bool {
+	return policy == "overwrite" || policy == "checksum" || policy == "ask"
 }
 
 func sourceGrantAllows(grant nodeTransferGrant, destinationNodeID, mountID string, paths []string, operation string) bool {
@@ -3935,8 +3949,12 @@ func transferFromBody(r *http.Request) (transferAuthorizationInput, error) {
 		return transferAuthorizationInput{}, errors.New("invalid transfer identifiers")
 	}
 	payload.Operation = strings.ToLower(strings.TrimSpace(payload.Operation))
+	payload.ConflictPolicy = strings.ToLower(strings.TrimSpace(payload.ConflictPolicy))
 	if payload.Operation != "" && payload.Operation != "copy" && payload.Operation != "move" {
 		return transferAuthorizationInput{}, errors.New("invalid transfer operation")
+	}
+	if payload.ConflictPolicy != "" && !validConflictPolicy(payload.ConflictPolicy) {
+		return transferAuthorizationInput{}, errors.New("invalid conflict policy")
 	}
 	return payload, nil
 }
@@ -3980,6 +3998,7 @@ func (s *Server) transferMountRequirements(ctx context.Context, destinationNodeI
 		requirements = append(requirements, authorizationRequirement{Path: scope, Capability: "read"})
 		if input.Operation == "move" {
 			requirements = append(requirements, authorizationRequirement{Path: scope, Capability: "delete"})
+			requirements = append(requirements, authorizationRequirement{Path: scope, Capability: "update"})
 		}
 	}
 	normalized, err := normalizeTransferPath(input.DestinationPath, true)
@@ -3990,7 +4009,7 @@ func (s *Server) transferMountRequirements(ctx context.Context, destinationNodeI
 	if !grantAllowsPath(destinationGrant, destinationPath) {
 		return nil, errors.New("destination is excluded by grant")
 	}
-	if input.ConflictPolicy == "rename" && !input.DestinationIsDirectory {
+	if (input.ConflictPolicy == "rename" || input.ConflictPolicy == "ask") && !input.DestinationIsDirectory {
 		destinationPath = path.Dir(destinationPath)
 	}
 	scope := fileScope("nodes/"+destinationNodeID+"/files/mounts/"+destinationGrant.MountID, destinationPath)
@@ -3998,6 +4017,9 @@ func (s *Server) transferMountRequirements(ctx context.Context, destinationNodeI
 		return nil, errors.New("invalid destination path")
 	}
 	requirements = append(requirements, authorizationRequirement{Path: scope, Capability: "create"})
+	if transferMayOverwrite(input.ConflictPolicy) {
+		requirements = append(requirements, authorizationRequirement{Path: scope, Capability: "update"})
+	}
 	return requirements, nil
 }
 
