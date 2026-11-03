@@ -31,7 +31,7 @@ import (
 const compactTransactions = 1024
 const compactBytes = 64 << 20
 const cacheLimit = 16 << 20
-const currentEnvelopeVersion = 3
+const currentEnvelopeVersion = 4
 
 // Error aliases are provided for callers of the concrete storage adapter.
 var (

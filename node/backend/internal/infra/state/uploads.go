@@ -34,7 +34,7 @@ func (s *Store) CreateUploadSession(ctx context.Context, v entities.UploadSessio
 			}
 		}
 		if v.AuthorizationActorID != "" {
-			if err := s.ensureUploadSecurityVersion(2); err != nil {
+			if err := s.ensureSecurityVersion(2); err != nil {
 				return err
 			}
 		}
@@ -43,7 +43,7 @@ func (s *Store) CreateUploadSession(ctx context.Context, v entities.UploadSessio
 }
 
 // Called under the state lock, before any record requiring the new contract.
-func (s *Store) ensureUploadSecurityVersion(required int) error {
+func (s *Store) ensureSecurityVersion(required int) error {
 	if s.envelopeVersion >= required {
 		return nil
 	}
@@ -72,7 +72,7 @@ func (s *Store) ReauthorizeUploadSession(ctx context.Context, id, actorID, crede
 		if (session.AuthorizationActorID == "") != (session.AuthorizationCredentialID == "") || session.AuthorizationActorID != "" && session.AuthorizationActorID != actorID || session.AuthorizationRevision == ^uint64(0) || signedauth.UploadReauthorizationRequestID(id, session.AuthorizationCredentialID, session.AuthorizationRevision) != expectedRequestID {
 			return ErrInUse
 		}
-		if err := s.ensureUploadSecurityVersion(3); err != nil {
+		if err := s.ensureSecurityVersion(3); err != nil {
 			return err
 		}
 		session.AuthorizationActorID, session.AuthorizationCredentialID = actorID, credentialID
