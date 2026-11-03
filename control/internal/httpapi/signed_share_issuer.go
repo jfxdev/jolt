@@ -40,7 +40,7 @@ func (s *Server) issueSignedShareRead(r *http.Request, share store.Share, root, 
 	if err != nil {
 		return "", errSignedReadUnavailable
 	}
-	policies, err := s.store.RBACPoliciesForSubject(r.Context(), actorType, owner.ID)
+	policies, temporaryExpiry, err := s.signedPolicySnapshot(r.Context(), actorType, owner.ID)
 	if err != nil {
 		return "", err
 	}
@@ -103,6 +103,9 @@ func (s *Server) issueSignedShareRead(r *http.Request, share store.Share, root, 
 	}
 	now = now.UTC()
 	expires := now.Add(signedauth.MaxLifetime)
+	if temporaryExpiry != nil && temporaryExpiry.Before(expires) {
+		expires = *temporaryExpiry
+	}
 	if current.ExpiresAt != nil && current.ExpiresAt.Before(expires) {
 		expires = *current.ExpiresAt
 	}

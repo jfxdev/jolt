@@ -111,7 +111,7 @@ func (s *Server) issueSignedAccess(r *http.Request, nodeID, mountID, root, opera
 			return "", errSignedReadUnavailable
 		}
 	}
-	policies, err := s.store.RBACPoliciesForSubject(r.Context(), actorType, actor.ID)
+	policies, temporaryExpiry, err := s.signedPolicySnapshot(r.Context(), actorType, actor.ID)
 	if err != nil {
 		return "", err
 	}
@@ -206,6 +206,9 @@ func (s *Server) issueSignedAccess(r *http.Request, nodeID, mountID, root, opera
 	}
 	now = now.UTC()
 	expires := now.Add(signedauth.MaxLifetime)
+	if temporaryExpiry != nil && temporaryExpiry.Before(expires) {
+		expires = *temporaryExpiry
+	}
 	if credentialExpiry != nil && credentialExpiry.Before(expires) {
 		expires = *credentialExpiry
 	}
