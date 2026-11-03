@@ -443,6 +443,9 @@ func TestParallelPullRetriesNetworkInterruptionFromDurableBatch(t *testing.T) {
 	if _, err := destination.jobs.Start(workerContext, 1); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := destination.jobs.Resume(context.Background(), job.ID); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		stop()
 		shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -871,6 +874,9 @@ func TestBatchMoveCopiesAllRootsThenDeletesSourceWithDurableCheckpoints(t *testi
 	if _, err := destination.jobs.Start(workerContext, 1); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := destination.jobs.Resume(context.Background(), job.ID); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		stop()
 		shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -1158,6 +1164,9 @@ func TestPullWaitsWithoutSpendingRetryBudgetAndWakesWhenPeerReturns(t *testing.T
 	workerContext, stop := context.WithCancel(context.Background())
 	defer stop()
 	if _, err := destination.jobs.Start(workerContext, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := destination.jobs.Resume(context.Background(), job.ID); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

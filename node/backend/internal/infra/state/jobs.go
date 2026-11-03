@@ -176,7 +176,7 @@ func (s *Store) changeJobs(ctx context.Context, now time.Time, states map[string
 			j.State, j.Phase, j.Error, j.UpdatedAt, j.NextAttemptAt = "queued", "validation", "", now, nil
 			if recovery {
 				j.State, j.Phase = "waiting_validation", "waiting_validation"
-				j.Error = "node stopped before the operation completed; explicit validation is required"
+				j.Error = "node restarted before the operation completed; explicit validation is required"
 				j.ETASeconds, j.ETAConfidence = nil, ""
 			}
 			if e = tx.put("jobs", id, j.PeerNodeID, order(j.CreatedAt), j); e != nil {
@@ -189,9 +189,11 @@ func (s *Store) changeJobs(ctx context.Context, now time.Time, states map[string
 	return
 }
 func (s *Store) RecoverRunningJobs(ctx context.Context, now time.Time) ([]entities.Job, error) {
-	return s.changeJobs(ctx, now, map[string]bool{"running": true, "pause_requested": true, "cancel_requested": true}, func(j entities.Job) bool {
-		return j.State == "running" || j.State == "pause_requested" || j.State == "cancel_requested"
-	}, true)
+	// All automatically runnable work from the prior process lifetime lacks a
+	// current authorization. Do not let queued retries or peer/mount wakeups
+	// bypass the explicit revalidation already required for interrupted work.
+	states := map[string]bool{"running": true, "pause_requested": true, "cancel_requested": true, "queued": true, "waiting_peer": true, "waiting_mount": true}
+	return s.changeJobs(ctx, now, states, func(entities.Job) bool { return true }, true)
 }
 func (s *Store) WakeWaitingPeerJobs(ctx context.Context, id string, now time.Time) ([]entities.Job, error) {
 	return s.changeJobs(ctx, now, map[string]bool{"waiting_peer": true}, func(j entities.Job) bool { return j.PeerNodeID == id }, false)
