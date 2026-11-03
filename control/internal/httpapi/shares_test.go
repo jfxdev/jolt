@@ -180,6 +180,8 @@ func TestCreateShareRejectsTraversalAndBadInput(t *testing.T) {
 		{"node_id": "", "mount_id": "media", "path": "a.txt", "kind": "file"},
 		{"node_id": "nod_a", "mount_id": "media", "path": "a.txt", "kind": "file",
 			"expires_in_seconds": 400 * 24 * 3600},
+		{"node_id": "nod_a", "mount_id": "media", "path": "a.txt", "kind": "file",
+			"expires_in_seconds": int64(1<<63 - 1)},
 	}
 	for _, body := range cases {
 		recorder := harness.do(t, http.MethodPost, "/api/v1/control-tower/shares", body)

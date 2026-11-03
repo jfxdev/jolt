@@ -20,6 +20,7 @@ import (
 	"github.com/jfxdev/jolt/control/internal/security"
 	"github.com/jfxdev/jolt/control/internal/signedauth"
 	"github.com/jfxdev/jolt/control/internal/store"
+	"github.com/jfxdev/jolt/control/internal/workload"
 )
 
 // shareCookiePrefix scopes a password unlock to one share. The cookie path is
@@ -70,7 +71,7 @@ func (s *Server) createShare(w http.ResponseWriter, r *http.Request) {
 			"max_downloads não pode ser negativo.")
 		return
 	}
-	if request.ExpiresInSec < 0 || time.Duration(request.ExpiresInSec)*time.Second > shareMaxTTL {
+	if request.ExpiresInSec < 0 || request.ExpiresInSec > int64(shareMaxTTL/time.Second) {
 		writeError(w, r, http.StatusBadRequest, "invalid_expiry",
 			"expires_in_seconds deve ficar entre 0 e um ano.")
 		return
@@ -138,6 +139,16 @@ func (s *Server) createShare(w http.ResponseWriter, r *http.Request) {
 	if request.ExpiresInSec > 0 {
 		expiry := now.Add(time.Duration(request.ExpiresInSec) * time.Second)
 		share.ExpiresAt = &expiry
+	}
+	if identity, ok := r.Context().Value(workloadIdentityKey).(workload.Identity); ok {
+		if !identity.ExpiresAt.After(now) {
+			writeError(w, r, http.StatusUnauthorized, "invalid_service_token", "Credencial de workload expirada.")
+			return
+		}
+		if share.ExpiresAt == nil || identity.ExpiresAt.Before(*share.ExpiresAt) {
+			expiry := identity.ExpiresAt.UTC()
+			share.ExpiresAt = &expiry
+		}
 	}
 	if err := s.store.CreateShare(r.Context(), share); err != nil {
 		s.fail(w, r, err)
@@ -569,6 +580,18 @@ func (s *Server) currentShareCreator(r *http.Request, share store.Share, now tim
 		}
 		credential, err := s.store.GetActiveServiceAccountToken(r.Context(), account.ID, share.CreatedCredentialID, now)
 		if err != nil {
+			return store.User{}, "", nil, errSignedReadUnavailable
+		}
+		identity, err := s.store.GetWorkloadIdentity(r.Context(), account.ID, share.CreatedCredentialID)
+		if err == nil {
+			if !identity.Enabled || identity.Revoked || s.config.WorkloadProviders == nil || !s.config.WorkloadProviders.AllowsMapping(identity.ProviderID, identity.Issuer, identity.Subject, identity.Audience) {
+				return store.User{}, "", nil, errSignedReadUnavailable
+			}
+			active, err := s.store.ActiveWorkloadIdentity(r.Context(), identity.ProviderID, identity.Issuer, identity.Subject, identity.Audience)
+			if err != nil || active.CredentialID != credential.ID || active.ServiceAccountID != account.ID {
+				return store.User{}, "", nil, errSignedReadUnavailable
+			}
+		} else if !errors.Is(err, store.ErrNotFound) {
 			return store.User{}, "", nil, errSignedReadUnavailable
 		}
 		groups, err := s.store.ServiceAccountGroupIDs(r.Context(), account.ID, true)
