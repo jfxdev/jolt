@@ -15,7 +15,7 @@
 | 5. Shares, transferências e uploads | Uploads e shares assinados opcionais, reautorização e `exclude` por grant | Integrar consultas auxiliares e autorizações renováveis de transfers e jobs |
 | 6. Segredos e apresentação | Varredura, limites de busca e `display_name` implementados em partes | Validar todos os fluxos e componentes desktop/mobile |
 | 7. Lixeira, confirmação, aprovação e JIT | JIT implementado em partes; lixeira, planos e aprovações pendentes | Implementar fluxos destrutivos e revalidar jobs |
-| 8. Identidade e MCP | MCP STDIO de leitura implementado; identidade federada pendente | Integrar JWT/JWKS, JWT-SVID e validar com provedores locais |
+| 8. Identidade e MCP | MCP STDIO de leitura implementado; validadores JWT/JWKS e JWT-SVID internos | Integrar provedores e mapeamentos persistentes à autenticação e às cotas |
 
 O objetivo continua sendo concluir as oito entregas neste branch em uma única rodada de implementação. Os commits existentes são etapas parciais, não marcos de entrega ou publicação.
 
@@ -158,6 +158,7 @@ Referências para retomada:
 
 ## 8. Identidade de workload e MCP — parcial
 
+- Existem validadores internos de JWT/JWKS e JWT-SVID, ainda **não ligados à autenticação**. O JWT verifica assinatura assimétrica, emissor, sujeito, audiência e expiração; o JWT-SVID usa o validador Go SPIFFE com bundle e trust domain próprios, além de expiração sem tolerância adicional. O JWKS limita resposta a 1 MiB e 64 chaves, usa timeout de três segundos, cache de cinco minutos e intervalo mínimo de dez segundos entre atualizações. Falha de atualização com cache expirado recusa a autenticação; rotação com o mesmo `kid` também é revalidada após o intervalo mínimo.
 - Implementar provedores JWT/JWKS com mapeamento explícito de contas e validação de assinatura, algoritmos, emissor, audiência e expiração; limitar atualização de chaves.
 - Implementar JWT-SVID de acordo com trust domain/bundle e SPIFFE ID, respeitando sua validação própria.
 - `jolt-mcp` usa o SDK oficial Go via STDIO, oferece apenas `list`, `search`, `disk_usage` e `read_text`, e consulta o Control Tower usando credencial relida de arquivo a cada chamada. O binário integra o build e a imagem; instruções em [`../MCP.md`](../MCP.md). A leitura de arquivos rotacionados não habilita JWT/SVID antes de sua integração no Control Tower.
@@ -166,6 +167,7 @@ Referências para retomada:
 
 ### Evidências locais já executadas
 
+- Os validadores internos de workload passaram nos testes com emissor JWKS local e `-race`, cobrindo assinatura, algoritmos, claims, trust domain, bundle, rotação com e sem troca de `kid`, falhas e limites de atualização, tempo e tamanho. Esses testes não representam autenticação federada integrada nem comprovam cotas por identidade persistente.
 - O MCP passou em `go test ./...`, `go vet ./...` e `go test -race -p 1 ./internal/mcpserver ./cmd/jolt-mcp` no Control Tower. O teste do processo STDIO cobre as quatro ferramentas, rotação de arquivo e recusa de escrita; uma jornada com node e Control Tower reais cobriu policy de agente e revogação da credencial. `docker build -f control/Dockerfile control` passou em Linux/arm64 e um container descartável confirmou as ferramentas por STDIO. O binário foi cross-compilado para Linux/amd64, sem execução nessa arquitetura; JWT/SVID e aceite entre hosts permanecem pendentes.
 - Na recuperação de jobs herdados, passaram `CGO_ENABLED=0 go test ./...`, `go vet ./...` e `go test -race -p 1` nos pacotes de estado, jobs e transferências do node. Os testes conferem preservação dos itens, bloqueio de execução automática após reinício e retomada explícita, além da continuidade dos testes de peer/mount na mesma execução.
 - A apresentação de nomes passou nos 47 testes do frontend, `npm run typecheck`, `npm run build` e em dois cenários Playwright de share público no Chromium desktop e mobile. As jornadas verificaram rótulos com controles neutralizados e o uso do caminho canônico no link e na navegação; outras jornadas de interface continuam pendentes.
