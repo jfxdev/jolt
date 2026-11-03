@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { FileEntry } from "@/lib/types";
+import { fileEntryDisplayName } from "@/lib/display-name";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -55,7 +56,7 @@ export function TextEditorDialog({ entry, load, save, onClose, onError }: Props)
     <Dialog open={entry !== null} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-4xl">
         <DialogHeader>
-          <DialogTitle>Editar {entry?.name}</DialogTitle>
+          <DialogTitle>Editar {entry && fileEntryDisplayName(entry)}</DialogTitle>
           <DialogDescription>Arquivos de texto de até 512 KB.</DialogDescription>
         </DialogHeader>
         <form className="grid gap-4" onSubmit={submit}>

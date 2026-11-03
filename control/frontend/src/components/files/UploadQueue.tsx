@@ -1,6 +1,7 @@
 import { AlertTriangle, CheckCircle2, RotateCcw, X } from "lucide-react";
 import { uploadPercent } from "@/lib/resumable-upload";
 import { formatBytes } from "@/lib/format";
+import { safeDisplayName, safeDisplayPath } from "@/lib/display-name";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 
@@ -50,7 +51,7 @@ export function UploadQueue({ items, onCancel, onRetry, onReplace, onDismiss, on
         return (
           <div key={item.id} className="grid gap-1">
             <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
-              <span className="min-w-0"><span className="block truncate font-medium">{item.name}</span>{item.destination && <span className="block truncate text-xs text-muted-foreground">Destino: {item.destination}</span>}</span>
+              <span className="min-w-0"><span className="block truncate font-medium">{safeDisplayName(item.name)}</span>{item.destination && <span className="block truncate text-xs text-muted-foreground">Destino: {safeDisplayPath(item.destination)}</span>}</span>
               <span className="flex shrink-0 items-center gap-2 text-muted-foreground">
                 {item.status === "done" && (
                   <CheckCircle2 className="size-4 text-emerald-600 dark:text-emerald-500" />
@@ -66,7 +67,7 @@ export function UploadQueue({ items, onCancel, onRetry, onReplace, onDismiss, on
                   <Button
                     size="sm"
                     variant="ghost"
-                    aria-label={`Cancelar o envio de ${item.name}`}
+                    aria-label={`Cancelar o envio de ${safeDisplayName(item.name)}`}
                     onClick={() => onCancel(item.id)}
                   >
                     <X className="size-4" />
@@ -84,7 +85,7 @@ export function UploadQueue({ items, onCancel, onRetry, onReplace, onDismiss, on
                     <Button
                       size="sm"
                       variant="ghost"
-                      aria-label={`Manter o arquivo existente e descartar ${item.name}`}
+                      aria-label={`Manter o arquivo existente e descartar ${safeDisplayName(item.name)}`}
                       onClick={() => onDismiss(item.id)}
                     >
                       <X className="size-4" />
@@ -94,7 +95,7 @@ export function UploadQueue({ items, onCancel, onRetry, onReplace, onDismiss, on
                 {item.needsFile && !active && (
                   <label className="cursor-pointer rounded-md border px-3 py-2 text-xs font-medium text-foreground">
                     Selecionar arquivo para retomar
-                    <input type="file" className="sr-only" aria-label={`Selecionar arquivo para retomar ${item.name}`} onChange={event => { const file = event.currentTarget.files?.[0]; if (file) onReselect?.(item.id, file); event.currentTarget.value = ""; }} />
+                    <input type="file" className="sr-only" aria-label={`Selecionar arquivo para retomar ${safeDisplayName(item.name)}`} onChange={event => { const file = event.currentTarget.files?.[0]; if (file) onReselect?.(item.id, file); event.currentTarget.value = ""; }} />
                   </label>
                 )}
                 {(item.status === "failed" || item.status === "cancelled") && (
@@ -110,7 +111,7 @@ export function UploadQueue({ items, onCancel, onRetry, onReplace, onDismiss, on
                     <Button
                       size="sm"
                       variant="ghost"
-                      aria-label={`Descartar ${item.name}`}
+                      aria-label={`Descartar ${safeDisplayName(item.name)}`}
                       onClick={() => onDismiss(item.id)}
                     >
                       <X className="size-4" />
@@ -121,7 +122,7 @@ export function UploadQueue({ items, onCancel, onRetry, onReplace, onDismiss, on
                   <Button
                     size="sm"
                     variant="ghost"
-                    aria-label={`Descartar ${item.name}`}
+                    aria-label={`Descartar ${safeDisplayName(item.name)}`}
                     onClick={() => onDismiss(item.id)}
                   >
                     <X className="size-4" />

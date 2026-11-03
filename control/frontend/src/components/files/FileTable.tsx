@@ -10,6 +10,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { mediaInfoForFilename } from "@/lib/media";
+import { fileEntryDisplayName } from "@/lib/display-name";
 import { FileEntryIcon } from "@/components/files/FileEntryIcon";
 import {
   isEditableTextFilename,
@@ -139,14 +140,14 @@ export function FileTable({
                   <TableRow
                     className="cursor-pointer"
                     tabIndex={0}
-                    aria-label={`Ações para ${entry.display_name ?? entry.name}`}
+                    aria-label={`Ações para ${fileEntryDisplayName(entry)}`}
                     onDoubleClick={() => onDownload(entry)}
                   />
                 }
               >
                 <TableCell onClick={(event) => event.stopPropagation()}>
                   <Checkbox
-                    aria-label={`Selecionar ${entry.display_name ?? entry.name}`}
+                    aria-label={`Selecionar ${fileEntryDisplayName(entry)}`}
                     checked={selected.has(entry.path)}
                     disabled={entry.type === "symlink"}
                     title={entry.type === "symlink" ? "Links simbólicos não podem ser transferidos" : undefined}
@@ -159,7 +160,7 @@ export function FileTable({
                     onClick={() => onDownload(entry)}
                   >
                     <FileEntryIcon entry={entry} />
-                    {entry.display_name ?? entry.name}
+                    {fileEntryDisplayName(entry)}
                   </button>
                 </TableCell>
                 <TableCell className="text-muted-foreground">

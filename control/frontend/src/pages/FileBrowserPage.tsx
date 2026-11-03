@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Copy, FolderArchive, HardDrive, MoveRight } from "lucide-react";
 import { api } from "@/lib/api";
+import { fileEntryDisplayName, safeDisplayName } from "@/lib/display-name";
 import type { DiskUsageResponse, FileEntry, SearchResponse } from "@/lib/types";
 import { useWorkspace } from "@/context/WorkspaceContext";
 import { usePermissions } from "@/context/PermissionsContext";
@@ -202,7 +203,7 @@ export default function FileBrowserPage() {
     return [
       { label: mount?.name || "Mount", path: "" },
       ...parts.map((part, index) => ({
-        label: part,
+        label: safeDisplayName(part),
         path: parts.slice(0, index + 1).join("/"),
       })),
     ];
@@ -239,7 +240,7 @@ export default function FileBrowserPage() {
     try {
       const plan = await api.archivePlan(nodeId, mount.mount_id, currentPath, names);
       const target =
-        names.length === 1 ? `“${names[0]}”` : `${names.length} itens`;
+        names.length === 1 ? `“${fileEntryDisplayName(entries[0])}”` : `${names.length} itens`;
       if (
         !(await confirm({
           title: `Baixar ${target} como .zip?`,
@@ -343,7 +344,7 @@ export default function FileBrowserPage() {
   async function removeEntry(entry: FileEntry) {
     if (
       !(await confirm({
-        title: `Remover “${entry.name}”?`,
+        title: `Remover “${fileEntryDisplayName(entry)}”?`,
         confirmText: "Remover",
         destructive: true,
       }))

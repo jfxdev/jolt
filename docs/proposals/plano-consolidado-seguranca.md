@@ -136,6 +136,7 @@ Referências para retomada:
 - Varredura do prefixo de 64 KiB para leituras de agentes, inclusive `Range` e arquivos em ZIP, com recusa em nodes sem capacidade anunciada.
 - `read_media_types` opcional; buscas de agentes limitadas a 200 resultados, profundidade 16, 10 mil entradas e 10 segundos, com indicação de resultado incompleto.
 - `display_name` saneado para listagem e busca, preservando caminhos canônicos. Documentação registra limitações e possíveis falsos positivos e negativos.
+- As principais superfícies de arquivo no frontend usam `display_name` quando disponível e neutralizam controles e caracteres bidirecionais também no fallback para `name`, em breadcrumbs, diálogos, prévias, fila de uploads e share público. Caminhos e nomes canônicos continuam sendo enviados às APIs; caminhos editáveis não são alterados.
 
 **Falta**
 
@@ -164,6 +165,7 @@ Referências para retomada:
 
 ### Evidências locais já executadas
 
+- A apresentação de nomes passou nos 47 testes do frontend, `npm run typecheck`, `npm run build` e em dois cenários Playwright de share público no Chromium desktop e mobile. As jornadas verificaram rótulos com controles neutralizados e o uso do caminho canônico no link e na navegação; outras jornadas de interface continuam pendentes.
 - Após o ajuste de cancelamento e proteção de árvores, `CGO_ENABLED=0 go test ./...` e `go vet ./...` passaram no node; `go test -race -p 1` passou nos pacotes de filesystem, jobs e HTTP. Na primeira execução concorrente, `TestDirectoryJobUsesPersistedFileParallelism` excedeu o prazo de espera; o teste isolado e a suíte sequencial passaram. Os testes cobrem cancelamento antes e durante remoção, entrada protegida criada após a pré-validação, links em árvores e restauração do destino após cancelamento.
 - Em 2026-11-03, `make acceptance` passou no macOS/ARM64 com o perfil `quick`: cópia de arquivo com interrupção e retomada, diretório de 1.024 arquivos e histórico cifrado. O teste do diretório levou aproximadamente 191 segundos; não é o perfil completo de carga nem validação entre hosts.
 - Na correção das permissões de transferências, passaram `go test ./...`, `go test -race ./internal/httpapi` e `go vet ./...` no Control Tower. Os testes verificam as rotas lógicas e diretas, recusa antes do encaminhamento e permissões de atualização na origem e no destino.

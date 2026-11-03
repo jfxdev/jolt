@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, useRef } from "react";
 import { useParams } from "react-router-dom";
 import { Download, FolderArchive, FolderOpen, Lock } from "lucide-react";
 import { api } from "@/lib/api";
+import { fileEntryDisplayName, safeDisplayName } from "@/lib/display-name";
 import type { ApiError, FileEntry, PublicShare } from "@/lib/types";
 import { formatBytes, formatDate } from "@/lib/format";
 import { FileEntryIcon } from "@/components/files/FileEntryIcon";
@@ -134,7 +135,7 @@ export default function PublicSharePage() {
               <Lock className="size-4" /> Link protegido
             </CardTitle>
             <CardDescription>
-              Informe a senha para acessar “{share.name}”.
+              Informe a senha para acessar “{safeDisplayName(share.name)}”.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -166,7 +167,7 @@ export default function PublicSharePage() {
     <div className="mx-auto grid max-w-4xl gap-4 px-4 py-8">
       <Card>
         <CardHeader>
-          <CardTitle>{share.name}</CardTitle>
+          <CardTitle>{safeDisplayName(share.name)}</CardTitle>
           <CardDescription>
             {share.kind === "directory" ? "Pasta compartilhada" : "Arquivo compartilhado"}
             {share.expires_at && ` · expira em ${formatDate(share.expires_at)}`}
@@ -204,7 +205,7 @@ export default function PublicSharePage() {
                       className="transition-colors hover:text-foreground"
                       onClick={() => listPath(target)}
                     >
-                      {index === 0 ? share.name : crumb}
+                      {safeDisplayName(index === 0 ? share.name : crumb)}
                     </button>
                   </span>
                 );
@@ -231,10 +232,10 @@ export default function PublicSharePage() {
                           className="truncate text-left hover:underline"
                           onClick={() => listPath(entry.path)}
                         >
-                          {entry.name}
+                          {fileEntryDisplayName(entry)}
                         </button>
                       ) : (
-                        <span className="truncate">{entry.name}</span>
+                        <span className="truncate">{fileEntryDisplayName(entry)}</span>
                       )}
                     </TableCell>
                     <TableCell>
@@ -246,8 +247,8 @@ export default function PublicSharePage() {
                         className={buttonVariants({ variant: "ghost", size: "sm" })}
                         aria-label={
                           entry.type === "directory"
-                            ? `Baixar ${entry.name} como .zip`
-                            : `Baixar ${entry.name}`
+                            ? `Baixar ${fileEntryDisplayName(entry)} como .zip`
+                            : `Baixar ${fileEntryDisplayName(entry)}`
                         }
                         href={
                           entry.type === "directory"

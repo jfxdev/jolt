@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useApiError } from "@/hooks/useApiError";
 import { api } from "@/lib/api";
+import { fileEntryDisplayName, safeDisplayPath } from "@/lib/display-name";
 import { transferDestinationFolder } from "@/lib/transfer-preview";
 import type { ApiError, FileEntry, TransferTargetMount } from "@/lib/types";
 
@@ -74,11 +75,11 @@ export function TransferDestinationFolder({ nodeId, mount, value, onChange, disa
         <InputGroupAddon align="inline-end"><InputGroupButton disabled={disabled || !canGoUp} onClick={() => onChange(parent)}><ArrowUp /> Subir</InputGroupButton></InputGroupAddon>
       </InputGroup>
       {mount.can_browse && withinRoot && <div className="max-h-36 overflow-y-auto border-t" aria-label="Subpastas do destino" aria-busy={loading}>
-        {loading ? <p role="status" className="px-3 py-2 text-xs text-muted-foreground">Buscando subpastas…</p> : error ? <p role="status" className="px-3 py-2 text-xs text-muted-foreground">{error}</p> : directories.length ? directories.map((entry) => <button key={entry.path} type="button" disabled={disabled} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent disabled:opacity-50" onClick={() => onChange(entry.path)}><FileEntryIcon entry={entry} />{entry.name}</button>) : <p className="px-3 py-2 text-xs text-muted-foreground">Nenhuma subpasta.</p>}
+        {loading ? <p role="status" className="px-3 py-2 text-xs text-muted-foreground">Buscando subpastas…</p> : error ? <p role="status" className="px-3 py-2 text-xs text-muted-foreground">{error}</p> : directories.length ? directories.map((entry) => <button key={entry.path} type="button" disabled={disabled} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent disabled:opacity-50" onClick={() => onChange(entry.path)}><FileEntryIcon entry={entry} />{fileEntryDisplayName(entry)}</button>) : <p className="px-3 py-2 text-xs text-muted-foreground">Nenhuma subpasta.</p>}
       </div>}
     </div>
     {nextAfter && <Button size="sm" variant="outline" disabled={disabled || loading} onClick={() => void loadMore()}>Carregar mais subpastas</Button>}
-    {!withinRoot && <p role="alert" className="text-xs text-destructive">Informe uma pasta relativa dentro de /{root}.</p>}
+    {!withinRoot && <p role="alert" className="text-xs text-destructive">Informe uma pasta relativa dentro de /{safeDisplayPath(root)}.</p>}
     {!mount.can_browse && <p className="text-xs text-muted-foreground">Informe uma pasta relativa sob a raiz autorizada.</p>}
   </div>;
 }
