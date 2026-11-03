@@ -543,10 +543,13 @@ func (s *Service) DeleteFiltered(ctx context.Context, mountID, relative string, 
 	if err := validateFilteredDeleteTree(ctx, mount, resolved, filter); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if info.IsDir() && !recursive {
 		return safeRemove(resolved)
 	}
-	return safeRemoveAll(resolved)
+	return safeRemoveProtected(ctx, resolved, func(name string) bool { return hiddenName(mount, name) })
 }
 
 // ValidateMoveSource checks a selected source tree before any move cleanup.
@@ -604,6 +607,9 @@ func (s *Service) MoveFiltered(ctx context.Context, mountID, source, destination
 	if err := validateFilteredMove(ctx, mount, src, dst, overwrite, filter); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if !overwrite {
 		if _, err := safeLstat(dst); err == nil {
 			return ErrConflict
@@ -631,6 +637,12 @@ func (s *Service) MoveFiltered(ctx context.Context, mountID, source, destination
 		return err
 	}
 	if err := publishPath(dst, backupPath, false); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		if restoreErr := publishPath(backupPath, dst, false); restoreErr != nil {
+			return fmt.Errorf("move canceled: %w (also could not restore destination: %v)", err, restoreErr)
+		}
 		return err
 	}
 	if err := publishPath(src, dst, overwrite); err != nil {
@@ -1815,7 +1827,7 @@ func rejectProtectedTree(ctx context.Context, mount entities.Mount, root string)
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if current != root && hiddenName(mount, entry.Name()) {
+		if current != root && (hiddenName(mount, entry.Name()) || entry.Type()&os.ModeSymlink != 0) {
 			return ErrProtectedTree
 		}
 		return nil

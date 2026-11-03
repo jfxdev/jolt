@@ -1,6 +1,7 @@
 package filesystem
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -300,29 +301,49 @@ func safeMkdirAll(name string, mode fs.FileMode) error {
 	return err
 }
 
-func safeRemove(name string) error    { return safeRemovePath(name, false) }
-func safeRemoveAll(name string) error { return safeRemovePath(name, true) }
-func safeRemovePath(name string, recursive bool) error {
+func safeRemove(name string) error    { return safeRemovePath(context.Background(), name, false, nil) }
+func safeRemoveAll(name string) error { return safeRemovePath(context.Background(), name, true, nil) }
+
+// safeRemoveProtected rechecks names and symlinks as it removes each entry.
+// A cancellation or external tree change can leave a partially removed tree;
+// the error must be reported to the caller rather than treated as success.
+func safeRemoveProtected(ctx context.Context, name string, hidden func(string) bool) error {
+	return safeRemovePath(ctx, name, true, hidden)
+}
+
+func safeRemovePath(ctx context.Context, name string, recursive bool, hidden func(string) bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	p, b, err := pathParent(name)
-	if recursive && errors.Is(err, fs.ErrNotExist) {
+	if recursive && hidden == nil && errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
 	defer p.Close()
-	err = removeAt(int(p.Fd()), b, recursive)
-	if recursive && errors.Is(err, fs.ErrNotExist) {
+	err = removeAt(ctx, int(p.Fd()), b, recursive, hidden, true)
+	if recursive && hidden == nil && errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	return err
 }
-func removeAt(parent int, base string, recursive bool) error {
+func removeAt(ctx context.Context, parent int, base string, recursive bool, hidden func(string) bool, root bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	var st unix.Stat_t
 	if err := unix.Fstatat(parent, base, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return err
 	}
+	if hidden != nil && !root && (hidden(base) || st.Mode&unix.S_IFMT == unix.S_IFLNK) {
+		return ErrProtectedTree
+	}
 	if st.Mode&unix.S_IFMT != unix.S_IFDIR {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return unix.Unlinkat(parent, base, 0)
 	}
 	if recursive {
@@ -337,10 +358,16 @@ func removeAt(parent int, base string, recursive bool) error {
 			return err
 		}
 		for _, child := range names {
-			if err := removeAt(fd, child, true); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			if err := removeAt(ctx, fd, child, true, hidden, false); err != nil {
+				if hidden == nil && errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
 				return err
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	return unix.Unlinkat(parent, base, unix.AT_REMOVEDIR)
 }

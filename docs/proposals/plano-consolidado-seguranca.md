@@ -47,6 +47,7 @@ Referências para retomada:
 **Código existente**
 
 - `hidden_patterns` e nomes internos protegidos no filesystem; filtros em acesso direto, listagem, busca, totais, ZIP, uploads, cópias e manifestos. Há pré-validação para impedir delete, move e sobrescrita de árvores com conteúdo protegido.
+- A pré-validação de delete, move e sobrescrita recusa links simbólicos dentro das árvores; um link selecionado individualmente ainda pode ser removido ou movido sem seguir seu destino. A remoção recursiva observa cancelamento e verifica novamente nomes internos, padrões ocultos e links durante a operação. Se houver cancelamento ou alteração externa após o início, ela retorna erro e pode deixar remoção parcial; não promete rollback. Um move cancelado após guardar o destino tenta restaurá-lo e informa falha de restauração.
 - O node anuncia capacidades específicas, incluindo `hidden_patterns_v1` e `protected_move_v1`; há verificações de compatibilidade para recursos já integrados.
 - O `node.yaml` aceita chaves públicas de autorização identificadas para rotação, e o Control Tower pode carregar a chave privada de um arquivo PKCS#8. Provisionar as chaves, por si só, não faz o Control Tower enviar contextos nem habilita policies por tipo.
 - Existem testes de nomes e árvores protegidas, inclusive caminhos de transferência e tráfego entre nodes.
@@ -163,6 +164,7 @@ Referências para retomada:
 
 ### Evidências locais já executadas
 
+- Após o ajuste de cancelamento e proteção de árvores, `CGO_ENABLED=0 go test ./...` e `go vet ./...` passaram no node; `go test -race -p 1` passou nos pacotes de filesystem, jobs e HTTP. Na primeira execução concorrente, `TestDirectoryJobUsesPersistedFileParallelism` excedeu o prazo de espera; o teste isolado e a suíte sequencial passaram. Os testes cobrem cancelamento antes e durante remoção, entrada protegida criada após a pré-validação, links em árvores e restauração do destino após cancelamento.
 - Em 2026-11-03, `make acceptance` passou no macOS/ARM64 com o perfil `quick`: cópia de arquivo com interrupção e retomada, diretório de 1.024 arquivos e histórico cifrado. O teste do diretório levou aproximadamente 191 segundos; não é o perfil completo de carga nem validação entre hosts.
 - Na correção das permissões de transferências, passaram `go test ./...`, `go test -race ./internal/httpapi` e `go vet ./...` no Control Tower. Os testes verificam as rotas lógicas e diretas, recusa antes do encaminhamento e permissões de atualização na origem e no destino.
 - No Control Tower, `go test ./...` passou após a implementação do emissor; os testes de HTTP, store, RBAC e assinatura também passaram com `-race`. Após `9da246d`, o teste de HTTP com `-race` passou novamente.
