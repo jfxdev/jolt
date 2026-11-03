@@ -487,6 +487,7 @@ export interface Share {
 	max_downloads: number;
 	download_count: number;
 	created_by: string;
+	created_by_type: "user" | "service_account";
 	created_at: string;
 	expires_at?: string;
 	revoked_at?: string;

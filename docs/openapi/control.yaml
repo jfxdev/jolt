@@ -294,7 +294,7 @@ paths:
     put:
       tags: [Administration]
       summary: Replace the node allow-list
-      requestBody: {$ref: '#/components/requestBodies/StringIDs'}
+      requestBody: {$ref: '#/components/requestBodies/AccessGroupIDs'}
       responses:
         '200': {$ref: '#/components/responses/JSONObject'}
         '400': {$ref: '#/components/responses/Error'}
@@ -308,7 +308,7 @@ paths:
     put:
       tags: [Administration]
       summary: Replace policy assignments
-      requestBody: {$ref: '#/components/requestBodies/StringIDs'}
+      requestBody: {$ref: '#/components/requestBodies/AccessGroupIDs'}
       responses:
         '200': {$ref: '#/components/responses/JSONObject'}
         '400': {$ref: '#/components/responses/Error'}
@@ -721,7 +721,7 @@ paths:
     post:
       tags: [Shares]
       summary: Create a read-only public share
-      description: The token is returned exactly once. Every later access re-evaluates the creator's RBAC on the shared path.
+      description: The token is returned exactly once. Every later access re-evaluates the creator's RBAC. Automation shares bind the issuing credential and recheck account status, credential revocation and expiry, and group membership; credential identifiers are not returned.
       requestBody:
         required: true
         content:
@@ -1083,6 +1083,16 @@ components:
               type: array
               items: {type: string}
             example: {policy_ids: [pol_reader]}
+    AccessGroupIDs:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ids]
+            additionalProperties: false
+            properties:
+              ids: {type: array, maxItems: 100, items: {type: string}}
     TemporaryPolicy:
       required: true
       content:

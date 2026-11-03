@@ -33,14 +33,14 @@ func (s *Server) issueSignedShareRead(r *http.Request, share store.Share, root, 
 		return "", errSignedReadUnavailable
 	}
 	current, err := s.store.GetShare(r.Context(), share.ID)
-	if err != nil || !current.Active(now) || current.CreatedBy != share.CreatedBy || current.NodeID != share.NodeID || current.MountID != share.MountID || current.Path != share.Path || current.Kind != share.Kind {
+	if err != nil || !current.Active(now) || current.CreatedBy != share.CreatedBy || current.CreatedByType != share.CreatedByType || current.CreatedCredentialID != share.CreatedCredentialID || current.NodeID != share.NodeID || current.MountID != share.MountID || current.Path != share.Path || current.Kind != share.Kind {
 		return "", errSignedReadUnavailable
 	}
-	owner, err := s.store.GetUser(r.Context(), current.CreatedBy)
-	if err != nil || !owner.Enabled {
+	owner, actorType, credentialExpiry, err := s.currentShareCreator(r, current, now)
+	if err != nil {
 		return "", errSignedReadUnavailable
 	}
-	policies, err := s.store.RBACPoliciesForSubject(r.Context(), "user", owner.ID)
+	policies, err := s.store.RBACPoliciesForSubject(r.Context(), actorType, owner.ID)
 	if err != nil {
 		return "", err
 	}
@@ -56,7 +56,7 @@ func (s *Server) issueSignedShareRead(r *http.Request, share store.Share, root, 
 	if operation == "archive" && rbac.UntypedDeniesWithin(rbac.ExpandCompatibilityRules(policies), scope) {
 		return "", errSignedReadUnavailable
 	}
-	if owner.Role == "admin" {
+	if actorType == "user" && owner.Role == "admin" {
 		admin := []rbac.Policy{{ID: "builtin-admin", Rules: []rbac.Rule{{Path: base + "/**", Capabilities: []string{"read", "list"}}}}}
 		for _, policy := range policies {
 			var denies []rbac.Rule
@@ -105,6 +105,9 @@ func (s *Server) issueSignedShareRead(r *http.Request, share store.Share, root, 
 	expires := now.Add(signedauth.MaxLifetime)
 	if current.ExpiresAt != nil && current.ExpiresAt.Before(expires) {
 		expires = *current.ExpiresAt
+	}
+	if credentialExpiry != nil && credentialExpiry.Before(expires) {
+		expires = *credentialExpiry
 	}
 	if deadline, ok := r.Context().Deadline(); ok && deadline.Before(expires) {
 		expires = deadline

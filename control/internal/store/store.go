@@ -21,7 +21,7 @@ var (
 	ErrLastAdmin = errors.New("at least one enabled administrator is required")
 )
 
-const supportedSecurityVersion = 2
+const supportedSecurityVersion = 3
 
 type User struct {
 	ID           string    `json:"user_id"`
@@ -314,7 +314,7 @@ CREATE TABLE IF NOT EXISTS shares (
  mount_id TEXT NOT NULL, path TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL,
  password_hash TEXT NOT NULL DEFAULT '', allow_archive INTEGER NOT NULL DEFAULT 1,
  max_downloads INTEGER NOT NULL DEFAULT 0, download_count INTEGER NOT NULL DEFAULT 0,
- created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+ created_by TEXT NOT NULL, created_by_type TEXT NOT NULL DEFAULT 'user', created_credential_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
  expires_at TEXT, revoked_at TEXT, last_access_at TEXT
 );
 CREATE INDEX IF NOT EXISTS shares_created_by ON shares(created_by);
@@ -376,6 +376,8 @@ WHERE path LIKE 'workers/%'`); err != nil {
 	for _, statement := range []string{
 		`ALTER TABLE policy_rules ADD COLUMN file_types TEXT NOT NULL DEFAULT 'null'`,
 		`ALTER TABLE policy_rules ADD COLUMN visibility TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE shares ADD COLUMN created_by_type TEXT NOT NULL DEFAULT 'user'`,
+		`ALTER TABLE shares ADD COLUMN created_credential_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE service_accounts ADD COLUMN kind TEXT NOT NULL DEFAULT 'automation'`,
 		`ALTER TABLE service_account_tokens ADD COLUMN agent_limits TEXT NOT NULL DEFAULT 'null'`,
 		`ALTER TABLE audit_events ADD COLUMN source_ip TEXT NOT NULL DEFAULT ''`,
@@ -627,6 +629,31 @@ FROM service_account_tokens WHERE service_account_id=? ORDER BY created_at DESC`
 		tokens = append(tokens, token)
 	}
 	return tokens, rows.Err()
+}
+
+// GetActiveServiceAccountToken rechecks a persisted credential without
+// exposing or needing its secret. Callers must separately validate the account.
+func (s *Store) GetActiveServiceAccountToken(ctx context.Context, accountID, tokenID string, now time.Time) (ServiceAccountToken, error) {
+	var expiry, revoked sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT expires_at,revoked_at FROM service_account_tokens WHERE id=? AND service_account_id=?`, tokenID, accountID).Scan(&expiry, &revoked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ServiceAccountToken{}, ErrNotFound
+	}
+	if err != nil {
+		return ServiceAccountToken{}, err
+	}
+	if revoked.Valid {
+		return ServiceAccountToken{}, ErrNotFound
+	}
+	token := ServiceAccountToken{ID: tokenID, ServiceAccountID: accountID}
+	if expiry.Valid {
+		parsed, err := time.Parse(time.RFC3339Nano, expiry.String)
+		if err != nil || !parsed.After(now) {
+			return ServiceAccountToken{}, ErrNotFound
+		}
+		token.ExpiresAt = &parsed
+	}
+	return token, nil
 }
 
 func scanServiceAccountToken(scanner interface{ Scan(...any) error }) (ServiceAccountToken, error) {

@@ -129,6 +129,7 @@ transfer_grants: []
         node_log = (root / "node.log").open("w+")
         control_log = (root / "control.log").open("w+")
         processes = []
+        automation_token = ""
 
         def start_node():
             process = subprocess.Popen(
@@ -201,6 +202,36 @@ transfer_grants: []
             assert b"hello.txt" in listing and b"hide.pem" not in listing and b"hide.pem" not in archive
             print("PASS: signed public shares, range budget, listing and ZIP")
 
+            group = expect(request(control_base, "POST", "/api/v1/control-tower/access-groups", {"name": "share-smoke"}, cookie=cookie), 201)
+            group_id = json.loads(group[1])["group_id"]
+            group_path = "/api/v1/control-tower/access-groups/" + group_id
+            expect(request(control_base, "PUT", group_path + "/nodes", {"ids": [node_id]}, cookie=cookie), 200)
+            policy = expect(request(control_base, "POST", "/api/v1/control-tower/policies", {
+                "name": "share-smoke-policy", "rules": [
+                    {"path": "control-tower/shares", "capabilities": ["create"]},
+                    {"path": f"nodes/{node_id}/files/mounts/files/**", "capabilities": ["read", "list"]},
+                ],
+            }, cookie=cookie), 201)
+            policy_id = json.loads(policy[1])["policy_id"]
+            expect(request(control_base, "PUT", group_path + "/policies", {"ids": [policy_id]}, cookie=cookie), 200)
+            account = expect(request(control_base, "POST", "/api/v1/control-tower/service-accounts", {
+                "name": "share-smoke-automation", "kind": "automation", "group_ids": [group_id],
+            }, cookie=cookie), 201)
+            account_data = json.loads(account[1])
+            automation = account_data["service_account"]["service_account_id"]
+            credential = account_data["credential"]
+            automation_token = credential["token"]
+            automated_share = expect(request(control_base, "POST", "/api/v1/control-tower/shares", {
+                "node_id": node_id, "mount_id": "files", "path": "hello.txt", "kind": "file",
+            }, token=automation_token), 201)
+            assert b"created_credential_id" not in automated_share[1]
+            automated_path = "/api/v1/public/shares/" + json.loads(automated_share[1])["token"]
+            expect(request(control_base, "GET", automated_path + "/content"), 200)
+            expect(request(control_base, "DELETE", "/api/v1/control-tower/service-accounts/" + automation + "/tokens/" + credential["token_id"], cookie=cookie), 204)
+            expect(request(control_base, "GET", automated_path), 410)
+            expect(request(control_base, "GET", automated_path + "/content"), 410)
+            print("PASS: automation share identity, signed access and credential revocation")
+
             upload = expect(request(
                 control_base, "POST", prefix + "/uploads",
                 {"path": "upload.txt", "size": 3, "overwrite": False}, cookie=cookie,
@@ -266,6 +297,8 @@ transfer_grants: []
                 log.flush()
                 log.seek(0)
                 output = log.read().replace(node_token, "[redacted]").replace(password, "[redacted]")
+                if automation_token:
+                    output = output.replace(automation_token, "[redacted]")
                 print(label + " log:", output[-3000:])
             raise
         finally:

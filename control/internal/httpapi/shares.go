@@ -125,7 +125,15 @@ func (s *Server) createShare(w http.ResponseWriter, r *http.Request) {
 		ID: randomID("shr"), TokenHash: tokenHash, NodeID: nodeID, MountID: mountID,
 		Path: normalizeSharePath(request.Path), Kind: kind, Name: shareDisplayName(request.Path),
 		PasswordHash: passwordHash, AllowArchive: allowArchive,
-		MaxDownloads: request.MaxDownloads, CreatedBy: currentUser(r).ID, CreatedAt: now,
+		MaxDownloads: request.MaxDownloads, CreatedBy: currentUser(r).ID, CreatedByType: currentActorType(r), CreatedAt: now,
+	}
+	if share.CreatedByType == "service_account" {
+		credential, _ := r.Context().Value(credentialKey).(string)
+		if !strings.HasPrefix(credential, "token-") || len(credential) <= len("token-") {
+			writeError(w, r, http.StatusForbidden, "permission_denied", "A credencial da conta não pôde ser vinculada ao link.")
+			return
+		}
+		share.CreatedCredentialID = strings.TrimPrefix(credential, "token-")
 	}
 	if request.ExpiresInSec > 0 {
 		expiry := now.Add(time.Duration(request.ExpiresInSec) * time.Second)
@@ -158,7 +166,7 @@ func (s *Server) listShares(w http.ResponseWriter, r *http.Request) {
 		decision.Allowed {
 		owner = ""
 	}
-	shares, err := s.store.ListShares(r.Context(), owner)
+	shares, err := s.store.ListShares(r.Context(), owner, currentActorType(r))
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -210,7 +218,7 @@ func (s *Server) deleteShare(w http.ResponseWriter, r *http.Request) {
 // authorizeShareMutation lets an owner manage their own link, and anyone with
 // sudo on shares manage all of them.
 func (s *Server) authorizeShareMutation(w http.ResponseWriter, r *http.Request, share store.Share) bool {
-	if share.CreatedBy == currentUser(r).ID {
+	if share.CreatedBy == currentUser(r).ID && share.CreatedByType == currentActorType(r) {
 		return s.authorize(w, r, "control-tower/shares", "delete", "permission_denied",
 			"A policy atual não permite remover links públicos.")
 	}
@@ -518,15 +526,15 @@ func (s *Server) authorizeSharePath(w http.ResponseWriter, r *http.Request, shar
 }
 
 func (s *Server) shareCreatorAuthorizedPath(r *http.Request, share store.Share, relative, capability string, checkSubtree bool) bool {
-	user, err := s.store.GetUser(r.Context(), share.CreatedBy)
-	if err != nil || !user.Enabled {
+	creator, actorType, _, err := s.currentShareCreator(r, share, time.Now())
+	if err != nil {
 		return false
 	}
 	scope := fileScope("nodes/"+share.NodeID+"/files/mounts/"+share.MountID, relative)
 	if scope == "" {
 		return false
 	}
-	policies, err := s.store.RBACPoliciesForSubject(r.Context(), "user", share.CreatedBy)
+	policies, err := s.store.RBACPoliciesForSubject(r.Context(), actorType, share.CreatedBy)
 	if err != nil {
 		return false
 	}
@@ -536,11 +544,48 @@ func (s *Server) shareCreatorAuthorizedPath(r *http.Request, share store.Share, 
 	if checkSubtree && rbac.DeniesWithin(expanded, scope) {
 		return false
 	}
-	if user.Role == "admin" {
+	if actorType == "user" && creator.Role == "admin" {
 		return true
 	}
 	decision := rbac.Evaluate(expanded, scope, capability)
 	return decision.Allowed && !decision.Denied
+}
+
+// Legacy shares default to user ownership. Automation shares persist their
+// issuing credential so deactivation, group removal and token revocation take
+// effect on the next public request.
+func (s *Server) currentShareCreator(r *http.Request, share store.Share, now time.Time) (store.User, string, *time.Time, error) {
+	switch share.CreatedByType {
+	case "user", "":
+		user, err := s.store.GetUser(r.Context(), share.CreatedBy)
+		if err != nil || !user.Enabled {
+			return store.User{}, "", nil, errSignedReadUnavailable
+		}
+		return user, "user", nil, nil
+	case "service_account":
+		account, err := s.store.GetServiceAccount(r.Context(), share.CreatedBy)
+		if err != nil || !account.Enabled || account.Kind != "automation" || share.CreatedCredentialID == "" {
+			return store.User{}, "", nil, errSignedReadUnavailable
+		}
+		credential, err := s.store.GetActiveServiceAccountToken(r.Context(), account.ID, share.CreatedCredentialID, now)
+		if err != nil {
+			return store.User{}, "", nil, errSignedReadUnavailable
+		}
+		groups, err := s.store.ServiceAccountGroupIDs(r.Context(), account.ID, true)
+		if err != nil {
+			return store.User{}, "", nil, err
+		}
+		for _, group := range groups {
+			member, err := s.store.NodeInAccessGroup(r.Context(), group, share.NodeID)
+			if err != nil {
+				return store.User{}, "", nil, err
+			}
+			if member {
+				return store.User{ID: account.ID, Username: account.Name, Role: "service_account", Enabled: true}, "service_account", credential.ExpiresAt, nil
+			}
+		}
+	}
+	return store.User{}, "", nil, errSignedReadUnavailable
 }
 
 // resolveSharePath joins the caller-supplied subpath onto the share's root and
