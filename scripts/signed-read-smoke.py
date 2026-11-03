@@ -181,6 +181,26 @@ transfer_grants: []
             assert (root / "files" / "simple.txt").read_bytes() == b"first"
             print("PASS: signed simple upload and idempotent retry")
 
+            share = expect(request(
+                control_base, "POST", "/api/v1/control-tower/shares",
+                {"node_id": node_id, "mount_id": "files", "path": "hello.txt", "kind": "file", "max_downloads": 1}, cookie=cookie,
+            ), 201)
+            share_token = json.loads(share[1])["token"]
+            public_path = "/api/v1/public/shares/" + share_token
+            expect(request(control_base, "GET", public_path), 200)
+            shared = expect(request(control_base, "GET", public_path + "/content", headers={"Range": "bytes=0-5"}), 206)
+            assert shared[1] == b"signed"
+            expect(request(control_base, "GET", public_path + "/content"), 410)
+            directory = expect(request(
+                control_base, "POST", "/api/v1/control-tower/shares",
+                {"node_id": node_id, "mount_id": "files", "path": ".", "kind": "directory"}, cookie=cookie,
+            ), 201)
+            directory_path = "/api/v1/public/shares/" + json.loads(directory[1])["token"]
+            listing = expect(request(control_base, "GET", directory_path + "/list"), 200)[1]
+            archive = expect(request(control_base, "GET", directory_path + "/archive"), 200)[1]
+            assert b"hello.txt" in listing and b"hide.pem" not in listing and b"hide.pem" not in archive
+            print("PASS: signed public shares, range budget, listing and ZIP")
+
             upload = expect(request(
                 control_base, "POST", prefix + "/uploads",
                 {"path": "upload.txt", "size": 3, "overwrite": False}, cookie=cookie,

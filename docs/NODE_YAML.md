@@ -86,7 +86,9 @@ content, search, disk usage, and ZIP reads and plans. Once all relevant nodes
 have the correct public keys, `CONTROL_TOWER_SIGNED_LOCAL_READS=true` enables
 signed contexts for these proxy reads. The option defaults to false and requires
 the signing key; enabled reads fail closed if the node lacks the capability or
-does not confirm enforcement. Each signed response expires within 30 seconds,
+does not confirm enforcement. Public share listings, content and archives also
+use signed contexts based on the creator's current permissions when this option
+is enabled. Each signed response expires within 30 seconds,
 including for a slow client. Other node operations reject signed contexts, and
 jobs do not yet renew them. `CONTROL_TOWER_SIGNED_UPLOADS=true` separately
 enables signed resumable upload creation, chunks, completion and abort. The

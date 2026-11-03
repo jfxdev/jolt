@@ -12,7 +12,7 @@
 | 2. Perfil de agente | Limites, interrupção e teto opcional de capabilities por credencial implementados em partes | Validar limites e revogação em jornadas e carga |
 | 3. Auditoria e canary | Auditoria, exportação, cadeia opcional, canaries e métricas implementados em partes | Concluir aceite integrado, privacidade e alertas |
 | 4. Regras por tipo | Persistência, avaliadores e leituras locais assinadas integradas opcionalmente ao proxy | Completar todas as operações antes de habilitar policies |
-| 5. Shares, transferências e uploads | Uploads assinados opcionais com reautorização, `exclude` por grant e verificações parciais | Integrar consultas auxiliares, shares e autorizações renováveis |
+| 5. Shares, transferências e uploads | Uploads e shares assinados opcionais, reautorização e `exclude` por grant | Integrar consultas auxiliares e autorizações renováveis de transfers e jobs |
 | 6. Segredos e apresentação | Varredura, limites de busca e `display_name` implementados em partes | Validar todos os fluxos e componentes desktop/mobile |
 | 7. Lixeira, confirmação, aprovação e JIT | JIT implementado em partes; lixeira, planos e aprovações pendentes | Implementar fluxos destrutivos e revalidar jobs |
 | 8. Identidade e MCP | Pendente | Implementar JWT/JWKS, JWT-SVID e `jolt-mcp` |
@@ -111,14 +111,14 @@ Referências para retomada:
 
 **Código existente**
 
-- Há revalidação de permissões em partes dos shares e das retomadas de jobs locais. A retomada manual entre nodes é recusada sem contexto verificável; isso ainda não garante revogação imediata na continuidade automática de jobs existentes.
+- Shares reavaliam o criador também nos metadados e desbloqueio; listagem, conteúdo e ZIP podem usar contextos assinados quando `CONTROL_TOWER_SIGNED_LOCAL_READS=true`. A cota é reservada atomicamente após a confirmação do node e antes de enviar bytes, sem consumir downloads por falhas de capacidade ou autorização. A retomada manual entre nodes é recusada sem contexto verificável; isso ainda não garante revogação imediata na continuidade automática de jobs existentes.
 - `exclude` por grant possui validação, aplicação em origem/destino e capacidades específicas nos nodes. A inspeção opcional de uploads verifica MIME e assinaturas e remove parciais rejeitados.
 - Upload simples aplica contexto assinado quando `CONTROL_TOWER_SIGNED_UPLOADS=true`, vinculando destino, opções e chave de idempotência; o node revalida antes da publicação e interrompe streams expirados. A API de policies por tipo continua bloqueada.
 - Upload retomável pode receber contextos assinados por configuração explícita. Admissão, chunks, publicação, cancelamento e reautorização usam o destino persistido; a publicação revalida create/update e preserva o destino existente se a permissão mudar ou surgir conflito.
 
 **Falta**
 
-- Recalcular a autorização completa do criador em cada acesso a shares, incluindo caminhos, listagem e ZIP, com regras por tipo.
+- Completar a aplicação de regras por tipo às verificações auxiliares e aos fluxos de criação e diagnóstico dos shares, mantendo a recusa conservadora onde ainda houver divergência.
 - Integrar emissão e validação das autorizações assinadas a transfers e jobs, vinculando ator, nodes, grants, raízes, operações e validade. As chaves já podem ser provisionadas; falta usá-las nesses fluxos e validar sua rotação ponta a ponta.
 - Persistir o contexto necessário no estado cifrado, renovar antes de iniciar/retomar e durante jobs longos e aguardar quando não puder validar. Aplicar no manifesto, conteúdo, destino, sobrescrita e limpeza da origem, inclusive continuidade automática.
 - Antes de ativar sessões com identidade persistida, validar o fluxo completo de atualização, recuperação e rollback com backup compatível, e assegurar que sessões antigas só recebam acesso após autorização explícita verificável. A versão 2 do cabeçalho do node é separada do marcador de versão mínima do Control Tower; binários muito antigos que não verificarem sua versão não são protegidos automaticamente.
@@ -167,6 +167,7 @@ Referências para retomada:
 - Para essa integração de uploads retomáveis, passaram testes com `-race` nos pacotes HTTP e assinatura do Control Tower e nos pacotes HTTP, filesystem e assinatura do node, além de `go vet` nos dois módulos. A jornada local de processos executou também a confirmação de capacidade e a recusa de chave incompatível.
 - Na reautorização, testes com `-race` cobriram troca de credencial, ator diferente, replay após ciclos de credencial, falhas ao elevar o estado à versão 3 e recusa por leitor da versão 2 compilado da revisão `c707bd1`. A jornada entre processos cobriu sessão legada, novo login e privacidade do vínculo. Passaram `go test ./...` e `go vet ./...` em ambos os módulos. Na interface, 45 testes e o build passaram; quatro cenários de retomada e recusa passaram em Chromium desktop e mobile.
 - O upload simples assinado foi testado entre processos, inclusive repetição idempotente, e por HTTP real no node com expiração durante envio lento; o destino não foi publicado após a expiração. Os testes cobrem adulteração de opções, negação por tipo e isolamento da chave de idempotência por ator.
+- Shares assinados foram exercitados entre processos para metadados, listagem, conteúdo com `Range`, última transferência permitida por cota e ZIP. Testes focados verificam revogação do criador, escopo, capacidade e confirmação do node; a habilitação integral de policies por tipo continua bloqueada.
 - No node, os testes do estado cifrado passaram com `-race`, cobrindo recuperação do vínculo após reinício, ausência de identidade em JSON e nos arquivos cifrados, imutabilidade e sessões antigas. A elevação do cabeçalho e as transações na versão 2 foram exercitadas em falhas de sincronização e rename; um leitor compilado da revisão `80e7980` aceitou estado legado e recusou o estado elevado. Passaram também `CGO_ENABLED=0 go test ./...` e `CGO_ENABLED=0 go vet ./...` do node no ambiente local.
 - No node, `go test ./...` passou com acesso às portas locais durante a etapa que originou `f8676a9`, antes do ajuste final de canary. Nas alterações posteriores, os testes focados de filesystem e HTTP passaram com `-race`, incluindo leitura assinada, `Range` em HTTP real, ZIP, ocultação, conflitos e mudança de filtro durante upload; vet e build com `CGO_ENABLED=0` passaram. A revogação integrada durante um upload ainda precisa ser validada.
 - No frontend, 43 testes e dois cenários Playwright de segurança de agente, em desktop e mobile, passaram na etapa `05d56d0`. Não houve mudanças posteriores no frontend até `9da246d`.

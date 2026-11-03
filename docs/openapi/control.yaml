@@ -799,7 +799,7 @@ paths:
     get:
       tags: [Shares]
       summary: Download public shared content
-      description: Every content request, including Range requests, consumes download budget. A zero max_downloads means no download-count limit.
+      description: Every successful content response, including Range responses, consumes download budget atomically before bytes are sent. A zero max_downloads means no download-count limit. Failed node or authorization checks do not consume the budget.
       security: []
       parameters:
         - {name: path, in: query, schema: {type: string}}

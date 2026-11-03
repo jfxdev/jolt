@@ -485,6 +485,15 @@ func TestShareDiesWithTheCreatorsAccess(t *testing.T) {
 		"/api/v1/public/shares/"+token+"/content", nil); recorder.Code != http.StatusGone {
 		t.Fatalf("share outlived the creator's access: %d", recorder.Code)
 	}
+	for _, tc := range []struct{ method, suffix string }{
+		{http.MethodGet, ""},
+		{http.MethodPost, "/unlock"},
+	} {
+		recorder := harness.public(t, tc.method, "/api/v1/public/shares/"+token+tc.suffix, nil)
+		if recorder.Code != http.StatusGone || strings.Contains(recorder.Body.String(), "a.txt") {
+			t.Fatalf("revoked metadata/unlock %s: %d %s", tc.suffix, recorder.Code, recorder.Body)
+		}
+	}
 }
 
 func TestShareDiesWithADisabledCreator(t *testing.T) {

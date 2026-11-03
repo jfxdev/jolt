@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"context"
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/jfxdev/jolt/control/internal/rbac"
 	"github.com/jfxdev/jolt/control/internal/security"
+	"github.com/jfxdev/jolt/control/internal/signedauth"
 	"github.com/jfxdev/jolt/control/internal/store"
 )
 
@@ -411,18 +414,11 @@ func (s *Server) publicShareContent(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeSharePath(w, r, share, relative, "read") {
 		return
 	}
-	// Every content request, including Range, consumes the atomic budget.
-	// A Range header alone is not proof of a previously counted download.
-	if err := s.store.RegisterShareDownload(r.Context(), share.ID, time.Now().UTC()); err != nil {
-		writeError(w, r, http.StatusGone, "share_exhausted", "Este link não está mais disponível.")
-		return
-	}
 	query := url.Values{}
 	query.Set("path", relative)
 	if r.URL.Query().Get("disposition") == "inline" {
 		query.Set("disposition", "inline")
 	}
-	s.registry.Inc("jolt_control_share_downloads_total")
 	s.streamShareResource(w, r, share, "files/content", query, true)
 }
 
@@ -457,10 +453,6 @@ func (s *Server) publicShareArchive(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.store.RegisterShareDownload(r.Context(), share.ID, time.Now().UTC()); err != nil {
-		writeError(w, r, http.StatusGone, "share_exhausted", "Este link não está mais disponível.")
-		return
-	}
 	query := url.Values{}
 	query.Set("path", relative)
 	for _, name := range r.URL.Query()["name"] {
@@ -468,13 +460,11 @@ func (s *Server) publicShareArchive(w http.ResponseWriter, r *http.Request) {
 			query.Add("name", trimmed)
 		}
 	}
-	s.registry.Inc("jolt_control_share_downloads_total")
 	s.streamShareResource(w, r, share, "files/archive", query, true)
 }
 
-// loadPublicShare resolves the token, checks the share is still live, and —
-// when content is being requested — verifies the password gate and that the
-// creator still holds read access to the shared path.
+// loadPublicShare resolves the token and rechecks the creator's access for
+// every public operation. Content requests also require the password gate.
 func (s *Server) loadPublicShare(w http.ResponseWriter, r *http.Request, forContent bool) (store.Share, bool) {
 	token := strings.TrimSpace(r.PathValue("token"))
 	if token == "" {
@@ -492,10 +482,7 @@ func (s *Server) loadPublicShare(w http.ResponseWriter, r *http.Request, forCont
 		writeError(w, r, http.StatusGone, "share_exhausted", "Este link não está mais disponível.")
 		return store.Share{}, false
 	}
-	if !forContent {
-		return share, true
-	}
-	if share.HasPassword && !s.shareUnlocked(r, share) {
+	if forContent && share.HasPassword && !s.shareUnlocked(r, share) {
 		writeError(w, r, http.StatusUnauthorized, "share_password_required",
 			"Este link exige senha.")
 		return store.Share{}, false
@@ -593,6 +580,71 @@ func (s *Server) streamShareResource(w http.ResponseWriter, r *http.Request, sha
 		writeError(w, r, http.StatusBadGateway, "node_unavailable", "O node está indisponível.")
 		return
 	}
+	signedToken := ""
+	if s.config.SignedLocalReads {
+		operation, capability := "", "signed_local_read_v1"
+		switch resource {
+		case "files":
+			operation = "list"
+		case "files/content":
+			operation = "content"
+		case "files/archive":
+			operation, capability = "archive", "signed_local_tree_read_v1"
+		default:
+			writeError(w, r, http.StatusConflict, "signed_context_unsupported", "Este acesso não suporta autorização assinada.")
+			return
+		}
+		var info struct {
+			NodeID       string   `json:"node_id"`
+			Capabilities []string `json:"capabilities"`
+		}
+		if err := s.callNodeJSON(r.Context(), node, http.MethodGet, "/api/v1/node", nil, &info, r.Header.Get("X-Correlation-ID")); err != nil {
+			writeError(w, r, http.StatusBadGateway, "node_unavailable", "Não foi possível verificar a proteção do link no node.")
+			return
+		}
+		found := false
+		for _, item := range info.Capabilities {
+			found = found || item == capability
+		}
+		if info.NodeID != node.ID || !found {
+			writeError(w, r, http.StatusConflict, "node_upgrade_required", "Atualize o node para proteger este link.")
+			return
+		}
+		root := query.Get("path")
+		if root == "" {
+			root = "."
+		}
+		now := time.Now()
+		var err error
+		signedToken, err = s.issueSignedShareRead(r, share, root, operation, now)
+		if err != nil {
+			writeError(w, r, http.StatusGone, "share_revoked", "Este link não está mais disponível.")
+			return
+		}
+		publicKey := s.config.AuthorizationSigningKey.Public().(ed25519.PublicKey)
+		claims, _, err := signedauth.VerifyLocalRead(signedToken, map[string]ed25519.PublicKey{s.config.AuthorizationSigningKeyID: publicKey}, node.ID, operation, share.MountID, root, now)
+		if err != nil {
+			writeError(w, r, http.StatusServiceUnavailable, "signed_authorization_unavailable", "Não foi possível validar a autorização do link.")
+			return
+		}
+		deadline := time.Unix(claims.ExpiresAt, 0)
+		controller := http.NewResponseController(w)
+		if err := controller.SetWriteDeadline(deadline); err != nil {
+			writeError(w, r, http.StatusServiceUnavailable, "signed_authorization_unavailable", "Não foi possível limitar o prazo do link.")
+			return
+		}
+		ctx, cancel := context.WithDeadline(r.Context(), deadline)
+		defer func() {
+			expired := ctx.Err() != nil || !time.Now().Before(deadline)
+			cancel()
+			if expired {
+				panic(http.ErrAbortHandler)
+			}
+			_ = controller.SetWriteDeadline(time.Time{})
+		}()
+		r = r.WithContext(ctx)
+		w = &signedProxyWriter{ResponseWriter: w, ctx: ctx}
+	}
 	token, err := security.Decrypt(s.config.EncryptionKey, node.TokenEncrypted)
 	if err != nil {
 		s.fail(w, r, err)
@@ -608,6 +660,9 @@ func (s *Server) streamShareResource(w http.ResponseWriter, r *http.Request, sha
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("X-Correlation-ID", r.Header.Get("X-Correlation-ID"))
 	request.Header.Set("X-Jolt-Internal-Canary", "1")
+	if signedToken != "" {
+		request.Header.Set(signedAuthorizationHeader, signedToken)
+	}
 	if value := r.Header.Get("Range"); value != "" && download {
 		request.Header.Set("Range", value)
 	}
@@ -617,6 +672,20 @@ func (s *Server) streamShareResource(w http.ResponseWriter, r *http.Request, sha
 		return
 	}
 	defer response.Body.Close()
+	if signedToken != "" && response.Header.Get("X-Jolt-Access-Applied") != "v1" {
+		writeError(w, r, http.StatusConflict, "node_upgrade_required", "O node não confirmou a proteção do link.")
+		return
+	}
+	if download && response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
+		// Reserve before sending any response bytes. Failed node/capability
+		// checks do not consume a download; concurrent successful requests
+		// still compete on the store's atomic counter, including Range reads.
+		if err := s.store.RegisterShareDownload(r.Context(), share.ID, time.Now().UTC()); err != nil {
+			writeError(w, r, http.StatusGone, "share_exhausted", "Este link não está mais disponível.")
+			return
+		}
+		s.registry.Inc("jolt_control_share_downloads_total")
+	}
 	if response.Header.Get("X-Jolt-Canary") == "1" {
 		s.auditCanary(r, share.CreatedBy, "share", "shares/"+share.ID+"/"+resource, response.StatusCode)
 	}
@@ -630,7 +699,10 @@ func (s *Server) streamShareResource(w http.ResponseWriter, r *http.Request, sha
 	// credential.
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.WriteHeader(response.StatusCode)
-	_, _ = io.Copy(w, response.Body)
+	_, copyErr := io.Copy(w, response.Body)
+	if signedToken != "" && copyErr != nil {
+		panic(http.ErrAbortHandler)
+	}
 	s.auditShareAccess(r, share, resource, response.StatusCode)
 }
 
