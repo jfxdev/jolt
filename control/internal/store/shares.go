@@ -37,7 +37,7 @@ func (s Share) Active(now time.Time) bool {
 	if s.RevokedAt != nil {
 		return false
 	}
-	if s.ExpiresAt != nil && now.After(*s.ExpiresAt) {
+	if s.ExpiresAt != nil && !now.Before(*s.ExpiresAt) {
 		return false
 	}
 	if s.MaxDownloads > 0 && s.DownloadCount >= s.MaxDownloads {
@@ -147,15 +147,28 @@ func (s *Store) DeleteShare(ctx context.Context, id string) error {
 }
 
 // RegisterShareDownload counts one download and refuses to exceed the
-// configured maximum. The check and the increment share one statement so two
-// concurrent downloads cannot both pass a limit of one.
+// configured maximum. The update checks the exact expiry value read and
+// increments atomically, so concurrent downloads cannot exceed the limit.
 func (s *Store) RegisterShareDownload(ctx context.Context, id string, now time.Time) error {
+	var expiry sql.NullString
+	if err := s.db.QueryRowContext(ctx, `SELECT expires_at FROM shares WHERE id=?`, id).Scan(&expiry); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrShareExhausted
+		}
+		return err
+	}
+	if expiry.Valid {
+		deadline, err := time.Parse(time.RFC3339Nano, expiry.String)
+		if err != nil || !deadline.After(now) {
+			return ErrShareExhausted
+		}
+	}
 	result, err := s.db.ExecContext(ctx, `UPDATE shares
 SET download_count=download_count+1,last_access_at=?
 WHERE id=? AND revoked_at IS NULL
-  AND (expires_at IS NULL OR expires_at > ?)
+  AND expires_at IS ?
   AND (max_downloads<=0 OR download_count < max_downloads)`,
-		now.Format(time.RFC3339Nano), id, now.Format(time.RFC3339Nano))
+		now.UTC().Format(time.RFC3339Nano), id, expiry)
 	if err != nil {
 		return err
 	}
@@ -180,13 +193,43 @@ func (s *Store) TouchShare(ctx context.Context, id string, now time.Time) error 
 // PurgeExpiredShares removes shares that expired before the cutoff so the table
 // does not grow without bound.
 func (s *Store) PurgeExpiredShares(ctx context.Context, before time.Time) (int64, error) {
-	result, err := s.db.ExecContext(ctx,
-		`DELETE FROM shares WHERE expires_at IS NOT NULL AND expires_at < ?`,
-		before.Format(time.RFC3339Nano))
+	rows, err := s.db.QueryContext(ctx, `SELECT id,expires_at FROM shares WHERE expires_at IS NOT NULL`)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	type candidate struct{ id, expiry string }
+	var expired []candidate
+	for rows.Next() {
+		var item candidate
+		if err := rows.Scan(&item.id, &item.expiry); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		deadline, err := time.Parse(time.RFC3339Nano, item.expiry)
+		if err == nil && deadline.Before(before) {
+			expired = append(expired, item)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	var removed int64
+	for _, item := range expired {
+		result, err := s.db.ExecContext(ctx, `DELETE FROM shares WHERE id=? AND expires_at=?`, item.id, item.expiry)
+		if err != nil {
+			return removed, err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return removed, err
+		}
+		removed += count
+	}
+	return removed, nil
 }
 
 // ErrShareExhausted reports that a share is revoked, expired, or has no
@@ -207,8 +250,20 @@ func scanShare(row scanner) (Share, error) {
 	share.AllowArchive = allowArchive != 0
 	share.HasPassword = share.PasswordHash != ""
 	share.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-	share.ExpiresAt = parseNullableTime(expires)
-	share.RevokedAt = parseNullableTime(revoked)
+	if expires.Valid {
+		expiry, err := time.Parse(time.RFC3339Nano, expires.String)
+		if err != nil {
+			return Share{}, err
+		}
+		share.ExpiresAt = &expiry
+	}
+	if revoked.Valid {
+		revokedAt, err := time.Parse(time.RFC3339Nano, revoked.String)
+		if err != nil {
+			return Share{}, err
+		}
+		share.RevokedAt = &revokedAt
+	}
 	share.LastAccessAt = parseNullableTime(lastAccess)
 	return share, nil
 }

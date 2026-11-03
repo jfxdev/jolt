@@ -684,8 +684,8 @@ func (s *Store) AuthenticateServiceAccount(ctx context.Context, tokenHash string
 	query := `SELECT a.id,a.name,a.description,a.enabled,a.created_at,a.updated_at,a.kind,
 t.id,t.service_account_id,t.name,t.token_hash,t.expires_at,t.last_used_at,t.revoked_at,t.created_at,t.agent_limits
 FROM service_account_tokens t JOIN service_accounts a ON a.id=t.service_account_id
-WHERE t.token_hash=? AND a.enabled=1 AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at>?)`
-	row := s.db.QueryRowContext(ctx, query, tokenHash, time.Now().UTC().Format(time.RFC3339Nano))
+WHERE t.token_hash=? AND a.enabled=1 AND t.revoked_at IS NULL`
+	row := s.db.QueryRowContext(ctx, query, tokenHash)
 	var account ServiceAccount
 	var enabled int
 	var accountCreated, accountUpdated string
@@ -707,7 +707,13 @@ WHERE t.token_hash=? AND a.enabled=1 AND t.revoked_at IS NULL AND (t.expires_at 
 	account.Enabled = enabled != 0
 	account.CreatedAt, _ = time.Parse(time.RFC3339Nano, accountCreated)
 	account.UpdatedAt, _ = time.Parse(time.RFC3339Nano, accountUpdated)
-	token.ExpiresAt = parseNullableTime(expiresAt)
+	if expiresAt.Valid {
+		expiry, err := time.Parse(time.RFC3339Nano, expiresAt.String)
+		if err != nil || !expiry.After(time.Now().UTC()) {
+			return ServiceAccount{}, ServiceAccountToken{}, ErrNotFound
+		}
+		token.ExpiresAt = &expiry
+	}
 	token.LastUsedAt = parseNullableTime(lastUsedAt)
 	token.RevokedAt = parseNullableTime(revokedAt)
 	token.CreatedAt, _ = time.Parse(time.RFC3339Nano, tokenCreated)
@@ -1820,8 +1826,7 @@ func (s *Store) SessionUserAndExpiry(ctx context.Context, hash string) (User, ti
 	var enabled int
 	var createdAt, updatedAt, expiresAt string
 	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.password_hash,u.role,u.enabled,u.created_at,u.updated_at,s.expires_at
-FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?`,
-		hash, time.Now().UTC().Format(time.RFC3339Nano)).
+FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=?`, hash).
 		Scan(&user.ID, &user.Username, &user.PasswordHash, &user.Role, &enabled, &createdAt, &updatedAt, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return user, time.Time{}, ErrNotFound
@@ -1833,7 +1838,10 @@ FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expire
 	user.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	user.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
 	expiry, err := time.Parse(time.RFC3339Nano, expiresAt)
-	return user, expiry, err
+	if err != nil || !expiry.After(time.Now().UTC()) {
+		return User{}, time.Time{}, ErrNotFound
+	}
+	return user, expiry, nil
 }
 
 func (s *Store) DeleteSession(ctx context.Context, hash string) error {
