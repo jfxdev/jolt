@@ -50,7 +50,12 @@ func (s *Server) temporarySubjectPolicies(w http.ResponseWriter, r *http.Request
 			writeError(w, r, http.StatusBadRequest, "invalid_assignment", "Informe uma policy e duração de 1 a 3600 segundos.")
 			return
 		}
+		s.agentMu.Lock()
 		assignment, err := s.store.GrantTemporaryPolicy(r.Context(), subjectType, subjectID, strings.TrimSpace(input.PolicyID), currentUser(r).ID, currentActorType(r), r.Header.Get("X-Correlation-ID"), time.Duration(duration)*time.Second)
+		if err == nil && subjectType == "service_account" {
+			s.cancelAgentLocked(subjectID, "")
+		}
+		s.agentMu.Unlock()
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "assignment_target_not_found", "Usuário, conta de serviço ou policy não encontrado.")
 			return
@@ -61,7 +66,12 @@ func (s *Server) temporarySubjectPolicies(w http.ResponseWriter, r *http.Request
 		}
 		writeJSON(w, http.StatusCreated, assignment)
 	case http.MethodDelete:
+		s.agentMu.Lock()
 		err := s.store.RevokeTemporaryPolicy(r.Context(), subjectType, subjectID, r.PathValue("policyID"), currentUser(r).ID, currentActorType(r), r.Header.Get("X-Correlation-ID"))
+		if err == nil && subjectType == "service_account" {
+			s.cancelAgentLocked(subjectID, "")
+		}
+		s.agentMu.Unlock()
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "assignment_not_found", "Atribuição temporária não encontrada.")
 			return

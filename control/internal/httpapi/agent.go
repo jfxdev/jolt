@@ -148,6 +148,12 @@ func (s *Server) serveAgent(next http.Handler, w http.ResponseWriter, r *http.Re
 		return
 	}
 	r = r.WithContext(context.WithValue(r.Context(), groupKey, groups))
+	temporary, err := s.store.TemporaryPolicies(r.Context(), "service_account", account.ID)
+	if err != nil {
+		s.agentMu.Unlock()
+		s.fail(w, r, err)
+		return
+	}
 	limits, err = normalizeAgentLimits(currentToken.AgentLimits)
 	if err != nil || !addressAllowed(r, limits, s.config.TrustedProxies) {
 		s.agentMu.Unlock()
@@ -202,6 +208,14 @@ func (s *Server) serveAgent(next http.Handler, w http.ResponseWriter, r *http.Re
 	state.next++
 	id := state.next
 	deadline := *currentToken.ExpiresAt
+	// Any temporary policy can affect the authorization decision, including a
+	// deny. End the stream at the first expiry and let the next request reload
+	// all policies rather than continuing on an obsolete decision.
+	for _, assignment := range temporary {
+		if assignment.ExpiresAt.Before(deadline) {
+			deadline = assignment.ExpiresAt
+		}
+	}
 	if midnight := now.Truncate(24 * time.Hour).Add(24 * time.Hour); midnight.Before(deadline) {
 		deadline = midnight
 	}
