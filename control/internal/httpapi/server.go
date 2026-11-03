@@ -3028,6 +3028,14 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 		transfer.DestinationIsDirectory = strings.Contains(resource, "directory") || strings.Contains(resource, "batch")
 		mountRequirements, err := s.transferMountRequirements(r.Context(), r.PathValue("nodeID"), transfer)
 		if err != nil {
+			if errors.Is(err, errTransferNodeUpgradeRequired) {
+				writeError(w, r, http.StatusConflict, "node_upgrade_required", "Atualize os nodes para usar exclusões nesta transferência.")
+				return
+			}
+			if errors.Is(err, errTransferNodeUnavailable) {
+				writeError(w, r, http.StatusBadGateway, "node_unavailable", "Não foi possível verificar as capacidades dos nodes da transferência.")
+				return
+			}
 			writeError(w, r, http.StatusBadRequest, "invalid_transfer_grants",
 				"Não foi possível validar os grants e mounts exatos desta transferência.")
 			return
@@ -3280,6 +3288,11 @@ type transferAuthorizationInput struct {
 	DestinationGrantID     string   `json:"destination_grant_id"`
 	Operation              string   `json:"operation"`
 }
+
+var (
+	errTransferNodeUpgradeRequired = errors.New("transfer node lacks grant exclusion support")
+	errTransferNodeUnavailable     = errors.New("transfer node capabilities unavailable")
+)
 
 type nodeTransferGrant struct {
 	ConfiguredEnabled bool     `json:"configured_enabled"`
@@ -3981,6 +3994,25 @@ func (s *Server) transferMountRequirements(ctx context.Context, destinationNodeI
 		!destinationGrant.Permissions.Write {
 		return nil, errors.New("destination grant does not authorize this transfer")
 	}
+	for _, check := range []struct {
+		node       store.Node
+		grant      nodeTransferGrant
+		capability string
+	}{
+		{sourceNode, sourceGrant, "grant_exclude_send_v1"},
+		{destinationNode, destinationGrant, "grant_exclude_receive_v1"},
+	} {
+		if len(check.grant.Exclude) == 0 {
+			continue
+		}
+		metadata, err := s.nodeMetadata(ctx, check.node)
+		if err != nil {
+			return nil, errors.Join(errTransferNodeUnavailable, err)
+		}
+		if !containsString(metadata.Capabilities, check.capability) {
+			return nil, errTransferNodeUpgradeRequired
+		}
+	}
 	sourcePaths := input.SourcePaths
 	if len(sourcePaths) == 0 {
 		sourcePaths = []string{input.SourcePath}
@@ -3991,7 +4023,11 @@ func (s *Server) transferMountRequirements(ctx context.Context, destinationNodeI
 		if err != nil {
 			return nil, err
 		}
-		scope := fileScope("nodes/"+input.PeerNodeID+"/files/mounts/"+sourceGrant.MountID, path.Join(sourceGrant.Path, normalized))
+		sourcePath := path.Join(sourceGrant.Path, normalized)
+		if !grantAllowsPath(sourceGrant, sourcePath) {
+			return nil, errors.New("source is excluded by grant")
+		}
+		scope := fileScope("nodes/"+input.PeerNodeID+"/files/mounts/"+sourceGrant.MountID, sourcePath)
 		if scope == "" {
 			return nil, errors.New("invalid source path")
 		}
