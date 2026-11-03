@@ -35,7 +35,7 @@ func (s *Server) signedUpload(operation string, next http.HandlerFunc) http.Hand
 			}
 		}
 		if len(headers) == 0 {
-			if session.AuthorizationActorID != "" || session.AuthorizationCredentialID != "" {
+			if operation == "upload_reauthorize" || session.AuthorizationActorID != "" || session.AuthorizationCredentialID != "" {
 				writeError(w, r, http.StatusForbidden, "signed_context_required", "Esta sessão exige autorização assinada.", nil)
 				return
 			}
@@ -58,6 +58,12 @@ func (s *Server) signedUpload(operation string, next http.HandlerFunc) http.Hand
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
 			claims, compiled, err = signedauth.VerifyUploadAdmission(headers[0], s.config.AuthorizationKeys, s.identity.NodeID, r.PathValue("mountID"), input.Path, body, time.Now())
+		} else if operation == "upload_reauthorize" {
+			if (session.AuthorizationActorID == "") != (session.AuthorizationCredentialID == "") {
+				writeError(w, r, http.StatusForbidden, "invalid_signed_context", "Vínculo de autorização da sessão inválido.", nil)
+				return
+			}
+			claims, compiled, err = signedauth.VerifyUploadReauthorization(headers[0], s.config.AuthorizationKeys, session.AuthorizationActorID, session.AuthorizationCredentialID, s.identity.NodeID, session.MountID, session.Destination, session.ID, session.AuthorizationRevision, time.Now())
 		} else {
 			claims, compiled, err = signedauth.VerifyLocalUpload(headers[0], s.config.AuthorizationKeys, session.AuthorizationActorID, session.AuthorizationCredentialID, s.identity.NodeID, operation, session.MountID, session.Destination, session.ID, time.Now())
 		}

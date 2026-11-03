@@ -78,6 +78,7 @@ type UploadStore interface {
 	CreateUploadSession(context.Context, entities.UploadSession) error
 	GetUploadSession(context.Context, string) (entities.UploadSession, error)
 	UpdateUploadSession(context.Context, entities.UploadSession) error
+	ReauthorizeUploadSession(context.Context, string, string, string, string) error
 	ListUploadSessions(context.Context, string) ([]entities.UploadSession, error)
 	TouchUploadSession(context.Context, string, time.Time, time.Time) error
 	DeleteUploadSession(context.Context, string) error

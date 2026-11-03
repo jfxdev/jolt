@@ -142,6 +142,25 @@ func UploadAdmissionBodyID(body []byte) string {
 	return fmt.Sprintf("sha256-%x", sha256.Sum256(body))
 }
 
+// VerifyUploadReauthorization accepts a freshly authorized actor for an
+// unbound session, or a new credential for the already bound actor. The
+// previously persisted actor must come from trusted, locked session state.
+func VerifyUploadReauthorization(token string, keys map[string]ed25519.PublicKey, previousActor, previousCredential, receivingNode, mountID, destination, sessionID string, revision uint64, now time.Time) (Claims, *filetypes.Filter, error) {
+	claims, filter, err := verifySigned(token, keys, now)
+	if err != nil {
+		return Claims{}, nil, ErrInvalid
+	}
+	b := claims.Binding
+	if receivingNode == "" || sessionID == "" || (previousActor == "") != (previousCredential == "") || previousActor != "" && b.ActorID != previousActor || b.RequestID != UploadReauthorizationRequestID(sessionID, previousCredential, revision) || b.Operation != "upload_reauthorize" || b.PlanID != sessionID || b.DestinationNodeID != receivingNode || b.DestinationMountID != mountID || b.DestinationRoot != destination || b.DestinationGrantID != "" || b.SourceNodeID != "" || b.SourceGrantID != "" || b.SourceMountID != "" || b.SourceRoot != "" {
+		return Claims{}, nil, ErrInvalid
+	}
+	return claims, filter, nil
+}
+
+func UploadReauthorizationRequestID(sessionID, previousCredential string, revision uint64) string {
+	return fmt.Sprintf("previous-%x", sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d", sessionID, previousCredential, revision))))
+}
+
 func verifySigned(token string, keys map[string]ed25519.PublicKey, now time.Time) (Claims, *filetypes.Filter, error) {
 	var claims Claims
 	if len(token) > base64.RawURLEncoding.EncodedLen(maxPayloadBytes)+1+base64.RawURLEncoding.EncodedLen(ed25519.SignatureSize) {

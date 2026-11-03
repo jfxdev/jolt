@@ -120,6 +120,15 @@ func (s *Server) getUploadSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	session.Offset = offset
+	if r.Header.Get("X-Jolt-Internal-Upload-Binding") == "1" {
+		writeJSON(w, http.StatusOK, struct {
+			entities.UploadSession
+			ActorID      string `json:"authorization_actor_id"`
+			CredentialID string `json:"authorization_credential_id"`
+			Revision     uint64 `json:"authorization_revision"`
+		}{session, session.AuthorizationActorID, session.AuthorizationCredentialID, session.AuthorizationRevision})
+		return
+	}
 	writeJSON(w, http.StatusOK, session)
 }
 
@@ -486,6 +495,28 @@ func isHexSHA256(value string) bool {
 
 func writeUploadReceipt(w http.ResponseWriter, session entities.UploadSession) {
 	writeJSON(w, http.StatusCreated, map[string]any{"upload_id": session.ID, "destination_path": session.Destination, "size": session.Size, "checksum": session.Checksum, "state": session.State, "completed_at": session.CompletedAt})
+}
+
+func (s *Server) reauthorizeUploadSession(w http.ResponseWriter, r *http.Request) {
+	session, ok := s.loadUploadSession(w, r)
+	if !ok {
+		return
+	}
+	filter := signedAccessFilter(r)
+	binding, ok := r.Context().Value(signedUploadIdentityKey{}).(signedauth.Binding)
+	if !ok || filter == nil {
+		writeError(w, r, http.StatusForbidden, "signed_context_required", "Esta operação exige autorização assinada.", nil)
+		return
+	}
+	if err := s.files.ValidateUploadReauthorizationFiltered(r.Context(), session, filter); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if err := s.store.ReauthorizeUploadSession(r.Context(), session.ID, binding.ActorID, binding.CredentialID, binding.RequestID); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) uploadLocked(next http.HandlerFunc) http.HandlerFunc {

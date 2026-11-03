@@ -837,7 +837,7 @@ paths:
     post:
       tags: [Node proxy]
       summary: Open a resumable upload session
-      description: The Control Tower authorizes the mount and destination, requiring create and, for overwrite, update. With signed uploads enabled the exact admission body and credential are bound to the session. Existing unbound sessions and sessions from another login require a new upload until reauthorization is implemented. Chunk offsets are durable on the node; the browser must reselect the same source file after reload.
+      description: The Control Tower authorizes the mount and destination, requiring create and, for overwrite, update. With signed uploads enabled the exact admission body and credential are bound to the session. Existing unbound sessions and sessions from another login require explicit reauthorization before resumption. Chunk offsets are durable on the node; the browser must reselect the same source file after reload.
       requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
       responses:
         '201': {$ref: '#/components/responses/JSONObject'}
@@ -899,6 +899,20 @@ paths:
         '403': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '422': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/mounts/{mountID}/files/uploads/{uploadID}/authorize:
+    parameters:
+      - {$ref: '#/components/parameters/NodeID'}
+      - {$ref: '#/components/parameters/MountID'}
+      - {$ref: '#/components/parameters/UploadID'}
+    post:
+      tags: [Node proxy]
+      summary: Explicitly reauthorize a resumable upload session
+      description: Revalidates current permissions and the persisted destination. A session already bound to an actor can only be reauthorized for that actor; a stale authorization cannot replace a newer credential.
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
   /api/v1/nodes/{nodeID}/jobs/events:
     parameters: [{$ref: '#/components/parameters/NodeID'}]

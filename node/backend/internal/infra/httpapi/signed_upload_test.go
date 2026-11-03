@@ -53,10 +53,14 @@ func TestSignedUploadEnforcesSessionAndCurrentFilter(t *testing.T) {
 	policy := func(caps string) json.RawMessage {
 		return json.RawMessage(`{"version":1,"rules":[{"policy_id":"p","path":"nodes/node/files/mounts/m/**","capabilities":` + caps + `}]}`)
 	}
+	credential := "credential"
 	sign := func(operation, id, actor string, context json.RawMessage) string {
 		now := time.Now().Unix()
 		claims := signedauth.Claims{Version: 1, KeyID: "key", IssuedAt: now, ExpiresAt: now + 20, Context: context,
-			Binding: signedauth.Binding{ActorID: actor, CredentialID: "credential", Operation: operation, RequestID: "request", DestinationNodeID: "node", DestinationMountID: "m", DestinationRoot: "file.txt", PlanID: id}}
+			Binding: signedauth.Binding{ActorID: actor, CredentialID: credential, Operation: operation, RequestID: "request", DestinationNodeID: "node", DestinationMountID: "m", DestinationRoot: "file.txt", PlanID: id}}
+		if operation == "upload_reauthorize" {
+			claims.Binding.RequestID = signedauth.UploadReauthorizationRequestID(id, "credential", 0)
+		}
 		token, err := signedauth.Sign(claims, key)
 		if err != nil {
 			t.Fatal(err)
@@ -95,6 +99,19 @@ func TestSignedUploadEnforcesSessionAndCurrentFilter(t *testing.T) {
 		t.Fatalf("admission: %d %s", w.Code, w.Body)
 	}
 	path := base + "/" + session.ID
+	credential = "credential-new"
+	renewal := sign("upload_reauthorize", session.ID, "actor", policy(`["create","update"]`))
+	if w := call("POST", path+"/authorize", "{}", renewal); w.Code != 204 {
+		t.Fatalf("reauthorize: %d %s", w.Code, w.Body)
+	}
+	if w := call("POST", path+"/authorize", "{}", renewal); w.Code != 403 {
+		t.Fatalf("reauthorization replay: %d %s", w.Code, w.Body)
+	}
+	credential = "credential"
+	if w := call("PATCH", path, "new", sign("upload_chunk", session.ID, "actor", policy(`["create","update"]`))); w.Code != 403 {
+		t.Fatalf("old credential after reauthorization: %d %s", w.Code, w.Body)
+	}
+	credential = "credential-new"
 	if w := call("PATCH", path, "new", ""); w.Code != 403 {
 		t.Fatalf("unsigned chunk: %d %s", w.Code, w.Body)
 	}
@@ -116,6 +133,7 @@ func TestSignedUploadEnforcesSessionAndCurrentFilter(t *testing.T) {
 	if data, _ := os.ReadFile(filepath.Join(root, "file.txt")); string(data) != "new" {
 		t.Fatalf("destination not published: %q", data)
 	}
+	credential = "credential"
 	hidden := json.RawMessage(`{"version":1,"rules":[{"policy_id":"allow","path":"nodes/node/files/mounts/m/**","capabilities":["create","update"]},{"policy_id":"deny","path":"nodes/node/files/mounts/m/**","capabilities":["deny","read"],"file_types":{"extensions":["txt"]}}]}`)
 	if w := call("POST", base, body, sign("upload_create", signedauth.UploadAdmissionBodyID([]byte(body)), "actor", hidden)); w.Code != 404 {
 		t.Fatalf("hidden destination overwrite: %d %s", w.Code, w.Body)

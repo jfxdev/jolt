@@ -4081,11 +4081,13 @@ func requirementsFor(paths []string, capability string) []authorizationRequireme
 // whole mount. Source and Destination are set for copy and move, where the two
 // sides need different capabilities.
 type fileTargets struct {
-	ConflictPolicy string
-	Overwrite      bool
-	Paths          []string
-	Source         string
-	Destination    string
+	ConflictPolicy                        string
+	Overwrite                             bool
+	PreviousActorID, PreviousCredentialID string
+	AuthorizationRevision                 uint64
+	Paths                                 []string
+	Source                                string
+	Destination                           string
 }
 
 func (t fileTargets) all() []string {

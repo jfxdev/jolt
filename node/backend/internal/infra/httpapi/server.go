@@ -113,6 +113,7 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 		mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.uploadLocked(s.getUploadSession))
 		mux.HandleFunc("PATCH /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.uploadLocked(s.signedUpload("upload_chunk", s.appendUploadChunk)))
 		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads/{uploadID}/complete", s.uploadLocked(s.signedUpload("upload_complete", s.completeUploadSession)))
+		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads/{uploadID}/authorize", s.uploadLocked(s.signedUpload("upload_reauthorize", s.reauthorizeUploadSession)))
 		mux.HandleFunc("DELETE /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.uploadLocked(s.signedUpload("upload_abort", s.abortUploadSession)))
 	}
 	mux.HandleFunc("GET /api/v1/jobs", s.listJobs)
@@ -355,7 +356,7 @@ func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 	if len(s.config.AuthorizationKeys) > 0 {
 		capabilities = append(capabilities, "signed_local_read_v1", "signed_local_tree_read_v1")
 		if s.store != nil {
-			capabilities = append(capabilities, "signed_upload_sessions_v1")
+			capabilities = append(capabilities, "signed_upload_sessions_v1", "signed_upload_reauthorize_v1")
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -2298,6 +2299,21 @@ paths:
         "403": {description: Signed context required or invalid, or destination denied}
         "409": {description: The destination exists and the session does not allow overwrite}
         "422": {description: upload_content_rejected; the rejected partial and upload session are removed}
+  /api/v1/mounts/{mountID}/files/uploads/{uploadID}/authorize:
+    post:
+      summary: Explicitly reauthorize a resumable upload session
+      description: A signed context is required. It binds the current session identity and destination; a bound session can only be reauthorized for the same actor.
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: path, name: uploadID, required: true, schema: {type: string}}
+        - {in: header, name: X-Jolt-Access-Authorization, required: true, schema: {type: string}}
+      responses:
+        "204":
+          description: Session reauthorized
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms signed context enforcement, schema: {type: string, enum: [v1]}}
+        "403": {description: Invalid, stale or insufficient authorization}
+        "404": {description: Session not found or hidden}
   /api/v1/mounts/{mountID}/files/copy/plan:
     post:
       parameters:

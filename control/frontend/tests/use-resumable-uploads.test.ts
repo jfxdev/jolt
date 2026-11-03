@@ -44,6 +44,7 @@ async function conflictedUpload() {
     return { upload_id: session.upload_id, destination_path: file.name, size: file.size, checksum: "" };
   };
   api.abortUpload = () => abort.promise;
+  api.authorizeUpload = async () => null;
 
   let uploads!: ReturnType<typeof useResumableUploads>;
   function Harness() {
@@ -98,6 +99,18 @@ test("a replacement waits for abort, then opens a session with overwrite enabled
   assert.deepEqual(created, [false, true]);
   assert.equal(finished(), 1);
   assert.deepEqual(errors, []);
+});
+
+test("a failed reauthorization does not abort or replace the prior upload", async () => {
+  const { uploads, id, created, errors, finished } = await conflictedUpload();
+  let aborted = false;
+  api.authorizeUpload = async () => { throw Object.assign(new Error("permission revoked"), { status: 403 }); };
+  api.abortUpload = async () => { aborted = true; };
+  await uploads.replace(id);
+  assert.equal(aborted, false);
+  assert.deepEqual(created, [false]);
+  assert.equal(finished(), 0);
+  assert.equal(errors.length, 1);
 });
 
 test("a failed abort reports the error without starting a replacement", async () => {

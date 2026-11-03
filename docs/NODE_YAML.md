@@ -91,10 +91,9 @@ including for a slow client. Other node operations reject signed contexts, and
 jobs do not yet renew them. `CONTROL_TOWER_SIGNED_UPLOADS=true` separately
 enables signed resumable upload creation, chunks, completion and abort. The
 node requires fresh signed contexts for bound sessions and enforces filtering
-before publication. Existing unbound sessions cannot be resumed with this
-option enabled; a new session is required until explicit reauthorization is
-implemented. A new login uses a different session credential and likewise
-cannot resume an already bound upload. Simple uploads and the remaining
+before publication. An explicit resume or discard reauthorizes an old unbound
+session or a new credential for the original actor after checking current
+permissions. A stale reauthorization cannot replace a newer binding. Simple uploads and the remaining
 operations do not yet enforce these contexts. File-type policies remain
 disabled until all required operations are integrated.
 
@@ -115,7 +114,9 @@ The first upload session persisted with an authorization identity upgrades the
 authenticated state header to version 2 before writing that session. Nodes
 that only understand version 1 refuse to open the upgraded state; existing
 version 1 records remain readable by version 2. Signed upload admission is
-disabled by default. Before activating it, upgrade nodes and keep a
+disabled by default. Explicit reauthorization raises the header to version 3
+before persisting its replay-protection revision, so version 2 readers also
+refuse that state. Before activating these features, upgrade nodes and keep a
 compatible pre-upgrade backup for rollback; older binaries that do not check
 the envelope version cannot be made safe by this marker alone.
 

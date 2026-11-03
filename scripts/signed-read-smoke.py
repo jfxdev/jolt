@@ -181,8 +181,22 @@ transfer_grants: []
             upload_id = json.loads(upload[1])["upload_id"]
             node_upload = "/api/v1/mounts/files/files/uploads/" + upload_id
             upload_path = prefix + "/uploads/" + upload_id
+            visible = expect(request(
+                control_base, "GET", upload_path, cookie=cookie,
+                headers={"X-Jolt-Internal-Upload-Binding": "1"},
+            ), 200)[1]
+            assert b"authorization_actor_id" not in visible and b"authorization_credential_id" not in visible and b"authorization_revision" not in visible
             chunk_headers = {"Content-Range": "bytes 0-2/3"}
             expect(request(node_base, "PATCH", node_upload, b"new", token=node_token, headers=chunk_headers), 403)
+            second_login = expect(request(
+                control_base, "POST", "/api/v1/control-tower/auth/login",
+                {"username": "admin", "password": password},
+            ), 200)
+            next_cookie = second_login[2]["Set-Cookie"].split(";", 1)[0]
+            expect(request(control_base, "PATCH", upload_path, b"new", cookie=next_cookie, headers=chunk_headers), 409)
+            expect(request(control_base, "POST", upload_path + "/authorize", {}, cookie=next_cookie), 204)
+            expect(request(control_base, "PATCH", upload_path, b"new", cookie=cookie, headers=chunk_headers), 409)
+            cookie = next_cookie
             expect(request(control_base, "PATCH", upload_path, b"new", cookie=cookie, headers=chunk_headers), 200)
             expect(request(control_base, "POST", upload_path + "/complete", {}, cookie=cookie), 201)
             assert expect(request(control_base, "GET", prefix + "/content?path=upload.txt", cookie=cookie), 200)[1] == b"new"
@@ -193,7 +207,16 @@ transfer_grants: []
             pending_path = prefix + "/uploads/" + json.loads(pending[1])["upload_id"]
             expect(request(control_base, "DELETE", pending_path, cookie=cookie), 204)
             assert not (root / "files" / "abort.txt").exists()
-            print("PASS: signed upload admission, chunk, publication, abort and unsigned replay refusal")
+            legacy = expect(request(
+                node_base, "POST", "/api/v1/mounts/files/files/uploads",
+                {"path": "legacy.txt", "size": 3, "overwrite": False}, token=node_token,
+            ), 201)
+            legacy_path = prefix + "/uploads/" + json.loads(legacy[1])["upload_id"]
+            expect(request(control_base, "PATCH", legacy_path, b"new", cookie=cookie, headers=chunk_headers), 409)
+            expect(request(control_base, "POST", legacy_path + "/authorize", {}, cookie=cookie), 204)
+            expect(request(control_base, "PATCH", legacy_path, b"new", cookie=cookie, headers=chunk_headers), 200)
+            expect(request(control_base, "DELETE", legacy_path, cookie=cookie), 204)
+            print("PASS: signed upload, credential renewal, legacy reauthorization and replay refusal")
 
             node.terminate()
             node.wait(timeout=10)

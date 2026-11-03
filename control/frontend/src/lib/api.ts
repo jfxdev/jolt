@@ -739,6 +739,11 @@ export const api = {
     request<import("./types").UploadSession>(
       `${mountFilesPath(nodeId, mountId)}/uploads/${encodeURIComponent(uploadId)}`,
     ),
+  authorizeUpload: (nodeId: string, mountId: string, uploadId: string) =>
+    request<null>(
+      `${mountFilesPath(nodeId, mountId)}/uploads/${encodeURIComponent(uploadId)}/authorize`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
   uploadVerification: (nodeId: string, mountId: string, uploadId: string, after = 0, signal?: AbortSignal) =>
     request<import("./types").UploadVerification>(`${mountFilesPath(nodeId, mountId)}/uploads/${encodeURIComponent(uploadId)}/verification?after=${after}`, { signal }),
   appendUploadChunk: (

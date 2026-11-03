@@ -29,6 +29,9 @@ func signedUploadOperation(resource, method string) (operation, sessionID string
 	if len(parts) == 6 && validPathIdentifier(parts[4]) && parts[5] == "complete" && method == http.MethodPost {
 		return "upload_complete", parts[4]
 	}
+	if len(parts) == 6 && validPathIdentifier(parts[4]) && parts[5] == "authorize" && method == http.MethodPost {
+		return "upload_reauthorize", parts[4]
+	}
 	return "", ""
 }
 
@@ -42,8 +45,12 @@ func (s *Server) prepareSignedProxyUpload(w http.ResponseWriter, r *http.Request
 		return "", time.Time{}, false
 	}
 	found := false
+	requiredCapability := "signed_upload_sessions_v1"
+	if operation == "upload_reauthorize" {
+		requiredCapability = "signed_upload_reauthorize_v1"
+	}
 	for _, capability := range info.Capabilities {
-		found = found || capability == "signed_upload_sessions_v1"
+		found = found || capability == requiredCapability
 	}
 	if info.NodeID != node.ID || !found {
 		writeError(w, r, http.StatusConflict, "node_upgrade_required", "Atualize o node e configure as chaves para uploads autorizados.")
@@ -68,7 +75,11 @@ func (s *Server) prepareSignedProxyUpload(w http.ResponseWriter, r *http.Request
 	}
 	mount := mountIDFromResource(resource)
 	now := time.Now()
-	token, err := s.issueSignedAccess(r, node.ID, mount, root, operation, plan, now)
+	if operation == "upload_reauthorize" && targets.PreviousActorID != "" && targets.PreviousActorID != currentUser(r).ID {
+		writeError(w, r, http.StatusForbidden, "signed_authorization_unavailable", "A sessão pertence a outro ator.")
+		return "", time.Time{}, false
+	}
+	token, err := s.issueSignedAccess(r, node.ID, mount, root, operation, plan, targets.PreviousCredentialID, targets.AuthorizationRevision, now)
 	if err != nil {
 		writeError(w, r, http.StatusForbidden, "signed_authorization_unavailable", "Não foi possível autorizar o upload com as permissões atuais.")
 		return "", time.Time{}, false
@@ -78,6 +89,8 @@ func (s *Server) prepareSignedProxyUpload(w http.ResponseWriter, r *http.Request
 	var claims signedauth.Claims
 	if operation == "upload_create" {
 		claims, _, err = signedauth.VerifyUploadAdmission(token, keys, node.ID, mount, root, body, now)
+	} else if operation == "upload_reauthorize" {
+		claims, _, err = signedauth.VerifyUploadReauthorization(token, keys, targets.PreviousActorID, targets.PreviousCredentialID, node.ID, mount, root, sessionID, targets.AuthorizationRevision, now)
 	} else {
 		credential, _ := r.Context().Value(credentialKey).(string)
 		claims, _, err = signedauth.VerifyLocalUpload(token, keys, currentUser(r).ID, credential, node.ID, operation, mount, root, sessionID, now)

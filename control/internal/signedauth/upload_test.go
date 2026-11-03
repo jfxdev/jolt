@@ -98,3 +98,27 @@ func TestVerifyUploadAdmissionBindsDestination(t *testing.T) {
 		t.Fatal("accepted completion token as admission")
 	}
 }
+
+func TestVerifyUploadReauthorizationRequiresCurrentBinding(t *testing.T) {
+	claims, key, keys := fixture()
+	claims.Binding.SourceNodeID, claims.Binding.SourceMountID, claims.Binding.SourceRoot, claims.Binding.SourceGrantID = "", "", "", ""
+	claims.Binding.DestinationNodeID, claims.Binding.DestinationMountID, claims.Binding.DestinationRoot, claims.Binding.DestinationGrantID = "node", "mount", "file.txt", ""
+	claims.Binding.Operation, claims.Binding.PlanID = "upload_reauthorize", "upload-1"
+	claims.Binding.RequestID = UploadReauthorizationRequestID("upload-1", "old-credential", 3)
+	token, err := Sign(claims, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(claims.IssuedAt, 0)
+	if _, _, err := VerifyUploadReauthorization(token, keys, "user-1", "old-credential", "node", "mount", "file.txt", "upload-1", 3, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, identity := range [][2]string{{"other", "old-credential"}, {"user-1", "new-credential"}, {"", "old-credential"}, {"user-1", ""}} {
+		if _, _, err := VerifyUploadReauthorization(token, keys, identity[0], identity[1], "node", "mount", "file.txt", "upload-1", 3, now); err == nil {
+			t.Fatalf("accepted stale or different binding: %v", identity)
+		}
+	}
+	if _, _, err := VerifyUploadReauthorization(token, keys, "user-1", "old-credential", "node", "mount", "file.txt", "upload-1", 4, now); err == nil {
+		t.Fatal("accepted a previous authorization revision")
+	}
+}

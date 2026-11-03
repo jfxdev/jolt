@@ -25,12 +25,16 @@ func TestSignedUploadProxyRequiresCapabilityAndConfirmation(t *testing.T) {
 		if r.URL.Path == "/api/v1/node" {
 			caps := `[]`
 			if capability {
-				caps = `["signed_upload_sessions_v1"]`
+				caps = `["signed_upload_sessions_v1","signed_upload_reauthorize_v1"]`
 			}
 			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"node_id":"n1","capabilities":` + caps + `}`))}, nil
 		}
 		if r.Method == http.MethodGet {
-			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"upload_id":"upl","mount_id":"m","destination_path":"file.txt","overwrite":false}`))}, nil
+			body := `{"upload_id":"upl","mount_id":"m","destination_path":"file.txt","overwrite":false}`
+			if r.Header.Get("X-Jolt-Internal-Upload-Binding") == "1" {
+				body = `{"upload_id":"upl","mount_id":"m","destination_path":"file.txt","overwrite":false,"authorization_actor_id":"admin","authorization_credential_id":"old","authorization_revision":2}`
+			}
+			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 		}
 		mutations++
 		operation, id := signedUploadOperation(strings.TrimPrefix(r.URL.Path, "/api/v1/"), r.Method)
@@ -39,6 +43,8 @@ func TestSignedUploadProxyRequiresCapabilityAndConfirmation(t *testing.T) {
 		if operation == "upload_create" {
 			body, _ := io.ReadAll(r.Body)
 			_, _, err = signedauth.VerifyUploadAdmission(r.Header.Get(signedAuthorizationHeader), keys, "n1", "m", "file.txt", body, time.Now())
+		} else if operation == "upload_reauthorize" {
+			_, _, err = signedauth.VerifyUploadReauthorization(r.Header.Get(signedAuthorizationHeader), keys, "admin", "old", "n1", "m", "file.txt", id, 2, time.Now())
 		} else {
 			// The credential ID is established by the browser session middleware.
 			_, _, verifyErr := signedauth.VerifyLocalUpload(r.Header.Get(signedAuthorizationHeader), keys, "admin", "session-"+security.Digest("jolt-signed-session:"+session), "n1", operation, "m", "file.txt", id, time.Now())
@@ -62,6 +68,7 @@ func TestSignedUploadProxyRequiresCapabilityAndConfirmation(t *testing.T) {
 		{http.MethodPatch, base + "/upl", "new"},
 		{http.MethodPost, base + "/upl/complete", `{}`},
 		{http.MethodDelete, base + "/upl", ""},
+		{http.MethodPost, base + "/upl/authorize", `{}`},
 	} {
 		r := authenticatedRequest(tc.method, tc.path, session, []byte(tc.body))
 		r.Header.Set(signedAuthorizationHeader, "forged")
@@ -74,18 +81,18 @@ func TestSignedUploadProxyRequiresCapabilityAndConfirmation(t *testing.T) {
 	capability = false
 	w := &deadlineRecorder{httptest.NewRecorder()}
 	h.ServeHTTP(w, authenticatedRequest(http.MethodPost, base, session, []byte(`{"path":"file.txt","size":3}`)))
-	if w.Code != http.StatusConflict || mutations != 4 {
+	if w.Code != http.StatusConflict || mutations != 5 {
 		t.Fatalf("missing capability: %d mutations=%d", w.Code, mutations)
 	}
 	capability, confirmation = true, false
 	w = &deadlineRecorder{httptest.NewRecorder()}
 	h.ServeHTTP(w, authenticatedRequest(http.MethodPost, base, session, []byte(`{"path":"file.txt","size":3}`)))
-	if w.Code != http.StatusConflict || mutations != 5 {
+	if w.Code != http.StatusConflict || mutations != 6 {
 		t.Fatalf("missing confirmation: %d mutations=%d", w.Code, mutations)
 	}
 	w = &deadlineRecorder{httptest.NewRecorder()}
 	h.ServeHTTP(w, f.request(http.MethodPost, base))
-	if w.Code != http.StatusForbidden || mutations != 5 {
+	if w.Code != http.StatusForbidden || mutations != 6 {
 		t.Fatalf("agent write: %d mutations=%d", w.Code, mutations)
 	}
 }

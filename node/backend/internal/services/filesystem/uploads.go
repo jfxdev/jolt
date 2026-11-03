@@ -66,6 +66,16 @@ func (s *Service) ValidateUploadCleanupFiltered(ctx context.Context, session ent
 	return ctx.Err()
 }
 
+func (s *Service) ValidateUploadReauthorizationFiltered(ctx context.Context, session entities.UploadSession, filter *AccessFilter) error {
+	if err := s.ValidateUploadCleanupFiltered(ctx, session, filter); err != nil {
+		return err
+	}
+	if session.Overwrite && !filter.context.Evaluate(filter.base+"/"+filepath.ToSlash(session.Destination), "update", "file").Allowed {
+		return ErrFilteredBlocked
+	}
+	return ctx.Err()
+}
+
 // AppendUploadFiltered checks the persisted target before accepting a chunk.
 // It remains internal until the API supplies a verified authorization context.
 func (s *Service) AppendUploadFiltered(ctx context.Context, session entities.UploadSession, offset int64, input io.Reader, filter *AccessFilter, limiters ...ByteRateLimiter) (int64, error) {

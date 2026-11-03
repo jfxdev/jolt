@@ -316,6 +316,11 @@ test("reload restores pending upload and rejects an equal-size different prefix"
   page,
 }) => {
   const state = await fixture(page, { recover: true });
+  let authorizations = 0;
+  await page.route("**/files/uploads/*/authorize", (route) => {
+    authorizations++;
+    return route.fulfill({ status: 204 });
+  });
   await page.goto("/nodes/a/mounts/media");
   await page.reload();
   const input = page.getByLabel("Selecionar arquivo para retomar resume.txt", {
@@ -329,6 +334,7 @@ test("reload restores pending upload and rejects an equal-size different prefix"
   });
   await expect(page.getByText(/conteúdo do arquivo é diferente/)).toBeVisible();
   expect(state.appendBodies).toEqual([]);
+  expect(authorizations).toBe(0);
   await input.setInputFiles({
     name: "resume.txt",
     mimeType: "text/plain",
@@ -336,7 +342,24 @@ test("reload restores pending upload and rejects an equal-size different prefix"
   });
   await expect(page.getByText("Concluído", { exact: true })).toBeVisible();
   expect(state.appendBodies).toEqual(["load"]);
+  expect(authorizations).toBe(1);
   expect(state.completeCalls).toBe(2);
+});
+
+test("a denied reauthorization keeps the recovered upload without sending bytes", async ({ page }) => {
+  const state = await fixture(page, { recover: true });
+  await page.route("**/files/uploads/*/authorize", (route) => route.fulfill({
+    status: 403,
+    contentType: "application/json",
+    body: JSON.stringify({ error: { code: "permission_denied", message: "Permissão revogada." } }),
+  }));
+  await page.goto("/nodes/a/mounts/media");
+  await page.getByLabel("Selecionar arquivo para retomar resume.txt", { exact: true }).setInputFiles({
+    name: "resume.txt", mimeType: "text/plain", buffer: Buffer.from("payload"),
+  });
+  await expect(page.getByText("Permissão revogada.", { exact: true })).toBeVisible();
+  expect(state.appendBodies).toEqual([]);
+  expect(state.completeCalls).toBe(0);
 });
 
 test("a rejected upload retries with a fresh session", async ({ page }) => {

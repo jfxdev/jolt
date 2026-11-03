@@ -7,6 +7,7 @@ import {
   type UploadTransport,
 } from "@/lib/resumable-upload";
 import { verifyUploadSource } from "@/lib/upload-verification";
+import { authorizeUploadIfEnabled } from "@/lib/upload-authorization";
 import type { UploadItem } from "@/components/files/UploadQueue";
 
 interface Options {
@@ -248,6 +249,18 @@ export function useResumableUploads({
         overwrite: overwrite ?? entry.overwrite,
       };
       pending.current.set(id, resumed);
+      if (entry.session) {
+        try {
+          await authorizeUploadIfEnabled(() =>
+            api.authorizeUpload(entry.nodeId, entry.mountId, entry.session!.upload_id),
+          );
+        } catch (error) {
+          patch(id, { status: "failed", resumable: true, error: error instanceof Error ? error.message : "Não foi possível autorizar o envio." });
+          onError(error);
+          return;
+        }
+      }
+      if (pending.current.get(id) !== resumed || resumed.controller.signal.aborted) return;
       if (overwrite && entry.session) {
         try {
           await api.abortUpload(
@@ -316,6 +329,14 @@ export function useResumableUploads({
           resumed.controller.signal.aborted
         )
           return;
+        await authorizeUploadIfEnabled(() =>
+          api.authorizeUpload(entry.nodeId, entry.mountId, current.upload_id),
+        );
+        if (
+          pending.current.get(id) !== resumed ||
+          resumed.controller.signal.aborted
+        )
+          return;
         resumed.file = file;
         resumed.session = current;
         patch(id, { status: "uploading", needsFile: false, error: undefined });
@@ -343,6 +364,9 @@ export function useResumableUploads({
       setUploads((current) => current.filter((item) => item.id !== id));
       if (entry?.session && visible?.status !== "done") {
         try {
+          await authorizeUploadIfEnabled(() =>
+            api.authorizeUpload(entry.nodeId, entry.mountId, entry.session!.upload_id),
+          );
           await api.abortUpload(
             entry.nodeId,
             entry.mountId,

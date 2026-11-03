@@ -21,10 +21,10 @@ var errSignedReadUnavailable = errors.New("signed local read unavailable")
 // subject's current policies. Other operations still require separate
 // integration before typed policies can be enabled.
 func (s *Server) issueSignedLocalRead(r *http.Request, nodeID, mountID, root, operation string, now time.Time) (string, error) {
-	return s.issueSignedAccess(r, nodeID, mountID, root, operation, "", now)
+	return s.issueSignedAccess(r, nodeID, mountID, root, operation, "", "", 0, now)
 }
 
-func (s *Server) issueSignedAccess(r *http.Request, nodeID, mountID, root, operation, planID string, now time.Time) (string, error) {
+func (s *Server) issueSignedAccess(r *http.Request, nodeID, mountID, root, operation, planID, previousCredential string, revision uint64, now time.Time) (string, error) {
 	if len(s.config.AuthorizationSigningKey) == 0 || !signedauth.ValidKeyID(s.config.AuthorizationSigningKeyID) || !validPathIdentifier(nodeID) || !validPathIdentifier(mountID) {
 		return "", errSignedReadUnavailable
 	}
@@ -47,7 +47,7 @@ func (s *Server) issueSignedAccess(r *http.Request, nodeID, mountID, root, opera
 		capability, kinds = "read", []string{"file", "directory"}
 	case "archive", "archive_plan":
 		capability = "read"
-	case "upload_create", "upload_chunk", "upload_complete", "upload_abort":
+	case "upload_create", "upload_chunk", "upload_complete", "upload_abort", "upload_reauthorize":
 		if planID == "" {
 			return "", errSignedReadUnavailable
 		}
@@ -217,6 +217,9 @@ func (s *Server) issueSignedAccess(r *http.Request, nodeID, mountID, root, opera
 		return "", err
 	}
 	binding := signedauth.Binding{ActorID: actor.ID, CredentialID: credential, Operation: operation, RequestID: "auth_" + hex.EncodeToString(nonce[:])}
+	if operation == "upload_reauthorize" {
+		binding.RequestID = signedauth.UploadReauthorizationRequestID(planID, previousCredential, revision)
+	}
 	if capability == "create" {
 		binding.DestinationNodeID, binding.DestinationMountID, binding.DestinationRoot, binding.PlanID = nodeID, mountID, root, planID
 	} else {

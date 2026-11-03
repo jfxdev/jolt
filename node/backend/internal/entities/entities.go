@@ -267,9 +267,10 @@ type UploadVerification struct {
 }
 
 type UploadSession struct {
-	// Populated only by a future verified admission path; never exposed over HTTP.
+	// Populated only by verified admission; never exposed in ordinary HTTP responses.
 	AuthorizationActorID      string     `json:"-" yaml:"authorization_actor_id,omitempty"`
 	AuthorizationCredentialID string     `json:"-" yaml:"authorization_credential_id,omitempty"`
+	AuthorizationRevision     uint64     `json:"-" yaml:"authorization_revision,omitempty"`
 	State                     string     `json:"state" yaml:"state"`
 	CompletedAt               *time.Time `json:"completed_at,omitempty" yaml:"completed_at,omitempty"`
 	PublishChecksum           string     `json:"-" yaml:"publish_checksum,omitempty"`
