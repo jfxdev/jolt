@@ -20,6 +20,7 @@ RUN CGO_ENABLED=1 CGO_CFLAGS="-D_LARGEFILE64_SOURCE" GOOS=linux \
     go build -trimpath \
     -ldflags="-s -w -X github.com/jfxdev/jolt/control/internal/buildinfo.Version=${JOLT_VERSION} -X github.com/jfxdev/jolt/control/internal/buildinfo.Commit=${JOLT_COMMIT} -X github.com/jfxdev/jolt/control/internal/buildinfo.Date=${JOLT_BUILD_DATE}" \
     -o /out/jolt-control ./cmd/jolt-control
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/jolt-mcp ./cmd/jolt-mcp
 
 FROM alpine:3.22
 ARG JOLT_VERSION=development
@@ -30,6 +31,7 @@ LABEL org.opencontainers.image.version="${JOLT_VERSION}" \
       org.opencontainers.image.created="${JOLT_BUILD_DATE}"
 RUN apk add --no-cache ca-certificates libgcc su-exec
 COPY --from=backend /out/jolt-control /usr/local/bin/jolt-control
+COPY --from=backend /out/jolt-mcp /usr/local/bin/jolt-mcp
 COPY --from=frontend /src/dist /opt/jolt-control/frontend
 COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh

@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import select
 import socket
 import subprocess
 import tempfile
@@ -66,6 +67,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--node-bin", required=True)
     parser.add_argument("--control-bin", required=True)
+    parser.add_argument("--mcp-bin", help="also exercise the MCP binary against the real node and Control Tower")
     parser.add_argument("--slow-expiry", action="store_true", help="exercise 30-second upload expiry through the proxy")
     args = parser.parse_args()
 
@@ -132,6 +134,7 @@ transfer_grants: []
         control_log = (root / "control.log").open("w+")
         processes = []
         automation_token = ""
+        agent_token = ""
 
         def start_node():
             process = subprocess.Popen(
@@ -233,6 +236,66 @@ transfer_grants: []
             expect(request(control_base, "GET", automated_path), 410)
             expect(request(control_base, "GET", automated_path + "/content"), 410)
             print("PASS: automation share identity, signed access and credential revocation")
+
+            if args.mcp_bin:
+                agent = expect(request(control_base, "POST", "/api/v1/control-tower/service-accounts", {
+                    "name": "mcp-smoke-agent", "kind": "agent", "group_ids": [group_id],
+                }, cookie=cookie), 201)
+                agent_data = json.loads(agent[1])
+                agent_id = agent_data["service_account"]["service_account_id"]
+                agent_token = agent_data["credential"]["token"]
+                agent_token_id = agent_data["credential"]["token_id"]
+                agent_file = root / "mcp-credential"
+                agent_file.write_text(agent_token + "\n")
+                agent_file.chmod(0o600)
+                env = dict(common, JOLT_MCP_CONTROL_URL=control_base, JOLT_MCP_CREDENTIAL_FILE=str(agent_file))
+                mcp_process = subprocess.Popen([args.mcp_bin], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+                next_id = 0
+
+                def mcp_request(method, params):
+                    nonlocal next_id
+                    next_id += 1
+                    mcp_process.stdin.write(json.dumps({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params}) + "\n")
+                    mcp_process.stdin.flush()
+                    while True:
+                        ready, _, _ = select.select([mcp_process.stdout], [], [], 15)
+                        if not ready:
+                            raise RuntimeError("MCP response timeout")
+                        line = mcp_process.stdout.readline()
+                        if not line:
+                            raise RuntimeError("MCP process closed its output")
+                        assert agent_token not in line
+                        message = json.loads(line)
+                        if message.get("id") == next_id:
+                            return message
+
+                try:
+                    initialized = mcp_request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "smoke", "version": "1"}})
+                    assert "result" in initialized, initialized
+                    mcp_process.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
+                    mcp_process.stdin.flush()
+                    listed = mcp_request("tools/list", {})["result"]["tools"]
+                    assert sorted(tool["name"] for tool in listed) == ["disk_usage", "list", "read_text", "search"]
+                    base_args = {"node_id": node_id, "mount_id": "files", "path": ""}
+                    for name, tool_args in (
+                        ("list", base_args),
+                        ("search", dict(base_args, query="hello")),
+                        ("disk_usage", base_args),
+                        ("read_text", dict(base_args, path="hello.txt")),
+                    ):
+                        result = mcp_request("tools/call", {"name": name, "arguments": tool_args})
+                        assert "result" in result and not result["result"].get("isError"), result
+                        if name == "read_text":
+                            assert result["result"]["content"][0]["text"] == "signed read ok"
+                    expect(request(control_base, "DELETE", "/api/v1/control-tower/service-accounts/" + agent_id + "/tokens/" + agent_token_id, cookie=cookie), 204)
+                    denied = mcp_request("tools/call", {"name": "read_text", "arguments": dict(base_args, path="hello.txt")})
+                    assert denied.get("result", {}).get("isError"), denied
+                    print("PASS: real MCP STDIO, agent policies, four read tools and credential revocation")
+                finally:
+                    mcp_process.stdin.close()
+                    mcp_process.wait(timeout=10)
+                    stderr = mcp_process.stderr.read()
+                    assert agent_token not in stderr
 
             upload = expect(request(
                 control_base, "POST", prefix + "/uploads",
@@ -348,6 +411,8 @@ transfer_grants: []
                 output = log.read().replace(node_token, "[redacted]").replace(password, "[redacted]")
                 if automation_token:
                     output = output.replace(automation_token, "[redacted]")
+                if agent_token:
+                    output = output.replace(agent_token, "[redacted]")
                 print(label + " log:", output[-3000:])
             raise
         finally:

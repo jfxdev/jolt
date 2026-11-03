@@ -15,7 +15,7 @@
 | 5. Shares, transferências e uploads | Uploads e shares assinados opcionais, reautorização e `exclude` por grant | Integrar consultas auxiliares e autorizações renováveis de transfers e jobs |
 | 6. Segredos e apresentação | Varredura, limites de busca e `display_name` implementados em partes | Validar todos os fluxos e componentes desktop/mobile |
 | 7. Lixeira, confirmação, aprovação e JIT | JIT implementado em partes; lixeira, planos e aprovações pendentes | Implementar fluxos destrutivos e revalidar jobs |
-| 8. Identidade e MCP | Pendente | Implementar JWT/JWKS, JWT-SVID e `jolt-mcp` |
+| 8. Identidade e MCP | MCP STDIO de leitura implementado; identidade federada pendente | Integrar JWT/JWKS, JWT-SVID e validar com provedores locais |
 
 O objetivo continua sendo concluir as oito entregas neste branch em uma única rodada de implementação. Os commits existentes são etapas parciais, não marcos de entrega ou publicação.
 
@@ -156,16 +156,17 @@ Referências para retomada:
 - `needs_approval` e solicitação de pequenas operações JSON por agentes, sem escrita direta. Aprovação humana na UI com permissões atuais e corpo guardado/revalidado; expiração em cinco minutos, execução idempotente e webhook somente para notificação.
 - Validar JIT contra todas as rotas, expiração e interação com a autorização renovável de jobs.
 
-## 8. Identidade de workload e MCP — pendente
+## 8. Identidade de workload e MCP — parcial
 
 - Implementar provedores JWT/JWKS com mapeamento explícito de contas e validação de assinatura, algoritmos, emissor, audiência e expiração; limitar atualização de chaves.
 - Implementar JWT-SVID de acordo com trust domain/bundle e SPIFFE ID, respeitando sua validação própria.
-- Criar `jolt-mcp` via STDIO com o SDK oficial Go, somente `list`, `search`, `disk_usage` e `read_text`; manter credenciais fora dos resultados e respeitar os controles do Control Tower.
+- `jolt-mcp` usa o SDK oficial Go via STDIO, oferece apenas `list`, `search`, `disk_usage` e `read_text`, e consulta o Control Tower usando credencial relida de arquivo a cada chamada. O binário integra o build e a imagem; instruções em [`../MCP.md`](../MCP.md). A leitura de arquivos rotacionados não habilita JWT/SVID antes de sua integração no Control Tower.
 
 ## Validação e implantação pendentes
 
 ### Evidências locais já executadas
 
+- O MCP passou em `go test ./...`, `go vet ./...` e `go test -race -p 1 ./internal/mcpserver ./cmd/jolt-mcp` no Control Tower. O teste do processo STDIO cobre as quatro ferramentas, rotação de arquivo e recusa de escrita; uma jornada com node e Control Tower reais cobriu policy de agente e revogação da credencial. `docker build -f control/Dockerfile control` passou em Linux/arm64 e um container descartável confirmou as ferramentas por STDIO. O binário foi cross-compilado para Linux/amd64, sem execução nessa arquitetura; JWT/SVID e aceite entre hosts permanecem pendentes.
 - Na recuperação de jobs herdados, passaram `CGO_ENABLED=0 go test ./...`, `go vet ./...` e `go test -race -p 1` nos pacotes de estado, jobs e transferências do node. Os testes conferem preservação dos itens, bloqueio de execução automática após reinício e retomada explícita, além da continuidade dos testes de peer/mount na mesma execução.
 - A apresentação de nomes passou nos 47 testes do frontend, `npm run typecheck`, `npm run build` e em dois cenários Playwright de share público no Chromium desktop e mobile. As jornadas verificaram rótulos com controles neutralizados e o uso do caminho canônico no link e na navegação; outras jornadas de interface continuam pendentes.
 - Após o ajuste de cancelamento e proteção de árvores, `CGO_ENABLED=0 go test ./...` e `go vet ./...` passaram no node; `go test -race -p 1` passou nos pacotes de filesystem, jobs e HTTP. Na primeira execução concorrente, `TestDirectoryJobUsesPersistedFileParallelism` excedeu o prazo de espera; o teste isolado e a suíte sequencial passaram. Os testes cobrem cancelamento antes e durante remoção, entrada protegida criada após a pré-validação, links em árvores e restauração do destino após cancelamento.
