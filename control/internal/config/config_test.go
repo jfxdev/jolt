@@ -97,6 +97,32 @@ func TestAuthorizationSigningKeyFile(t *testing.T) {
 	}
 }
 
+func TestWorkloadProviderFileIsOptionalAndStrict(t *testing.T) {
+	t.Setenv("CONTROL_TOWER_ADMIN_PASSWORD", "a-secure-admin-password")
+	t.Setenv("CONTROL_TOWER_DB_ENCRYPTION_KEY", "a-secure-encryption-key-that-is-long-enough")
+	t.Setenv("CONTROL_TOWER_WORKLOAD_PROVIDERS_FILE", "")
+	config, err := Load()
+	if err != nil || config.WorkloadProviders != nil {
+		t.Fatalf("unconfigured providers: %v", err)
+	}
+	filename := filepath.Join(t.TempDir(), "providers.json")
+	data := []byte(`{"version":1,"providers":[{"id":"local","type":"jwt","issuer":"issuer","audience":"jolt","jwks_url":"https://example.org/jwks","algorithms":["RS256"]}]}`)
+	if err := os.WriteFile(filename, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONTROL_TOWER_WORKLOAD_PROVIDERS_FILE", filename)
+	config, err = Load()
+	if err != nil || config.WorkloadProviders == nil || !config.WorkloadProviders.AllowsMapping("local", "issuer", "subject", "jolt") {
+		t.Fatalf("provider loading failed: %v", err)
+	}
+	if err := os.WriteFile(filename, []byte(`{"version":2,"providers":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(); err == nil {
+		t.Fatal("invalid provider file accepted")
+	}
+}
+
 func TestValidateNodeEndpoint(t *testing.T) {
 	got, err := ValidateNodeEndpoint("https://node.example.test:8443/api?ignored=true")
 	if err != nil {

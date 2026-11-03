@@ -17,9 +17,11 @@ import (
 	"strings"
 
 	"github.com/jfxdev/jolt/control/internal/signedauth"
+	"github.com/jfxdev/jolt/control/internal/workload"
 )
 
 type Config struct {
+	WorkloadProviders         *workload.ProviderSet `json:"-"`
 	AuthorizationSigningKeyID string
 	AuthorizationSigningKey   ed25519.PrivateKey `json:"-"`
 	SignedLocalReads          bool
@@ -60,6 +62,12 @@ func Load() (Config, error) {
 		PublicBaseURL:          strings.TrimRight(value("CONTROL_TOWER_PUBLIC_BASE_URL", ""), "/"),
 	}
 	var err error
+	if providerFile := strings.TrimSpace(os.Getenv("CONTROL_TOWER_WORKLOAD_PROVIDERS_FILE")); providerFile != "" {
+		cfg.WorkloadProviders, err = workload.LoadProviders(providerFile)
+		if err != nil {
+			return Config{}, errors.New("CONTROL_TOWER_WORKLOAD_PROVIDERS_FILE is invalid")
+		}
+	}
 	cfg.AuthorizationSigningKeyID = strings.TrimSpace(os.Getenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID"))
 	keyFile := strings.TrimSpace(os.Getenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_FILE"))
 	if cfg.AuthorizationSigningKeyID != "" || keyFile != "" {

@@ -39,6 +39,14 @@ func TestProviderFileDispatchesVerifiedJWTAndSVID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !providers.AllowsMapping("oidc", "issuer", "account", "app") || !providers.AllowsMapping("spire", "", "spiffe://example.org/service", "spire-audience") {
+		t.Fatal("valid mappings rejected")
+	}
+	for _, fields := range [][4]string{{"oidc", "other", "account", "app"}, {"oidc", "issuer", "account", "other"}, {"spire", "", "spiffe://other.org/service", "spire-audience"}, {"spire", "issuer", "spiffe://example.org/service", "spire-audience"}, {"missing", "issuer", "account", "app"}} {
+		if providers.AllowsMapping(fields[0], fields[1], fields[2], fields[3]) {
+			t.Fatalf("invalid mapping accepted: %v", fields)
+		}
+	}
 	expires := jwt.NewNumericDate(time.Now().Add(time.Hour))
 	jwtToken := sign(t, key, "key", jwt.Claims{Issuer: "issuer", Subject: "account", Audience: jwt.Audience{"app"}, Expiry: expires})
 	jwtIdentity, err := providers.Verify(context.Background(), jwtToken)

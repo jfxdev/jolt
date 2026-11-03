@@ -44,6 +44,25 @@ type provider struct {
 // JWKS refresh internally. It does not itself grant access to any account.
 type ProviderSet struct{ providers []provider }
 
+// AllowsMapping checks an administrator's proposed mapping against a
+// configured provider. It does not authenticate the subject.
+func (p *ProviderSet) AllowsMapping(providerID, issuer, subject, audience string) bool {
+	if p == nil || !identityField(subject) {
+		return false
+	}
+	for _, item := range p.providers {
+		if item.definition.ID != providerID || item.definition.Audience != audience {
+			continue
+		}
+		if item.jwt != nil {
+			return item.definition.Issuer == issuer
+		}
+		id, err := spiffeid.FromString(subject)
+		return issuer == "" && err == nil && item.svid != nil && id.TrustDomain() == item.svid.trustDomain
+	}
+	return false
+}
+
 // LoadProviders parses a versioned JSON file, resolving SVID bundle paths
 // relative to it. No bearer credentials are read or persisted here.
 func LoadProviders(filename string) (*ProviderSet, error) {
