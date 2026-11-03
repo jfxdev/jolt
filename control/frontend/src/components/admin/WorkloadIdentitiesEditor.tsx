@@ -88,7 +88,7 @@ export function WorkloadIdentitiesEditor({ accountId, agentLimits, onLoadLimits 
   return <section className="grid gap-3 rounded-md border p-3" aria-label="Identidades de workload">
     <div>
       <h3 className="font-semibold">Identidades de workload</h3>
-      <p className="text-xs text-muted-foreground">Cadastre o provedor e os claims configurados. A autenticação por workload ainda não está disponível.</p>
+      <p className="text-xs text-muted-foreground">{agentLimits ? "Cadastre o provedor e os claims configurados para autenticar este agente." : "Cadastre o provedor e os claims configurados. A autenticação por workload para automação ainda não está disponível."}</p>
     </div>
     <div className="grid gap-2 sm:grid-cols-2">
       <div className="grid gap-1"><Label htmlFor="workload-provider">Provedor</Label><Input id="workload-provider" value={provider} onChange={e => setProvider(e.target.value)} /></div>

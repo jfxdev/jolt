@@ -70,6 +70,15 @@ func TestWorkloadIdentityKeepsCredentialQuotaAcrossRestartAndDisable(t *testing.
 	if err != nil || resolved.CredentialID != identity.CredentialID || resolved.ServiceAccountID != account.ID {
 		t.Fatalf("mapping=%+v err=%v", resolved, err)
 	}
+	for _, expiry := range []time.Time{now.Add(time.Minute), now.Add(2 * time.Minute)} {
+		gotAccount, token, err := s.AuthenticateWorkloadIdentity(ctx, "provider", "issuer", "subject", "jolt", expiry, now)
+		if err != nil || gotAccount.ID != account.ID || token.ID != identity.CredentialID || token.ExpiresAt == nil || !token.ExpiresAt.Equal(expiry) {
+			t.Fatalf("credential changed across assertions: account=%+v token=%+v err=%v", gotAccount, token, err)
+		}
+	}
+	if _, _, err := s.AuthenticateWorkloadIdentity(ctx, "provider", "issuer", "subject", "jolt", now, now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired assertion accepted: %v", err)
+	}
 	if _, err := s.ReserveAgentBytes(ctx, resolved.CredentialID, day, 1024, 4096); !errors.Is(err, ErrAgentQuota) {
 		t.Fatalf("quota reset: %v", err)
 	}

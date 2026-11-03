@@ -30,8 +30,7 @@ type WorkloadIdentity struct {
 // CreateWorkloadIdentity creates both the mapping and its quota-bearing
 // credential atomically. The synthetic token hash contains a colon and can
 // never equal the base64url digest of any static bearer token.
-// This operation is internal until provider configuration and authentication
-// are connected and revalidation is enforced at all credential call sites.
+// Authentication currently accepts these mappings for agents only.
 func (s *Store) CreateWorkloadIdentity(ctx context.Context, identity WorkloadIdentity, limits *AgentLimits, actorID, actorType, correlationID string) error {
 	if !validWorkloadField(identity.CredentialID, false, 128) || strings.ContainsAny(identity.CredentialID, "/\\:") ||
 		!validWorkloadField(identity.ServiceAccountID, false, 128) || !validWorkloadField(identity.ProviderID, false, 128) ||
@@ -117,8 +116,43 @@ WHERE w.provider_id=? AND w.issuer=? AND w.subject=? AND w.audience=? AND w.enab
 	return identity, nil
 }
 
+// AuthenticateWorkloadIdentity resolves a previously verified assertion to
+// its stable credential. The assertion's expiry is always applied, even when
+// the persistent mapping itself has no expiry. Callers must recheck under the
+// same lock used for revocation before starting an active request.
+func (s *Store) AuthenticateWorkloadIdentity(ctx context.Context, provider, issuer, subject, audience string, assertionExpiry, now time.Time) (ServiceAccount, ServiceAccountToken, error) {
+	if !assertionExpiry.After(now) {
+		return ServiceAccount{}, ServiceAccountToken{}, ErrNotFound
+	}
+	identity, err := s.ActiveWorkloadIdentity(ctx, provider, issuer, subject, audience)
+	if err != nil {
+		return ServiceAccount{}, ServiceAccountToken{}, err
+	}
+	account, err := s.GetServiceAccount(ctx, identity.ServiceAccountID)
+	if err != nil || !account.Enabled {
+		return ServiceAccount{}, ServiceAccountToken{}, ErrNotFound
+	}
+	token, err := scanServiceAccountToken(s.db.QueryRowContext(ctx, `SELECT id,service_account_id,name,token_hash,expires_at,last_used_at,revoked_at,created_at,agent_limits FROM service_account_tokens WHERE id=? AND service_account_id=?`, identity.CredentialID, account.ID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			err = ErrNotFound
+		}
+		return ServiceAccount{}, ServiceAccountToken{}, err
+	}
+	current, err := s.ActiveWorkloadIdentity(ctx, provider, issuer, subject, audience)
+	if err != nil || current.CredentialID != identity.CredentialID || current.ServiceAccountID != account.ID {
+		return ServiceAccount{}, ServiceAccountToken{}, ErrNotFound
+	}
+	deadline := assertionExpiry.UTC()
+	if token.ExpiresAt != nil && token.ExpiresAt.Before(deadline) {
+		deadline = *token.ExpiresAt
+	}
+	token.ExpiresAt = &deadline
+	return account, token, nil
+}
+
 // SetWorkloadIdentityEnabled preserves the credential and its quota history.
-// The future HTTP integration must also cancel active requests when disabling.
+// The HTTP caller must also cancel active requests when disabling.
 func (s *Store) SetWorkloadIdentityEnabled(ctx context.Context, accountID, id string, enabled bool, actorID, actorType, correlationID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

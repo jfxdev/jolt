@@ -71,7 +71,7 @@ func (s *Server) issueSignedAccess(r *http.Request, nodeID, mountID, root, opera
 		}
 		actor, credentialExpiry = current, &expiry
 	} else {
-		account, key, err := s.store.AuthenticateServiceAccount(r.Context(), digest)
+		account, key, err := s.revalidateServiceCredential(r)
 		if err != nil || !account.Enabled || account.ID != actor.ID || credential != "token-"+key.ID {
 			return "", errSignedReadUnavailable
 		}

@@ -258,6 +258,18 @@ func (s *Server) authenticateServiceAccount(next http.Handler, w http.ResponseWr
 	plainToken := strings.TrimSpace(strings.TrimPrefix(authorization, prefix))
 	digest := security.Digest(plainToken)
 	account, token, err := s.store.AuthenticateServiceAccount(r.Context(), digest)
+	if err != nil && s.config.WorkloadProviders != nil {
+		identity, verifyErr := s.config.WorkloadProviders.Verify(r.Context(), plainToken)
+		if verifyErr == nil {
+			r = r.WithContext(context.WithValue(r.Context(), workloadIdentityKey, identity))
+			account, token, err = s.revalidateServiceCredential(r)
+			// Workload streams for automation accounts need independent expiry,
+			// revocation and share handling before they can be enabled.
+			if err == nil && (account.Kind != "agent" || identity.ExpiresAt.After(time.Now().UTC().Add(30*24*time.Hour))) {
+				err = store.ErrNotFound
+			}
+		}
+	}
 	if err != nil {
 		s.store.AuditActor(r.Context(), "", "service_account", "authenticate", "control-tower", "denied", r.Header.Get("X-Correlation-ID"))
 		writeError(w, r, http.StatusUnauthorized, "invalid_service_token", "Token de conta de serviço inválido, expirado ou revogado.")
@@ -275,7 +287,7 @@ func (s *Server) authenticateServiceAccount(next http.Handler, w http.ResponseWr
 	ctx = context.WithValue(ctx, credentialKey, "token-"+token.ID)
 	ctx = context.WithValue(ctx, credentialDigestKey, digest)
 	if account.Kind == "agent" {
-		s.serveAgent(next, w, r.WithContext(ctx), digest, account, token)
+		s.serveAgent(next, w, r.WithContext(ctx), account, token)
 		return
 	}
 	next.ServeHTTP(w, r.WithContext(ctx))

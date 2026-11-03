@@ -124,7 +124,7 @@ func addressAllowed(r *http.Request, limits store.AgentLimits, trusted []netip.P
 	return false
 }
 
-func (s *Server) serveAgent(next http.Handler, w http.ResponseWriter, r *http.Request, digest string, account store.ServiceAccount, token store.ServiceAccountToken) {
+func (s *Server) serveAgent(next http.Handler, w http.ResponseWriter, r *http.Request, account store.ServiceAccount, token store.ServiceAccountToken) {
 	limits, err := normalizeAgentLimits(token.AgentLimits)
 	if err != nil || token.ExpiresAt == nil || !token.ExpiresAt.After(time.Now().UTC()) || !addressAllowed(r, limits, s.config.TrustedProxies) {
 		s.auditAgentDenial(r, account.ID, token.ID, "invalid_credential", http.StatusUnauthorized)
@@ -135,7 +135,7 @@ func (s *Server) serveAgent(next http.Handler, w http.ResponseWriter, r *http.Re
 	s.agentMu.Lock()
 	// Serialize admission with revocation and disable, and recheck the token
 	// after taking the lock so a stale authentication cannot start a stream.
-	currentAccount, currentToken, err := s.store.AuthenticateServiceAccount(r.Context(), digest)
+	currentAccount, currentToken, err := s.revalidateServiceCredential(r)
 	if err != nil || currentAccount.ID != account.ID || currentToken.ID != token.ID || currentAccount.Kind != "agent" || currentToken.ExpiresAt == nil || !currentToken.ExpiresAt.After(now) {
 		s.agentMu.Unlock()
 		writeError(w, r, http.StatusUnauthorized, "invalid_service_token", "Credencial de agente inválida ou revogada.")
