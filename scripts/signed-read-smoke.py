@@ -9,6 +9,7 @@ import argparse
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
 import secrets
@@ -16,6 +17,7 @@ import select
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -130,11 +132,65 @@ transfer_grants: []
             CONTROL_TOWER_SIGNED_LOCAL_READS="true",
             CONTROL_TOWER_SIGNED_UPLOADS="true",
         )
+        issuer = None
+        workload_private = None
+        svid_private = None
+        if args.mcp_bin:
+            workload_private = root / "workload-private.pem"
+            subprocess.run(
+                ["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(workload_private)],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            workload_public = subprocess.check_output(
+                ["openssl", "pkey", "-in", str(workload_private), "-pubout", "-outform", "DER"]
+            )[-32:]
+            jwks = json.dumps({"keys": [{"kty": "OKP", "crv": "Ed25519", "kid": "smoke", "use": "sig", "alg": "EdDSA", "x": base64.urlsafe_b64encode(workload_public).rstrip(b"=").decode()}]}).encode()
+            svid_private = root / "svid-private.pem"
+            subprocess.run(["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(svid_private)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            modulus = subprocess.check_output(["openssl", "rsa", "-in", str(svid_private), "-noout", "-modulus"], stderr=subprocess.DEVNULL).decode().strip().split("=", 1)[1]
+            svid_jwks = json.dumps({"keys": [{"kty": "RSA", "kid": "smoke", "use": "sig", "alg": "RS256", "n": base64.urlsafe_b64encode(bytes.fromhex(modulus)).rstrip(b"=").decode(), "e": "AQAB"}]}).encode()
+
+            class IssuerHandler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(jwks)
+
+                def log_message(self, *_args):
+                    pass
+
+            issuer = ThreadingHTTPServer(("127.0.0.1", 0), IssuerHandler)
+            threading.Thread(target=issuer.serve_forever, daemon=True).start()
+            providers = root / "workload-providers.json"
+            (root / "jwt-bundle.json").write_bytes(svid_jwks)
+            providers.write_text(json.dumps({"version": 1, "providers": [
+                {"id": "local", "type": "jwt", "issuer": "smoke-issuer", "audience": "jolt", "jwks_url": f"http://127.0.0.1:{issuer.server_port}/jwks", "algorithms": ["EdDSA"]},
+                {"id": "spire", "type": "jwt_svid", "trust_domain": "example.org", "audience": "jolt-svid", "bundle_file": "jwt-bundle.json"},
+            ]}))
+            cenv["CONTROL_TOWER_WORKLOAD_PROVIDERS_FILE"] = str(providers)
+
+        def workload_token(identifier, svid=False):
+            encode = lambda value: base64.urlsafe_b64encode(value).rstrip(b"=")
+            header = encode(json.dumps({"alg": "RS256" if svid else "EdDSA", "kid": "smoke", "typ": "JWT"}, separators=(",", ":")).encode())
+            payload = {"sub": "spiffe://example.org/smoke-agent" if svid else "smoke-agent", "aud": "jolt-svid" if svid else "jolt", "exp": int(time.time()) + 600, "jti": identifier}
+            if not svid:
+                payload["iss"] = "smoke-issuer"
+            claims = encode(json.dumps(payload, separators=(",", ":")).encode())
+            signing_input = header + b"." + claims
+            message = root / "jwt-signing-input"
+            message.write_bytes(signing_input)
+            if svid:
+                signature = subprocess.check_output(["openssl", "dgst", "-sha256", "-sign", str(svid_private), str(message)])
+            else:
+                signature = subprocess.check_output(["openssl", "pkeyutl", "-sign", "-rawin", "-inkey", str(workload_private), "-in", str(message)])
+            return (signing_input + b"." + encode(signature)).decode()
         node_log = (root / "node.log").open("w+")
         control_log = (root / "control.log").open("w+")
         processes = []
         automation_token = ""
         agent_token = ""
+        workload_tokens = []
 
         def start_node():
             process = subprocess.Popen(
@@ -265,6 +321,7 @@ transfer_grants: []
                         if not line:
                             raise RuntimeError("MCP process closed its output")
                         assert agent_token not in line
+                        assert all(token not in line for token in workload_tokens)
                         message = json.loads(line)
                         if message.get("id") == next_id:
                             return message
@@ -287,15 +344,40 @@ transfer_grants: []
                         assert "result" in result and not result["result"].get("isError"), result
                         if name == "read_text":
                             assert result["result"]["content"][0]["text"] == "signed read ok"
+                    mapping = expect(request(control_base, "POST", "/api/v1/control-tower/service-accounts/" + agent_id + "/workload-identities", {
+                        "provider_id": "local", "issuer": "smoke-issuer", "subject": "smoke-agent", "audience": "jolt",
+                    }, cookie=cookie), 201)
+                    mapping_id = json.loads(mapping[1])["credential_id"]
+                    for identifier in ("first", "rotated"):
+                        workload_tokens.append(workload_token(identifier))
+                        agent_file.write_text(workload_tokens[-1] + "\n")
+                        result = mcp_request("tools/call", {"name": "read_text", "arguments": dict(base_args, path="hello.txt")})
+                        assert not result.get("result", {}).get("isError") and result["result"]["content"][0]["text"] == "signed read ok", result
+                    expect(request(control_base, "PATCH", "/api/v1/control-tower/service-accounts/" + agent_id + "/workload-identities/" + mapping_id, {"enabled": False}, cookie=cookie), 204)
+                    denied = mcp_request("tools/call", {"name": "read_text", "arguments": dict(base_args, path="hello.txt")})
+                    assert denied.get("result", {}).get("isError"), denied
+                    svid_mapping = expect(request(control_base, "POST", "/api/v1/control-tower/service-accounts/" + agent_id + "/workload-identities", {
+                        "provider_id": "spire", "issuer": "", "subject": "spiffe://example.org/smoke-agent", "audience": "jolt-svid",
+                    }, cookie=cookie), 201)
+                    svid_id = json.loads(svid_mapping[1])["credential_id"]
+                    workload_tokens.append(workload_token("svid", svid=True))
+                    agent_file.write_text(workload_tokens[-1] + "\n")
+                    result = mcp_request("tools/call", {"name": "read_text", "arguments": dict(base_args, path="hello.txt")})
+                    assert not result.get("result", {}).get("isError") and result["result"]["content"][0]["text"] == "signed read ok", result
+                    expect(request(control_base, "DELETE", "/api/v1/control-tower/service-accounts/" + agent_id + "/tokens/" + svid_id, cookie=cookie), 204)
+                    denied = mcp_request("tools/call", {"name": "read_text", "arguments": dict(base_args, path="hello.txt")})
+                    assert denied.get("result", {}).get("isError"), denied
+                    agent_file.write_text(agent_token + "\n")
                     expect(request(control_base, "DELETE", "/api/v1/control-tower/service-accounts/" + agent_id + "/tokens/" + agent_token_id, cookie=cookie), 204)
                     denied = mcp_request("tools/call", {"name": "read_text", "arguments": dict(base_args, path="hello.txt")})
                     assert denied.get("result", {}).get("isError"), denied
-                    print("PASS: real MCP STDIO, agent policies, four read tools and credential revocation")
+                    print("PASS: real MCP STDIO, agent policies, JWT rotation, JWT-SVID and credential revocation")
                 finally:
                     mcp_process.stdin.close()
                     mcp_process.wait(timeout=10)
                     stderr = mcp_process.stderr.read()
                     assert agent_token not in stderr
+                    assert all(token not in stderr for token in workload_tokens)
 
             upload = expect(request(
                 control_base, "POST", prefix + "/uploads",
@@ -413,6 +495,8 @@ transfer_grants: []
                     output = output.replace(automation_token, "[redacted]")
                 if agent_token:
                     output = output.replace(agent_token, "[redacted]")
+                for token in workload_tokens:
+                    output = output.replace(token, "[redacted]")
                 print(label + " log:", output[-3000:])
             raise
         finally:
@@ -426,6 +510,9 @@ transfer_grants: []
                     process.wait()
             node_log.close()
             control_log.close()
+            if issuer:
+                issuer.shutdown()
+                issuer.server_close()
 
 
 if __name__ == "__main__":
