@@ -51,6 +51,13 @@ func (s *Server) revalidateJobAction(w http.ResponseWriter, r *http.Request, nod
 	var requirements []authorizationRequirement
 	switch job.Type {
 	case "copy_local":
+		// Overrides can persist overwrite and rename actions even when the
+		// original conflict policy was fail or skip. The job metadata does not
+		// expose a complete, stable view of those item actions, and an override
+		// can apply to following items. Require the enclosing destination scope
+		// and update on every resume, retry and override until renewable job
+		// authorization can validate all persisted items at execution time.
+		targets.ConflictPolicy = "ask"
 		requirements = nodeAuthorizationRequirements(node.ID, base+"/copy", http.MethodPost, targets)
 	case "move_local":
 		requirements = nodeAuthorizationRequirements(node.ID, base+"/move", http.MethodPost, targets)

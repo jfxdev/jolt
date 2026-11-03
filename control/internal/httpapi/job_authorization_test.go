@@ -57,11 +57,43 @@ func TestJobActionsRevalidateCurrentFilePermissions(t *testing.T) {
 			t.Fatalf("allowed %s: %d %s", route, w.Code, w.Body.String())
 		}
 	}
-	policy.Rules = append(policy.Rules, rbac.Rule{Path: "nodes/node/files/mounts/media/source/private/**", Capabilities: []string{"deny"}})
+	// A job initially configured with fail can acquire persistent overwrite or
+	// rename item actions through an override, including apply-to-following.
+	// A later retry must not rely solely on its original conflict policy.
+	job = `{"job_id":"job-1","type":"copy_local","mount_id":"media","source_path":"source","destination_path":"destination/file","conflict_policy":"fail"}`
+	policy.Rules[2].Capabilities = []string{"create"}
 	if err := storage.UpdatePolicy(context.Background(), policy); err != nil {
 		t.Fatal(err)
 	}
 	before := mutations
+	for _, route := range []string{"retry", "resume", "items/0/override"} {
+		if w := request(route); w.Code != http.StatusForbidden {
+			t.Fatalf("missing update for %s: %d %s", route, w.Code, w.Body.String())
+		}
+	}
+	if mutations != before {
+		t.Fatal("job action without update reached node")
+	}
+	policy.Rules[2].Capabilities = []string{"create", "update"}
+	policy.Rules[2].Path = "nodes/node/files/mounts/media/destination/file"
+	if err := storage.UpdatePolicy(context.Background(), policy); err != nil {
+		t.Fatal(err)
+	}
+	if w := request("items/0/override"); w.Code != http.StatusForbidden {
+		t.Fatalf("missing rename parent authorization: %d %s", w.Code, w.Body.String())
+	}
+	policy.Rules[2].Path = "nodes/node/files/mounts/media/destination/**"
+	if err := storage.UpdatePolicy(context.Background(), policy); err != nil {
+		t.Fatal(err)
+	}
+	if w := request("resume"); w.Code != http.StatusOK {
+		t.Fatalf("parent authorization rejected: %d %s", w.Code, w.Body.String())
+	}
+	policy.Rules = append(policy.Rules, rbac.Rule{Path: "nodes/node/files/mounts/media/source/private/**", Capabilities: []string{"deny"}})
+	if err := storage.UpdatePolicy(context.Background(), policy); err != nil {
+		t.Fatal(err)
+	}
+	before = mutations
 	for _, route := range []string{"retry", "resume", "items/0/override"} {
 		if w := request(route); w.Code != http.StatusForbidden {
 			t.Fatalf("denied %s: %d %s", route, w.Code, w.Body.String())
