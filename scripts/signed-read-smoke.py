@@ -7,6 +7,7 @@ Requires OpenSSL with Ed25519 support. No existing state is modified.
 
 import argparse
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -65,6 +66,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--node-bin", required=True)
     parser.add_argument("--control-bin", required=True)
+    parser.add_argument("--slow-expiry", action="store_true", help="exercise 30-second upload expiry through the proxy")
     args = parser.parse_args()
 
     with tempfile.TemporaryDirectory(prefix="jolt-signed-smoke-") as temp:
@@ -275,6 +277,53 @@ transfer_grants: []
             expect(request(control_base, "PATCH", legacy_path, b"new", cookie=cookie, headers=chunk_headers), 200)
             expect(request(control_base, "DELETE", legacy_path, cookie=cookie), 204)
             print("PASS: signed upload, credential renewal, legacy reauthorization and replay refusal")
+
+            if args.slow_expiry:
+                pending = expect(request(
+                    control_base, "POST", prefix + "/uploads",
+                    {"path": "slow-chunk.txt", "size": 3, "overwrite": False}, cookie=cookie,
+                ), 201)
+                pending_path = prefix + "/uploads/" + json.loads(pending[1])["upload_id"]
+
+                def slow_upload(method, target, extra_headers):
+                    start = time.monotonic()
+                    with socket.create_connection(("127.0.0.1", control_port), timeout=10) as sock:
+                        sock.settimeout(36)
+                        headers = {
+                            "Host": f"127.0.0.1:{control_port}",
+                            "Cookie": cookie,
+                            "Content-Length": "3",
+                            "Connection": "close",
+                            **extra_headers,
+                        }
+                        wire = f"{method} {target} HTTP/1.1\r\n" + "".join(
+                            f"{name}: {value}\r\n" for name, value in headers.items()
+                        ) + "\r\nn"
+                        sock.sendall(wire.encode())
+                        try:
+                            response = sock.recv(4096)
+                        except ConnectionResetError:
+                            response = b""
+                    elapsed = time.monotonic() - start
+                    assert 20 <= elapsed <= 35, f"upload stopped after {elapsed:.1f}s: {response[:200]!r}"
+                    assert not response.startswith((b"HTTP/1.1 200", b"HTTP/1.1 201", b"HTTP/1.1 204")), response[:200]
+
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    simple = pool.submit(slow_upload, "PUT", prefix + "/content?path=simple.txt&overwrite=true", {})
+                    chunk = pool.submit(slow_upload, "PATCH", pending_path, {"Content-Range": "bytes 0-2/3"})
+                    simple.result()
+                    chunk.result()
+                assert (root / "files" / "simple.txt").read_bytes() == b"first"
+                assert not (root / "files" / "slow-chunk.txt").exists()
+                offset = json.loads(expect(request(control_base, "GET", pending_path, cookie=cookie), 200)[1])["offset"]
+                assert offset in (0, 1), f"unexpected partial offset: {offset}"
+                expect(request(
+                    control_base, "PATCH", pending_path, b"new"[offset:], cookie=cookie,
+                    headers={"Content-Range": f"bytes {offset}-2/3"},
+                ), 200)
+                expect(request(control_base, "POST", pending_path + "/complete", {}, cookie=cookie), 201)
+                assert (root / "files" / "slow-chunk.txt").read_bytes() == b"new"
+                print("PASS: slow simple and chunk uploads expire through the proxy, preserve the destination and can be resumed")
 
             node.terminate()
             node.wait(timeout=10)
