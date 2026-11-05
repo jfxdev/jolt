@@ -5,11 +5,107 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
+	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/entities"
 )
+
+// InspectCopyDestinationFiltered checks destination permissions without
+// creating paths, including paths whose parent is planned but not present yet.
+// Existing files require both create and update; this is intentionally
+// conservative until final conflict decisions are enforced at runtime.
+func (s *Service) InspectCopyDestinationFiltered(ctx context.Context, mountID, relative, kind string, filter *AccessFilter) (entities.FileEntry, bool, error) {
+	if filter == nil || filter.context == nil || (kind != "file" && kind != "directory") || relative == "" || relative == "." || path.IsAbs(relative) || path.Clean(relative) != relative || strings.ContainsAny(relative, "\\\x00") {
+		return entities.FileEntry{}, false, ErrInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return entities.FileEntry{}, false, err
+	}
+	mount, err := s.store.GetMount(ctx, mountID)
+	if errors.Is(err, contracts.ErrNotFound) {
+		return entities.FileEntry{}, false, ErrNotFound
+	}
+	if err != nil {
+		return entities.FileEntry{}, false, err
+	}
+	if !mount.Enabled {
+		return entities.FileEntry{}, false, ErrDisabled
+	}
+	if err := writable(mount); err != nil {
+		return entities.FileEntry{}, false, err
+	}
+	for _, component := range strings.Split(relative, "/") {
+		if component == "" || component == "." || component == ".." || hiddenName(mount, component) {
+			return entities.FileEntry{}, false, ErrHiddenName
+		}
+	}
+	destination := filepath.Join(mount.LocalPath, filepath.FromSlash(relative))
+	if !within(mount.LocalPath, destination) {
+		return entities.FileEntry{}, false, ErrTraversal
+	}
+	if kind == "file" {
+		// A directory already at the destination is reported as a conflict;
+		// the file validator below would refuse it as a protected tree.
+		if info, err := safeLstat(destination); err == nil && info.IsDir() {
+			if err := filter.checkAncestors(relative); err != nil {
+				return entities.FileEntry{}, false, err
+			}
+			if !filter.context.Evaluate(filter.base+"/"+relative, "create", "file").Allowed {
+				return entities.FileEntry{}, false, ErrFilteredBlocked
+			}
+			return entities.FileEntry{Name: info.Name(), Path: relative, Type: "directory", Size: info.Size(), ModifiedAt: info.ModTime().UTC()}, true, nil
+		}
+		if err := validateFilteredFileDestination(ctx, mount, destination, true, filter); err != nil {
+			return entities.FileEntry{}, false, err
+		}
+	} else {
+		if err := filter.checkAncestors(relative); err != nil {
+			return entities.FileEntry{}, false, err
+		}
+		if !filter.context.Evaluate(filter.base+"/"+relative, "create", "directory").Allowed {
+			return entities.FileEntry{}, false, ErrFilteredBlocked
+		}
+	}
+	info, err := safeLstat(destination)
+	if errors.Is(err, fs.ErrNotExist) {
+		if err := ctx.Err(); err != nil {
+			return entities.FileEntry{}, false, err
+		}
+		return entities.FileEntry{}, false, nil
+	}
+	if err != nil {
+		return entities.FileEntry{}, false, err
+	}
+	// A regular file where a directory is planned (or the reverse) is a plain
+	// conflict for the caller to report. Links and special files stay refused.
+	if !info.Mode().IsRegular() && !info.IsDir() {
+		return entities.FileEntry{}, false, ErrProtectedTree
+	}
+	if kind == "file" && !info.Mode().IsRegular() || kind == "directory" && !info.IsDir() {
+		actual := "file"
+		if info.IsDir() {
+			actual = "directory"
+		}
+		return entities.FileEntry{Name: info.Name(), Path: relative, Type: actual, Size: info.Size(), ModifiedAt: info.ModTime().UTC()}, true, nil
+	}
+	if kind == "file" {
+		if err := validateFilteredFileDestination(ctx, mount, destination, true, filter); err != nil {
+			return entities.FileEntry{}, false, err
+		}
+	}
+	if kind == "directory" {
+		if err := filter.checkRoot(relative, info); err != nil {
+			return entities.FileEntry{}, false, err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return entities.FileEntry{}, false, err
+	}
+	return entities.FileEntry{Name: info.Name(), Path: relative, Type: kind, Size: info.Size(), ModifiedAt: info.ModTime().UTC()}, true, nil
+}
 
 func (s *Service) validateResumableCopyPublication(ctx context.Context, mountID, source string, mount entities.Mount, destination string, overwrite bool, original os.FileInfo, filter *AccessFilter) error {
 	if err := ctx.Err(); err != nil {

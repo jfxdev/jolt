@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
@@ -38,6 +39,9 @@ func (s *Service) ManifestFiltered(ctx context.Context, mountID, relative string
 		return nil, 0, err
 	}
 	if !rootInfo.IsDir() {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
 		return []entities.FileEntry{{Name: rootInfo.Name(), Path: ".", Type: "file", Size: rootInfo.Size(), ModifiedAt: rootInfo.ModTime().UTC()}}, 0, nil
 	}
 	items := make([]entities.FileEntry, 0)
@@ -111,5 +115,9 @@ func (s *Service) ManifestFiltered(ctx context.Context, mountID, relative string
 	if err != nil {
 		return nil, 0, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
 	return items, omitted, nil
 }

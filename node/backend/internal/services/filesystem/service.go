@@ -498,6 +498,9 @@ func (s *Service) checksumFiltered(ctx context.Context, mountID, relative string
 	if _, err := io.Copy(hash, &contextReader{ctx: ctx, reader: file}); err != nil {
 		return "", err
 	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
