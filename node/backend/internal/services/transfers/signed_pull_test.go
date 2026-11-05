@@ -365,3 +365,49 @@ func TestSignedPullRejudgesPlannedItemsWithTheCurrentPolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestSignedPullPreviewNeverNamesWhatThePolicyHides(t *testing.T) {
+	p := newSignedPull(t)
+	p.write(t, p.source, "tree/public.txt", "public")
+	p.write(t, p.source, "tree/secret.pem", "private key")
+	p.write(t, p.source, "tree/vault/inner.txt", "inner")
+	hidden := []filetypes.Rule{
+		{PolicyID: "pem", Path: p.base(p.source) + "/**", Capabilities: []string{"deny", "read"}, FileTypes: &filetypes.Selector{Extensions: []string{"pem"}}},
+		{PolicyID: "vault", Path: p.base(p.source) + "/tree/vault/**", Capabilities: []string{"deny"}},
+	}
+	request := p.request(".", 0, "tree")
+	binding := p.binding(t, request, ".")
+	envelope := p.lease(t, binding, 1, 25*time.Second, p.rules(hidden...))
+	plan, err := p.destination.transfers.PlanSignedBatchPull(context.Background(), request, p.destination.identity.NodeID, envelope, p.keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(plan)
+	text := string(encoded)
+	for _, forbidden := range []string{"secret", ".pem", "vault", "inner"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("the preview named a hidden entry (%q): %s", forbidden, text)
+		}
+	}
+	// A hidden file and a hidden directory are each one omission; what is inside
+	// a hidden directory is not walked or counted.
+	if plan.SourcesOmitted != 2 || plan.FilesTotal != 1 || !strings.Contains(text, "public.txt") {
+		t.Fatalf("plan=%+v", plan)
+	}
+	if _, err := os.Stat(filepath.Join(p.destination.root, "tree")); !os.IsNotExist(err) {
+		t.Fatalf("previewing created something: %v", err)
+	}
+	if jobsList, err := p.destination.jobs.List(context.Background(), 10); err != nil || len(jobsList) != 0 {
+		t.Fatalf("previewing created a job: %+v %v", jobsList, err)
+	}
+	// An envelope for another scope previews nothing.
+	other := binding
+	other.SourceGrantID = "other"
+	forged, err := signLeaseOrEmpty(p, other, p.rules())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.destination.transfers.PlanSignedBatchPull(context.Background(), request, p.destination.identity.NodeID, forged, p.keys); err == nil {
+		t.Fatal("a lease for another grant produced a preview")
+	}
+}

@@ -112,6 +112,7 @@ type CopyPlan struct {
 	ConflictCount   int       `json:"conflict_count" yaml:"conflict_count"`
 	Items           []JobItem `json:"items" yaml:"items"`
 	Truncated       bool      `json:"truncated,omitempty" yaml:"truncated"`
+	SourcesOmitted  int       `json:"sources_omitted,omitempty" yaml:"sources_omitted"`
 }
 
 type JobEvent struct {

@@ -515,8 +515,11 @@ func (s *Service) planBatchRoot(ctx context.Context, peer entities.Peer, sourceG
 		if access != nil {
 			// Descendants of an omitted directory are never judged, so their names
 			// are not even evaluated.
+			if hasBlockedParent(entry.Path, omittedDirectories) {
+				continue // counted once, with the directory that hides it
+			}
 			mountPath := access.SourceMountPath(joinRelative(sourcePath, entry.Path))
-			if hasBlockedParent(entry.Path, omittedDirectories) || !access.Source.AllowsListedEntry(mountPath, entry.Type) {
+			if !access.Source.AllowsListedEntry(mountPath, entry.Type) {
 				if entry.Path == "." {
 					return entities.CopyPlan{}, 0, filesystem.ErrFilteredHidden
 				}
@@ -1717,19 +1720,65 @@ func (s *Service) PrepareSignedBatchPull(ctx context.Context, request BatchPullR
 	return s.jobs.PrepareSignedBatchPull(jobRequest)
 }
 
-// CreateSignedBatchPull plans a node-to-node copy under the filter of a signed,
-// job-bound lease and persists the job awaiting that authorization. Source
-// entries the filter hides are left out and counted; a destination the policy
-// does not let the actor write fails the whole plan.
-func (s *Service) CreateSignedBatchPull(ctx context.Context, request BatchPullRequest, nodeID, envelope, idempotencyKey string, keys map[string]ed25519.PublicKey) (entities.Job, bool, error) {
+// signedBatchPlan is a node-to-node copy planned under a verified lease.
+type signedBatchPlan struct {
+	binding         signedauth.Binding
+	request         jobs.CreateRequest
+	destinationBase string
+	plan            entities.CopyPlan
+	omitted         int
+}
+
+// planSignedBatch verifies the lease and plans the copy under its filter.
+// Source entries the filter hides are left out and counted; a destination the
+// policy does not let the actor write fails the whole plan.
+func (s *Service) planSignedBatch(ctx context.Context, request BatchPullRequest, nodeID, envelope string, keys map[string]ed25519.PublicKey) (signedBatchPlan, error) {
 	now := time.Now().UTC()
 	binding, err := signedauth.VerifiedJobLeaseBinding(envelope, keys, nodeID, now)
 	if err != nil || binding.Operation != "transfer_pull_batch" || binding.DestinationNodeID != nodeID || binding.SourceNodeID != strings.TrimSpace(request.PeerNodeID) ||
 		binding.SourceGrantID != strings.TrimSpace(request.SourceGrantID) || binding.DestinationGrantID != strings.TrimSpace(request.DestinationGrantID) || binding.JobOptionsDigest == "" {
-		return entities.Job{}, false, ErrInvalid
+		return signedBatchPlan{}, ErrInvalid
 	}
 	_, filter, err := signedauth.VerifyJobLease(envelope, keys, binding, nodeID, 1, now)
 	if err != nil {
+		return signedBatchPlan{}, ErrInvalid
+	}
+	jobRequest, destinationBase, err := s.signedBatchJobRequest(ctx, request, binding.SourceRoot, binding.DestinationMountID)
+	if err != nil {
+		return signedBatchPlan{}, err
+	}
+	if binding.DestinationRoot != destinationBase {
+		return signedBatchPlan{}, ErrInvalid
+	}
+	access, err := signedTransferAccess(filter, binding)
+	if err != nil {
+		return signedBatchPlan{}, err
+	}
+	plan, omitted, err := s.planBatch(ctx, request, &access)
+	if err != nil {
+		return signedBatchPlan{}, err
+	}
+	plan.DestinationPath, plan.SourcesOmitted = destinationBase, omitted
+	return signedBatchPlan{binding: binding, request: jobRequest, destinationBase: destinationBase, plan: plan, omitted: omitted}, nil
+}
+
+// PlanSignedBatchPull previews a node-to-node copy under a signed lease without
+// creating anything. The preview only carries entries the policy lets the actor
+// list and read; the omitted ones are counted, never named.
+func (s *Service) PlanSignedBatchPull(ctx context.Context, request BatchPullRequest, nodeID, envelope string, keys map[string]ed25519.PublicKey) (entities.CopyPlan, error) {
+	planned, err := s.planSignedBatch(ctx, request, nodeID, envelope, keys)
+	if err != nil {
+		return entities.CopyPlan{}, err
+	}
+	return planned.plan, nil
+}
+
+// CreateSignedBatchPull plans a node-to-node copy under the filter of a signed,
+// job-bound lease and persists the job awaiting that authorization.
+func (s *Service) CreateSignedBatchPull(ctx context.Context, request BatchPullRequest, nodeID, envelope, idempotencyKey string, keys map[string]ed25519.PublicKey) (entities.Job, bool, error) {
+	now := time.Now().UTC()
+	binding, err := signedauth.VerifiedJobLeaseBinding(envelope, keys, nodeID, now)
+	if err != nil || binding.JobOptionsDigest == "" {
 		return entities.Job{}, false, ErrInvalid
 	}
 	// A repeated request returns its job without fetching the manifest again.
@@ -1745,23 +1794,11 @@ func (s *Service) CreateSignedBatchPull(ctx context.Context, request BatchPullRe
 		}
 		return existing, true, nil
 	}
-	jobRequest, destinationBase, err := s.signedBatchJobRequest(ctx, request, binding.SourceRoot, binding.DestinationMountID)
+	planned, err := s.planSignedBatch(ctx, request, nodeID, envelope, keys)
 	if err != nil {
 		return entities.Job{}, false, err
 	}
-	if binding.DestinationRoot != destinationBase {
-		return entities.Job{}, false, ErrInvalid
-	}
-	access, err := signedTransferAccess(filter, binding)
-	if err != nil {
-		return entities.Job{}, false, err
-	}
-	plan, omitted, err := s.planBatch(ctx, request, &access)
-	if err != nil {
-		return entities.Job{}, false, err
-	}
-	plan.DestinationPath = destinationBase
-	return s.jobs.CreateSignedPlannedBatchPull(ctx, jobRequest, plan, omitted, nodeID, envelope, idempotencyKey, keys)
+	return s.jobs.CreateSignedPlannedBatchPull(ctx, planned.request, planned.plan, planned.omitted, nodeID, envelope, idempotencyKey, keys)
 }
 
 // itemDenied explains, without naming any path, why the current policy no

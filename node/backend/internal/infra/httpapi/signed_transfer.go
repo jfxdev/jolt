@@ -63,3 +63,33 @@ func (s *Server) createSignedBatchPull(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, status, map[string]any{"job": job, "execution_enabled": true})
 }
+
+// planSignedBatchPull previews the copy under the filter of a signed lease. It
+// creates nothing and never names an entry the policy hides.
+func (s *Server) planSignedBatchPull(w http.ResponseWriter, r *http.Request) {
+	if !s.signedExecutionEnabled() || s.transfers == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "signed_transfer_unavailable", "As transferências assinadas estão indisponíveis neste node.", nil)
+		return
+	}
+	authorizations := r.Header.Values(signedAuthorizationHeader)
+	if len(authorizations) != 1 || authorizations[0] == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_signed_context", "Informe uma autorização assinada.", nil)
+		return
+	}
+	var request batchPullTransferRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	plan, err := s.transfers.PlanSignedBatchPull(r.Context(), request.transferRequest(r.Header.Get("X-Correlation-ID")), s.identity.NodeID, authorizations[0], s.config.AuthorizationKeys)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	const previewLimit = 500
+	if len(plan.Items) > previewLimit {
+		plan.Items, plan.Truncated = plan.Items[:previewLimit], true
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Jolt-Signed-Transfer-Plan", "v1")
+	writeJSON(w, http.StatusOK, plan)
+}

@@ -182,6 +182,7 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 		mux.HandleFunc("POST /api/v1/transfers/pull/batch/plan", s.planBatchPullTransfer)
 		mux.HandleFunc("POST /api/v1/transfers/pull/batch", s.createBatchPullTransfer)
 		mux.HandleFunc("POST /api/v1/transfers/signed-pull/batch/prepare", s.prepareSignedBatchPull)
+		mux.HandleFunc("POST /api/v1/transfers/signed-pull/batch/plan", s.planSignedBatchPull)
 		mux.HandleFunc("POST /api/v1/transfers/signed-pull/batch", s.createSignedBatchPull)
 	}
 	if s.registry != nil && s.config.MetricsToken != "" {
@@ -2828,6 +2829,30 @@ paths:
       responses:
         "200": {description: Normalized options, digest and execution_enabled}
         "400": {description: Invalid request, a move, or the ask conflict policy}
+        "503": {description: Signed transfers unavailable on this node}
+  /api/v1/transfers/signed-pull/batch/plan:
+    post:
+      summary: Previews a node-to-node copy under a signed lease
+      description: Requires the operational bearer token and a job-bound signed envelope. It creates nothing. The preview lists only the entries the signed policy lets the actor list and read and reports how many it left out (sources_omitted), never their names.
+      parameters:
+        - {in: header, name: X-Jolt-Access-Authorization, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [peer_node_id, source_grant_id, source_paths, destination_grant_id, destination_path]
+              properties:
+                peer_node_id: {type: string}
+                source_grant_id: {type: string}
+                source_paths: {type: array, items: {type: string}}
+                destination_grant_id: {type: string}
+                destination_path: {type: string}
+                conflict_policy: {type: string}
+      responses:
+        "200": {description: Counts and the first 500 permitted items, with sources_omitted}
+        "400": {description: Invalid request, scope or signature}
         "503": {description: Signed transfers unavailable on this node}
   /api/v1/transfers/signed-pull/batch:
     post:
