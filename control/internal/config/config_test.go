@@ -230,3 +230,52 @@ func TestAgentProxyAndAuditConfiguration(t *testing.T) {
 		t.Fatal("negative audit retention accepted")
 	}
 }
+
+func TestTypedPoliciesNeedEveryOperationToCarryASignedContext(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := x509.MarshalPKCS8PrivateKey(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "authorization.pem")
+	if err := os.WriteFile(file, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encoded}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONTROL_TOWER_ADMIN_PASSWORD", "a-secure-admin-password")
+	t.Setenv("CONTROL_TOWER_DB_ENCRYPTION_KEY", "a-secure-encryption-key-that-is-long-enough")
+	t.Setenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID", "current")
+	t.Setenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_FILE", file)
+	signed := []string{"CONTROL_TOWER_SIGNED_LOCAL_READS", "CONTROL_TOWER_SIGNED_UPLOADS", "CONTROL_TOWER_SIGNED_LOCAL_JOBS"}
+	t.Setenv("CONTROL_TOWER_TYPED_POLICIES", "true")
+	// Each signed mode is needed: missing any one leaves a route that could
+	// read, write or move what a typed rule hides.
+	for skipped := range signed {
+		for index, name := range signed {
+			value := "true"
+			if index == skipped {
+				value = "false"
+			}
+			t.Setenv(name, value)
+		}
+		if _, err := Load(); err == nil {
+			t.Fatalf("typed policies were accepted without %s", signed[skipped])
+		}
+	}
+	for _, name := range signed {
+		t.Setenv(name, "true")
+	}
+	if cfg, err := Load(); err != nil || !cfg.TypedPolicies {
+		t.Fatalf("typed policies were refused with every signed mode on: %v", err)
+	}
+	t.Setenv("CONTROL_TOWER_TYPED_POLICIES", "maybe")
+	if _, err := Load(); err == nil {
+		t.Fatal("an invalid value was accepted")
+	}
+	t.Setenv("CONTROL_TOWER_TYPED_POLICIES", "false")
+	if cfg, err := Load(); err != nil || cfg.TypedPolicies {
+		t.Fatalf("typed policies default off: %v", err)
+	}
+}

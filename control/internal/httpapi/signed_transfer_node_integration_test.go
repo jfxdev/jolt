@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jfxdev/jolt/control/internal/config"
+	"github.com/jfxdev/jolt/control/internal/filetypes"
 	"github.com/jfxdev/jolt/control/internal/rbac"
 	"github.com/jfxdev/jolt/control/internal/security"
 	"github.com/jfxdev/jolt/control/internal/store"
@@ -33,10 +34,8 @@ type realNode struct {
 }
 
 // Optional real-process test: two node binaries paired through the Control
-// Tower plan, run and stop a signed node-to-node copy for a non-admin user.
-// Entries hidden by file type are covered at the node level: the Control
-// Tower's own authorization still refuses typed rules, so they cannot be
-// exercised through it yet.
+// Tower plan, run and stop a signed node-to-node copy for a non-admin user whose
+// policy hides a file type.
 func TestSignedTransferAgainstTwoNodeProcesses(t *testing.T) {
 	binary := os.Getenv("JOLT_SIGNED_COPY_NODE_BINARY")
 	if binary == "" {
@@ -166,6 +165,7 @@ func TestSignedTransferAgainstTwoNodeProcesses(t *testing.T) {
 		{Path: "nodes/" + destination.id + "/transfers", Capabilities: []string{"execute", "create"}},
 		{Path: srcBase + "/**", Capabilities: []string{"read", "list"}},
 		{Path: dstBase + "/**", Capabilities: []string{"read", "list", "create", "update"}},
+		{Path: srcBase + "/**", Capabilities: []string{"deny", "read"}, FileTypes: &filetypes.Selector{Extensions: []string{"pem"}}},
 	}}
 	if err := storage.CreatePolicy(ctx, policy); err != nil {
 		t.Fatal(err)
@@ -173,7 +173,7 @@ func TestSignedTransferAgainstTwoNodeProcesses(t *testing.T) {
 	if err := storage.SetSubjectPolicies(ctx, "user", "operator", []string{policy.ID}); err != nil {
 		t.Fatal(err)
 	}
-	server, handler := newServerHandler(config.Config{EncryptionKey: make([]byte, 32), StaticDir: t.TempDir(), SignedLocalJobs: true, AuthorizationSigningKeyID: "key", AuthorizationSigningKey: key}, storage, slog.New(slog.NewTextHandler(io.Discard, nil)), client)
+	server, handler := newServerHandler(config.Config{EncryptionKey: make([]byte, 32), StaticDir: t.TempDir(), SignedLocalJobs: true, SignedLocalReads: true, SignedUploads: true, TypedPolicies: true, AuthorizationSigningKeyID: "key", AuthorizationSigningKey: key}, storage, slog.New(slog.NewTextHandler(io.Discard, nil)), client)
 	call := func(user, method, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
 		t.Helper()
 		var encoded []byte
@@ -220,7 +220,7 @@ func TestSignedTransferAgainstTwoNodeProcesses(t *testing.T) {
 		}
 	}
 	put(source, "tree/public.txt", "public data")
-	put(source, "tree/notes.md", "notes")
+	put(source, "tree/secret.pem", "PRIVATE KEY")
 	put(source, "tree/deep/inner.txt", "inner data")
 	body := func(selection string) map[string]any {
 		return map[string]any{
@@ -251,7 +251,8 @@ func TestSignedTransferAgainstTwoNodeProcesses(t *testing.T) {
 	}
 	transfers := "/api/v1/nodes/" + destination.id + "/transfers"
 
-	// The preview runs under the operator's own policy on the destination node.
+	// The preview runs under the operator's own policy on the destination node
+	// and never names what that policy hides.
 	preview := call("operator", http.MethodPost, transfers+"/plan", body("tree"), nil)
 	var previewBody struct {
 		Plan struct {
@@ -259,14 +260,16 @@ func TestSignedTransferAgainstTwoNodeProcesses(t *testing.T) {
 			SourcesOmitted int `json:"sources_omitted"`
 		} `json:"plan"`
 	}
-	if preview.Code != http.StatusOK || json.Unmarshal(preview.Body.Bytes(), &previewBody) != nil || previewBody.Plan.FilesTotal != 3 || previewBody.Plan.SourcesOmitted != 0 {
+	if preview.Code != http.StatusOK || json.Unmarshal(preview.Body.Bytes(), &previewBody) != nil || previewBody.Plan.FilesTotal != 2 || previewBody.Plan.SourcesOmitted != 1 ||
+		strings.Contains(preview.Body.String(), "secret") || strings.Contains(preview.Body.String(), ".pem") {
 		t.Fatalf("preview: %d %s", preview.Code, preview.Body)
 	}
 	if direct := call("operator", http.MethodPost, "/api/v1/nodes/"+destination.id+"/transfers/pull/batch", map[string]any{}, nil); direct.Code != http.StatusConflict {
 		t.Fatalf("direct pull: %d %s", direct.Code, direct.Body)
 	}
 
-	// The copy runs on the destination node under a renewed lease.
+	// The copy runs on the destination node under a renewed lease and leaves out
+	// the hidden file, which it reports only by count.
 	created := call("operator", http.MethodPost, transfers, body("tree"), map[string]string{"Idempotency-Key": "copy-1"})
 	var job struct {
 		ID string `json:"job_id"`
@@ -277,11 +280,14 @@ func TestSignedTransferAgainstTwoNodeProcesses(t *testing.T) {
 	state, _, message := waitJob(job.ID, 30*time.Second, func(state, _ string) bool {
 		return state == "completed" || state == "completed_with_warnings" || state == "failed"
 	})
-	if state != "completed" {
+	if state != "completed_with_warnings" || !strings.HasSuffix(message, "1 source entries were not accessible") {
 		t.Fatalf("job %s: %s", state, message)
 	}
-	if content("tree/public.txt") != "public data" || content("tree/deep/inner.txt") != "inner data" || content("tree/notes.md") != "notes" {
-		t.Fatal("the tree was not copied")
+	if content("tree/public.txt") != "public data" || content("tree/deep/inner.txt") != "inner data" {
+		t.Fatal("the permitted files were not copied")
+	}
+	if _, err := os.Stat(filepath.Join(destination.mount, "tree/secret.pem")); !os.IsNotExist(err) {
+		t.Fatalf("a hidden file reached the destination: %v", err)
 	}
 	if retry := call("operator", http.MethodPost, transfers, body("tree"), map[string]string{"Idempotency-Key": "copy-1"}); retry.Header().Get("Location") != created.Header().Get("Location") {
 		t.Fatalf("retry reached another job: %s", retry.Body)

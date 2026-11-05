@@ -141,7 +141,7 @@ func (s *Server) signLease(r *http.Request, subject leaseSubject, binding signed
 		return "", err
 	}
 	for _, requirement := range required {
-		if requirement.Path == "" || rbac.DeniesWithin(subject.expanded, requirement.Path) {
+		if requirement.Path == "" || s.deniesBeyondFilter(subject.expanded, requirement.Path) {
 			return "", errSignedReadUnavailable
 		}
 		if !filter.Evaluate(requirement.Path, requirement.Capability, "directory").Allowed && !filter.Evaluate(requirement.Path, requirement.Capability, "file").Allowed {

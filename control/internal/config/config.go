@@ -26,6 +26,7 @@ type Config struct {
 	AuthorizationSigningKey   ed25519.PrivateKey `json:"-"`
 	SignedLocalReads          bool
 	SignedLocalJobs           bool
+	TypedPolicies             bool
 	SignedUploads             bool
 	AuditRetentionDays        int
 	AuditHashChain            bool
@@ -95,6 +96,12 @@ func Load() (Config, error) {
 	if cfg.SignedLocalJobs && len(cfg.AuthorizationSigningKey) != ed25519.PrivateKeySize {
 		return Config{}, errors.New("CONTROL_TOWER_SIGNED_LOCAL_JOBS requires an authorization signing key")
 	}
+	if raw := strings.TrimSpace(os.Getenv("CONTROL_TOWER_TYPED_POLICIES")); raw != "" {
+		cfg.TypedPolicies, err = strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, errors.New("CONTROL_TOWER_TYPED_POLICIES must be a boolean")
+		}
+	}
 	if raw := strings.TrimSpace(os.Getenv("CONTROL_TOWER_SIGNED_UPLOADS")); raw != "" {
 		cfg.SignedUploads, err = strconv.ParseBool(raw)
 		if err != nil {
@@ -103,6 +110,12 @@ func Load() (Config, error) {
 	}
 	if cfg.SignedUploads && len(cfg.AuthorizationSigningKey) != ed25519.PrivateKeySize {
 		return Config{}, errors.New("CONTROL_TOWER_SIGNED_UPLOADS requires an authorization signing key")
+	}
+	// A typed rule is enforced by the node on a signed context. Allow it only
+	// when every operation that reaches a file carries one, so no route can
+	// read, write or move what a typed rule hides.
+	if cfg.TypedPolicies && (!cfg.SignedLocalReads || !cfg.SignedUploads || !cfg.SignedLocalJobs || len(cfg.AuthorizationSigningKey) != ed25519.PrivateKeySize) {
+		return Config{}, errors.New("CONTROL_TOWER_TYPED_POLICIES requires CONTROL_TOWER_SIGNED_LOCAL_READS, CONTROL_TOWER_SIGNED_UPLOADS, CONTROL_TOWER_SIGNED_LOCAL_JOBS and an authorization signing key")
 	}
 	if raw := strings.TrimSpace(os.Getenv("CONTROL_TOWER_TRUSTED_PROXIES")); raw != "" {
 		for _, part := range strings.Split(raw, ",") {

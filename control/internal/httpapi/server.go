@@ -913,7 +913,54 @@ func (s *Server) evaluateAuthorization(r *http.Request, path, capability string)
 	if err != nil {
 		return rbac.Decision{}, err
 	}
-	return rbac.Evaluate(rbac.ExpandCompatibilityRules(policies), path, capability), nil
+	expanded := rbac.ExpandCompatibilityRules(policies)
+	if s.config.TypedPolicies {
+		return rbac.EvaluateTyped(expanded, path, capability, s.entryMode(r)), nil
+	}
+	return rbac.Evaluate(expanded, path, capability), nil
+}
+
+type nodeFilteredKey struct{}
+
+// markNodeFiltered tells authorization that the node will enforce typed rules
+// on this operation, per entry, with a signed context. Only mark operations
+// that really carry one.
+func markNodeFiltered(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), nodeFilteredKey{}, true))
+}
+
+func (s *Server) entryMode(r *http.Request) rbac.EntryMode {
+	if filtered, _ := r.Context().Value(nodeFilteredKey{}).(bool); filtered {
+		return rbac.NodeFiltered
+	}
+	return rbac.EveryEntry
+}
+
+// nodeEnforces reports whether the node applies a signed context to this
+// operation, entry by entry, so typed rules need not be settled by the Control
+// Tower alone.
+func (s *Server) nodeEnforces(resource, method string) bool {
+	if s.config.SignedLocalReads && signedReadOperation(resource, method) != "" {
+		return true
+	}
+	if operation, _ := signedUploadOperation(resource, method); s.config.SignedUploads && operation != "" {
+		return true
+	}
+	_, copying := signedLocalCopyMount(resource)
+	return s.config.SignedLocalJobs && copying && method == http.MethodPost
+}
+
+// deniesBeyondFilter is the subtree guard for a scope. With typed policies
+// enabled, every operation that could touch a whole tree is either filtered by
+// the node per entry (reads, uploads, copies, leased deletes and moves) or
+// refused (a direct delete or move of a directory needs a plan), so a typed
+// denial inside the scope is never the Control Tower's to apply here and only a
+// denial by path refuses the operation. Otherwise any denial does.
+func (s *Server) deniesBeyondFilter(policies []rbac.Policy, scope string) bool {
+	if s.config.TypedPolicies {
+		return rbac.UntypedDeniesWithin(policies, scope)
+	}
+	return rbac.DeniesWithin(policies, scope)
 }
 
 func currentAccessGroupIDs(r *http.Request) []string {
@@ -1589,7 +1636,7 @@ func (s *Server) createPolicy(w http.ResponseWriter, r *http.Request) {
 		s.audit(r, "create", resource, "denied")
 		return
 	}
-	if !normalizePolicyRequest(&input) {
+	if !normalizePolicyRequest(&input, s.config.TypedPolicies) {
 		s.audit(r, "create", resource, "denied")
 		writeError(w, r, http.StatusBadRequest, "invalid_policy", "Nome, descrição, paths ou capabilities da policy são inválidos.")
 		return
@@ -1628,7 +1675,7 @@ func (s *Server) updatePolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, rule := range current.Rules {
-		if rule.FileTypes != nil {
+		if rule.FileTypes != nil && !s.config.TypedPolicies {
 			writeError(w, r, http.StatusConflict, "file_type_policy_unavailable", "A edição desta policy exige a integração completa das restrições de tipo.")
 			return
 		}
@@ -1638,7 +1685,7 @@ func (s *Server) updatePolicy(w http.ResponseWriter, r *http.Request) {
 		s.audit(r, "update", resource, "denied")
 		return
 	}
-	if !normalizePolicyRequest(&input) {
+	if !normalizePolicyRequest(&input, s.config.TypedPolicies) {
 		s.audit(r, "update", resource, "denied")
 		writeError(w, r, http.StatusBadRequest, "invalid_policy", "Nome, descrição, paths ou capabilities da policy são inválidos.")
 		return
@@ -2007,7 +2054,10 @@ func subjectPolicyResource(subjectType, subjectID string) string {
 	return "control-tower/service-accounts/" + subjectID + "/policies"
 }
 
-func normalizePolicyRequest(input *policyRequest) bool {
+// normalizePolicyRequest validates a policy. Typed rules (file types and
+// visibility) are accepted only when typed policies are enabled, which means
+// every operation that reaches a file enforces them.
+func normalizePolicyRequest(input *policyRequest, typedPolicies bool) bool {
 	input.Name = strings.TrimSpace(input.Name)
 	input.Description = strings.TrimSpace(input.Description)
 	if !validServiceAccountName(input.Name) || len(input.Description) > 512 || len(input.Rules) == 0 || len(input.Rules) > 100 {
@@ -2015,10 +2065,17 @@ func normalizePolicyRequest(input *policyRequest) bool {
 	}
 	for index := range input.Rules {
 		rule := &input.Rules[index]
-		// Do not activate typed policies before every affected node path,
-		// share, upload and transfer enforces their authorization context.
-		if rule.FileTypes != nil || rule.Visibility != "" {
+		typed := rule.FileTypes != nil
+		if (typed || rule.Visibility != "") && !typedPolicies {
 			return false
+		}
+		if rule.Visibility != "" && (!typed || rule.Visibility != "hidden" && rule.Visibility != "visible") {
+			return false
+		}
+		if typed {
+			if _, err := rule.FileTypes.Compile(); err != nil {
+				return false
+			}
 		}
 		rule.Path = rbac.NormalizePath(rule.Path)
 		if !rbac.ValidPath(rule.Path) || len(rule.Capabilities) == 0 || len(rule.Capabilities) > 9 {
@@ -2034,7 +2091,9 @@ func normalizePolicyRequest(input *policyRequest) bool {
 			seen[capability] = true
 			normalized = append(normalized, capability)
 		}
-		if seen["deny"] && len(normalized) != 1 {
+		// A path denial stands alone. A typed denial names the capabilities it
+		// takes away from the files it matches.
+		if seen["deny"] && !typed && len(normalized) != 1 {
 			return false
 		}
 		rule.Capabilities = normalized
@@ -3041,7 +3100,7 @@ func (s *Server) deniesWithinScope(r *http.Request, scope string) (bool, error) 
 	if err != nil {
 		return false, err
 	}
-	return rbac.DeniesWithin(rbac.ExpandCompatibilityRules(policies), scope), nil
+	return s.deniesBeyondFilter(rbac.ExpandCompatibilityRules(policies), scope), nil
 }
 
 // isMountFileResource reports whether resource addresses files inside a mount,
@@ -3059,6 +3118,9 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(resource, "destructive-plans") || strings.Contains(resource, "signed-pull") {
 		writeError(w, r, http.StatusNotFound, "resource_not_found", "Recurso do node não permitido.")
 		return
+	}
+	if s.config.TypedPolicies && s.nodeEnforces(resource, r.Method) {
+		r = markNodeFiltered(r)
 	}
 	// Direct pulls run unsigned, with no renewed authorization and no per-policy
 	// filtering. With signed local jobs enabled, copies go through the logical
@@ -3722,6 +3784,9 @@ func (s *Server) resolveLogicalTransferRequest(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "path_outside_grant", "A pasta de destino precisa ser relativa ao mount autorizado.")
 		return resolvedLogicalTransfer{}, false
+	}
+	if s.config.TypedPolicies && s.config.SignedLocalJobs && operation == "copy" {
+		r = markNodeFiltered(r) // the destination node plans and runs it under a lease
 	}
 	request.Operation = operation
 	request.Source.Paths = paths

@@ -112,6 +112,9 @@ func readStrictBody(w http.ResponseWriter, r *http.Request, target any) bool {
 // createDestructivePlanRoute authorizes the operation, then asks the node to
 // inspect the tree and record a plan for the current actor.
 func (s *Server) createDestructivePlanRoute(w http.ResponseWriter, r *http.Request) {
+	if s.config.TypedPolicies {
+		r = markNodeFiltered(r) // the node revalidates and filters under a lease
+	}
 	node, ok := s.destructiveRouteNode(w, r)
 	if !ok {
 		return

@@ -552,13 +552,17 @@ func (s *Server) shareCreatorAuthorizedPath(r *http.Request, share store.Share, 
 	expanded := rbac.ExpandCompatibilityRules(policies)
 	// A deny rule inside the shared subtree still wins, even for an admin, so
 	// an archive of a shared folder cannot reach a denied descendant.
-	if checkSubtree && rbac.DeniesWithin(expanded, scope) {
+	if checkSubtree && s.deniesBeyondFilter(expanded, scope) {
 		return false
 	}
 	if actorType == "user" && creator.Role == "admin" {
 		return true
 	}
+	// A public share is served through a signed read, so the node filters it.
 	decision := rbac.Evaluate(expanded, scope, capability)
+	if s.config.TypedPolicies {
+		decision = rbac.EvaluateTyped(expanded, scope, capability, rbac.NodeFiltered)
+	}
 	return decision.Allowed && !decision.Denied
 }
 

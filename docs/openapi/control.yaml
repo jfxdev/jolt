@@ -1366,6 +1366,22 @@ components:
                 items:
                   type: string
                   enum: [read, list, create, update, delete, write, execute, sudo, deny]
+              file_types:
+                type: object
+                description: |
+                  Restricts the rule to files of these types. Accepted only when the Control Tower
+                  runs with typed policies enabled; otherwise the policy is refused. The node
+                  decides the real type of each entry. Directories are never filtered by type,
+                  so a typed allow keeps them navigable. A typed deny may list the capabilities
+                  it takes away; a path deny (no file_types) stands alone.
+                properties:
+                  classes: {type: array, items: {type: string, enum: [video, audio, image, document, archive, executable, secret]}}
+                  extensions: {type: array, items: {type: string}, description: Without the dot, case-insensitive}
+                  names: {type: array, items: {type: string}, description: Exact base names}
+              visibility:
+                type: string
+                enum: [hidden, visible]
+                description: Only with file_types. hidden (default) answers 404 and omits the entry; visible lists it and answers 403.
     CreateShare:
       type: object
       required: [node_id, mount_id, path]

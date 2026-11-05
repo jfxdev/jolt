@@ -220,6 +220,42 @@ em andamento páram em até 30 segundos e ficam aguardando. Elas não são retom
 por outro caminho; cancele-as. Cópias criadas depois voltam a ser comuns, sem
 filtro por policy. Este recurso ainda não foi validado sob carga nem entre hosts.
 
+## Políticas por tipo de arquivo
+
+Uma regra de policy pode trazer `file_types` (classes, extensões, nomes exatos) e
+`visibility` (`hidden`, o padrão, ou `visible`). A API só as aceita com
+`CONTROL_TOWER_TYPED_POLICIES=true`. A opção vem desativada e o Control Tower **não
+inicia** com ela se `CONTROL_TOWER_SIGNED_LOCAL_READS`, `CONTROL_TOWER_SIGNED_UPLOADS`
+e `CONTROL_TOWER_SIGNED_LOCAL_JOBS` não estiverem ligados, nem sem a chave de
+assinatura: cada rota que alcança um arquivo precisa levar o contexto assinado, ou uma
+regra tipada deixaria passar o que esconde. Os nodes precisam anunciar as capacidades
+dos modos assinados; sem elas a operação falha fechada, não volta ao caminho sem filtro.
+
+**Semântica**
+
+- O **node** decide o tipo real de cada entrada. Negação tipada vale só para arquivos;
+  permissão tipada vale para os arquivos que casam e mantém as pastas navegáveis.
+  Uma negação tipada pode listar as capacidades que retira (`["deny","read"]` esconde o
+  conteúdo mas mantém a listagem); uma negação por caminho continua sozinha.
+- Onde o node filtra por entrada (leituras, uploads, cópia local e entre nodes, delete e
+  move de pasta com plano, shares e as prévias), o Control Tower só recusa o que
+  nenhum tipo de entrada poderia fazer e deixa o resto para o node, que responde 404
+  para o escondido (`hidden`) ou 403 (`visible`).
+- Onde o node **não** filtra (delete e move direto de arquivo, mover arquivos entre
+  nodes), o Control Tower exige que todo tipo possível seja permitido. Pastas nessas
+  rotas já exigem plano ou são recusadas.
+- Uma **negação por caminho** dentro de uma pasta continua recusando a operação inteira
+  sobre ela (`deny_rule_within_scope`); as negações tipadas não.
+- Desligar a opção não apaga as regras: uma negação tipada já gravada volta a negar
+  tudo no caminho, como antes da opção existir.
+
+**O que ainda não existe**
+
+- Editor de regra, matriz de acesso efetivo e navegador de arquivos (cadeado, mensagens)
+  da interface ainda não conhecem tipos: use a API.
+- Mover **arquivos** entre nodes não é filtrado pelo node (só pelo Control Tower).
+- Não houve validação sob carga nem entre hosts. Trate o recurso como experimental.
+
 ## Rotinas
 
 **Diária**
