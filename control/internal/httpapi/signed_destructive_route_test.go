@@ -18,6 +18,16 @@ import (
 
 func destructiveRouteHarness(t *testing.T, nodeHandler func(*http.Request) (int, string)) (http.Handler, string, *[]string) {
 	t.Helper()
+	return destructiveRouteHarnessConfigured(t, true, nodeHandler)
+}
+
+func destructiveRouteHarnessWithFlag(t *testing.T, enabled bool) (http.Handler, string, *[]string) {
+	t.Helper()
+	return destructiveRouteHarnessConfigured(t, enabled, func(*http.Request) (int, string) { return http.StatusOK, `{}` })
+}
+
+func destructiveRouteHarnessConfigured(t *testing.T, enabled bool, nodeHandler func(*http.Request) (int, string)) (http.Handler, string, *[]string) {
+	t.Helper()
 	ctx, now := context.Background(), time.Now().UTC()
 	storage, err := store.Open(filepath.Join(t.TempDir(), "control.db"), make([]byte, 32))
 	if err != nil {
@@ -45,7 +55,7 @@ func destructiveRouteHarness(t *testing.T, nodeHandler func(*http.Request) (int,
 		return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
 	// No signing key: a job could never be bound to an authorization.
-	handler := newHandler(config.Config{EncryptionKey: make([]byte, 32), StaticDir: t.TempDir(), SignedLocalJobs: true}, storage, slog.New(slog.NewTextHandler(io.Discard, nil)), client)
+	handler := newHandler(config.Config{EncryptionKey: make([]byte, 32), StaticDir: t.TempDir(), SignedLocalJobs: enabled}, storage, slog.New(slog.NewTextHandler(io.Discard, nil)), client)
 	return handler, session, &calls
 }
 
@@ -112,5 +122,36 @@ func TestDestructiveRoutesRefuseBadRequestsBeforeTouchingTheNode(t *testing.T) {
 	}
 	if len(*calls) != 0 {
 		t.Fatalf("the node was contacted for a rejected request: %v", *calls)
+	}
+}
+
+// The node accepts the subject of a destructive plan from whoever holds its
+// operational token, so the pass-through proxy must never reach those routes.
+func TestPassThroughProxyNeverReachesDestructivePlans(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		handler, session, calls := destructiveRouteHarness(t, func(r *http.Request) (int, string) {
+			return http.StatusOK, `{}`
+		})
+		if !enabled {
+			// A handler without the dedicated routes.
+			handler, session, calls = destructiveRouteHarnessWithFlag(t, false)
+		}
+		for _, path := range []string{
+			"/api/v1/nodes/n1/mounts/files/files/destructive-plans/plan1/accept",
+			"/api/v1/nodes/n1/mounts/files/files/destructive-plans/plan1",
+			"/api/v1/nodes/n1/mounts/files/files/destructive-plans/extra/accept",
+		} {
+			for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete, http.MethodPut} {
+				r := authenticatedRequest(method, path, session, []byte(`{"subject_type":"user","subject_id":"admin","token":"x"}`))
+				w := httptest.NewRecorder()
+				handler.ServeHTTP(w, r)
+				if w.Code != http.StatusNotFound && w.Code != http.StatusMethodNotAllowed {
+					t.Fatalf("enabled=%v %s %s: %d %s", enabled, method, path, w.Code, w.Body)
+				}
+			}
+		}
+		if len(*calls) != 0 {
+			t.Fatalf("enabled=%v the node was reached through the proxy: %v", enabled, *calls)
+		}
 	}
 }

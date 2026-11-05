@@ -3053,6 +3053,13 @@ func isMountFileResource(resource string) bool {
 
 func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 	resource := strings.TrimPrefix(r.PathValue("resource"), "/")
+	// The node trusts the subject in a destructive plan request because the
+	// Control Tower authenticated it. These resources are reachable only through
+	// the dedicated routes, never through the pass-through proxy.
+	if strings.Contains(resource, "destructive-plans") {
+		writeError(w, r, http.StatusNotFound, "resource_not_found", "Recurso do node não permitido.")
+		return
+	}
 	targets := fileTargets{}
 	if isMountFileResource(resource) {
 		parsed, err := fileTargetsFromRequest(r)
