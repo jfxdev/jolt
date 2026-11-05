@@ -14,6 +14,12 @@ import (
 func (s *Server) signedPolicySnapshot(ctx context.Context, subjectType, subjectID string) ([]rbac.Policy, *time.Time, error) {
 	s.agentMu.Lock()
 	defer s.agentMu.Unlock()
+	return s.signedPolicySnapshotLocked(ctx, subjectType, subjectID)
+}
+
+// signedPolicySnapshotLocked requires agentMu. It is used when credential,
+// group and policy validation must share the same admission boundary.
+func (s *Server) signedPolicySnapshotLocked(ctx context.Context, subjectType, subjectID string) ([]rbac.Policy, *time.Time, error) {
 	assignments, err := s.store.TemporaryPolicies(ctx, subjectType, subjectID)
 	if err != nil {
 		return nil, nil, err
