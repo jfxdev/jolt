@@ -379,6 +379,8 @@ export interface TransferPlan {
 	truncated?: boolean;
 	items?: JobItem[];
 	remote_file?: boolean;
+	// Source entries the current policy hides; they are counted, never listed.
+	sources_omitted?: number;
 }
 
 export interface LogicalTransferRequest {

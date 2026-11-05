@@ -37,3 +37,15 @@ test("only the exact error codes select a fallback or a plan", () => {
   assert.equal(planRequired({ code: "plan_required" }), true);
   assert.equal(planRequired({ code: "conflict" }), false);
 });
+
+import { omittedSourcesNotice } from "../src/lib/transfer-preview.ts";
+
+test("a preview that left entries out says so, by count only", () => {
+  const plan = { files_total: 2, bytes_total: 10, copy_count: 2, conflict_count: 0 };
+  assert.equal(omittedSourcesNotice(null), "");
+  assert.equal(omittedSourcesNotice(plan), "");
+  assert.equal(omittedSourcesNotice({ ...plan, sources_omitted: 0 }), "");
+  assert.equal(omittedSourcesNotice({ ...plan, sources_omitted: 1 }), "1 entrada da origem não está acessível para você e não será copiada.");
+  assert.equal(omittedSourcesNotice({ ...plan, sources_omitted: 3 }), "3 entradas da origem não estão acessíveis para você e não serão copiadas.");
+  assert.equal(omittedSourcesNotice({ ...plan, sources_omitted: -2 }), "");
+});

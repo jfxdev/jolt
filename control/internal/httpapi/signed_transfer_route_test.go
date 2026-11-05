@@ -25,6 +25,8 @@ type transferFake struct {
 	mu                  sync.Mutex
 	calls               []string
 	createHeaders       []http.Header
+	previewHeaders      []http.Header
+	unsignedPlans       int
 	createBodies        []map[string]any
 	deliveries          []string
 	canceled            []string
@@ -76,6 +78,13 @@ func (f *transferFake) handle(t *testing.T, r *http.Request) (int, http.Header, 
 	case r.URL.Path == "/api/v1/transfers/signed-pull/batch/prepare":
 		encoded, _ := json.Marshal(options)
 		return 200, header, fmt.Sprintf(`{"options":%s,"options_digest":%q,"execution_enabled":true}`, encoded, signedauth.JobOptionsDigest(options))
+	case r.URL.Path == "/api/v1/transfers/pull/batch/plan":
+		f.unsignedPlans++
+		return 200, header, `{"files_total":99}`
+	case r.URL.Path == "/api/v1/transfers/signed-pull/batch/plan":
+		f.previewHeaders = append(f.previewHeaders, r.Header.Clone())
+		header.Set("X-Jolt-Signed-Transfer-Plan", "v1")
+		return 200, header, `{"files_total":2,"bytes_total":12,"copy_count":2,"sources_omitted":3,"items":[]}`
 	case r.URL.Path == "/api/v1/transfers/signed-pull/batch":
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -288,5 +297,60 @@ func TestSignedModeRefusesDirectPullsAndSignedPullThroughTheProxy(t *testing.T) 
 	}
 	if len(fake.calls) != 0 {
 		t.Fatalf("the node was reached: %v", fake.calls)
+	}
+}
+
+func TestSignedLogicalTransferPreviewUsesTheCallersPolicyAndCreatesNothing(t *testing.T) {
+	fake := &transferFake{sourceIdentity: "source", destinationCaps: transferCaps}
+	handler, _, storage, session := transferRouteHarness(t, fake)
+	r := authenticatedRequest(http.MethodPost, "/api/v1/nodes/destination/transfers/plan", session, []byte(transferPayload))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	var body struct {
+		Plan struct {
+			FilesTotal     int `json:"files_total"`
+			SourcesOmitted int `json:"sources_omitted"`
+		} `json:"plan"`
+		Max int `json:"max_source_paths"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &body) != nil || body.Plan.FilesTotal != 2 || body.Plan.SourcesOmitted != 3 || body.Max != 1000 {
+		t.Fatalf("preview: %d %s", w.Code, w.Body)
+	}
+	if fake.unsignedPlans != 0 {
+		t.Fatal("the unfiltered plan was used")
+	}
+	if len(fake.previewHeaders) != 1 {
+		t.Fatalf("preview calls=%d", len(fake.previewHeaders))
+	}
+	binding, err := signedauth.VerifiedJobLeaseBinding(fake.previewHeaders[0].Get(signedAuthorizationHeader), fake.keys, "destination", time.Now().UTC())
+	if err != nil || !strings.HasPrefix(binding.PlanID, "preview-") || binding.SourceMountID != "source-media" {
+		t.Fatalf("binding=%+v err=%v", binding, err)
+	}
+	// A preview is not a job: no link, no node job, no first lease.
+	if len(fake.createHeaders) != 0 || len(fake.deliveries) != 0 {
+		t.Fatal("previewing created or authorized a job")
+	}
+	if active, err := storage.ListActiveJobAuthorizationLinks(context.Background(), 10); err != nil || len(active) != 0 {
+		t.Fatalf("links=%d err=%v", len(active), err)
+	}
+	// Each preview gets its own throwaway id.
+	again := httptest.NewRecorder()
+	handler.ServeHTTP(again, authenticatedRequest(http.MethodPost, "/api/v1/nodes/destination/transfers/plan", session, []byte(transferPayload)))
+	second, err := signedauth.VerifiedJobLeaseBinding(fake.previewHeaders[1].Get(signedAuthorizationHeader), fake.keys, "destination", time.Now().UTC())
+	if again.Code != http.StatusOK || err != nil || second.PlanID == binding.PlanID {
+		t.Fatalf("second preview: %d %v", again.Code, err)
+	}
+}
+
+func TestSignedLogicalTransferPreviewFailsClosed(t *testing.T) {
+	fake := &transferFake{sourceIdentity: "source", destinationCaps: `["signed_local_copy_execution_v1"]`}
+	handler, _, _, session := transferRouteHarness(t, fake)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, authenticatedRequest(http.MethodPost, "/api/v1/nodes/destination/transfers/plan", session, []byte(transferPayload)))
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "node_upgrade_required") {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	if fake.unsignedPlans != 0 || len(fake.previewHeaders) != 0 {
+		t.Fatal("an unprotected preview was offered instead")
 	}
 }

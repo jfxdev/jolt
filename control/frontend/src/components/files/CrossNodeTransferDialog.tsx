@@ -8,7 +8,7 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
-import { transferDestinationFolder } from "@/lib/transfer-preview";
+import { omittedSourcesNotice, transferDestinationFolder } from "@/lib/transfer-preview";
 import type {
   FileEntry,
   LogicalTransferRequest,
@@ -334,7 +334,8 @@ export function CrossNodeTransferDialog({
               <Summary label="Renomear" value={plan.rename_count || 0} />
               <Summary label="Ignorar" value={plan.skip_count || 0} />
               <Summary label="Conflitos" value={plan.conflict_count} />
-            </div>}</>}
+            </div>}
+            {omittedSourcesNotice(plan) && <p className="text-sm text-muted-foreground" role="status">{omittedSourcesNotice(plan)}</p>}</>}
             <DialogFooter>
               <Button type="button" variant="secondary" onClick={onClose}>Cancelar</Button>
               {plan && <Button type="button" variant="secondary" onClick={() => setPlan(null)}>Revisar</Button>}

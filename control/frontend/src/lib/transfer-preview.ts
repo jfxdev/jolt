@@ -58,3 +58,11 @@ export function transferPreviewEntries(entries: FileEntry[], destinationPath: st
     };
   });
 }
+
+/** A line telling the operator that some source entries will not be copied. */
+export function omittedSourcesNotice(plan: TransferPlan | null): string {
+  const omitted = plan?.sources_omitted ?? 0;
+  if (!Number.isInteger(omitted) || omitted <= 0) return "";
+  const noun = omitted === 1 ? "entrada da origem não está acessível" : "entradas da origem não estão acessíveis";
+  return `${omitted} ${noun} para você e ${omitted === 1 ? "não será copiada" : "não serão copiadas"}.`;
+}

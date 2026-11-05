@@ -3646,6 +3646,10 @@ func (s *Server) planLogicalTransfer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if s.config.SignedLocalJobs && resolved.Request.Operation == "copy" {
+		s.planSignedLogicalTransfer(w, r, resolved)
+		return
+	}
 	var plan any
 	if err := s.callNodeJSON(r.Context(), resolved.DestinationNode, http.MethodPost,
 		"/api/v1/transfers/pull/batch/plan", resolved.nodeRequest(r.Header.Get("X-Correlation-ID")), &plan,
