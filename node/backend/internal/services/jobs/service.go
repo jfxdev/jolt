@@ -200,45 +200,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 }
 
 func (s *Service) Create(ctx context.Context, request CreateRequest, idempotencyKey string) (entities.Job, bool, error) {
-	if err := s.validateHiddenPaths(ctx, request); err != nil {
+	request, err := s.normalizeCreateRequest(ctx, request)
+	if err != nil {
 		return entities.Job{}, false, err
-	}
-	if request.BandwidthLimit < 0 || request.BandwidthLimit > 1<<40 {
-		return entities.Job{}, false, fmt.Errorf("%w: bandwidth limit is outside the supported range", ErrInvalid)
-	}
-	if request.MaxParallelFiles < 0 || request.MaxParallelFiles > 32 {
-		return entities.Job{}, false, fmt.Errorf("%w: max parallel files is outside the supported range", ErrInvalid)
-	}
-	if request.MaxParallelChunks < 0 || request.MaxParallelChunks > 16 {
-		return entities.Job{}, false, fmt.Errorf("%w: max parallel chunks is outside the supported range", ErrInvalid)
-	}
-	if request.Type == "copy_local" {
-		policy, err := normalizeConflictPolicy(request.ConflictPolicy, request.Overwrite)
-		if err != nil {
-			return entities.Job{}, false, err
-		}
-		request.ConflictPolicy = policy
-		sourceChangePolicy, err := normalizeSourceChangePolicy(request.SourceChangePolicy)
-		if err != nil {
-			return entities.Job{}, false, err
-		}
-		request.SourceChangePolicy = sourceChangePolicy
-		if policy == "checksum" {
-			request.VerifyChecksum = true
-		}
-	}
-	if request.Type == "transfer_pull" {
-		if s.remote == nil || request.PeerNodeID == "" || request.SourceGrantID == "" || request.DestinationGrantID == "" {
-			return entities.Job{}, false, fmt.Errorf("%w: remote executor, peer and source/destination grants are required", ErrInvalid)
-		}
-		policy, err := normalizeConflictPolicy(request.ConflictPolicy, request.Overwrite)
-		if err != nil {
-			return entities.Job{}, false, err
-		}
-		request.ConflictPolicy = policy
-		if policy == "checksum" {
-			request.VerifyChecksum = true
-		}
 	}
 	job := s.newJob(request, "queued")
 	created, repeated, err := s.store.CreateJob(ctx, job, idempotencyKey)
@@ -247,6 +211,50 @@ func (s *Service) Create(ctx context.Context, request CreateRequest, idempotency
 		s.notify()
 	}
 	return created, repeated, err
+}
+
+func (s *Service) normalizeCreateRequest(ctx context.Context, request CreateRequest) (CreateRequest, error) {
+	if err := s.validateHiddenPaths(ctx, request); err != nil {
+		return CreateRequest{}, err
+	}
+	if request.BandwidthLimit < 0 || request.BandwidthLimit > 1<<40 {
+		return CreateRequest{}, fmt.Errorf("%w: bandwidth limit is outside the supported range", ErrInvalid)
+	}
+	if request.MaxParallelFiles < 0 || request.MaxParallelFiles > 32 {
+		return CreateRequest{}, fmt.Errorf("%w: max parallel files is outside the supported range", ErrInvalid)
+	}
+	if request.MaxParallelChunks < 0 || request.MaxParallelChunks > 16 {
+		return CreateRequest{}, fmt.Errorf("%w: max parallel chunks is outside the supported range", ErrInvalid)
+	}
+	if request.Type == "copy_local" {
+		policy, err := normalizeConflictPolicy(request.ConflictPolicy, request.Overwrite)
+		if err != nil {
+			return CreateRequest{}, err
+		}
+		request.ConflictPolicy = policy
+		sourceChangePolicy, err := normalizeSourceChangePolicy(request.SourceChangePolicy)
+		if err != nil {
+			return CreateRequest{}, err
+		}
+		request.SourceChangePolicy = sourceChangePolicy
+		if policy == "checksum" {
+			request.VerifyChecksum = true
+		}
+	}
+	if request.Type == "transfer_pull" {
+		if s.remote == nil || request.PeerNodeID == "" || request.SourceGrantID == "" || request.DestinationGrantID == "" {
+			return CreateRequest{}, fmt.Errorf("%w: remote executor, peer and source/destination grants are required", ErrInvalid)
+		}
+		policy, err := normalizeConflictPolicy(request.ConflictPolicy, request.Overwrite)
+		if err != nil {
+			return CreateRequest{}, err
+		}
+		request.ConflictPolicy = policy
+		if policy == "checksum" {
+			request.VerifyChecksum = true
+		}
+	}
+	return request, nil
 }
 
 func (s *Service) CreatePlannedDirectoryPull(ctx context.Context, request CreateRequest, plan entities.CopyPlan, idempotencyKey string) (entities.Job, bool, error) {
