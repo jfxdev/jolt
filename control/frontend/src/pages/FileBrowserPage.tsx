@@ -9,6 +9,7 @@ import { usePermissions } from "@/context/PermissionsContext";
 import { useApiError } from "@/hooks/useApiError";
 import { useConfirm } from "@/context/ConfirmProvider";
 import { formatBytes } from "@/lib/format";
+import { destructivePlanDescription, planUnavailable } from "@/lib/destructive-plan";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -341,7 +342,42 @@ export default function FileBrowserPage() {
     }
   }
 
+  // A directory goes through a plan: the node counts what would be removed, the
+  // operator confirms those numbers, and the node checks the tree is unchanged
+  // before it deletes anything. Without plans on the Control Tower, the direct
+  // route applies as before.
+  async function removeDirectory(entry: FileEntry): Promise<boolean> {
+    if (!mount) return true;
+    let plan;
+    try {
+      plan = await api.planDestructive(nodeId, mount.mount_id, {
+        operation: "delete",
+        source_path: entry.path,
+      });
+    } catch (error) {
+      if (planUnavailable(error as { code?: string; status?: number })) return false;
+      handleError(error);
+      return true;
+    }
+    try {
+      const approved = await confirm({
+        title: `Remover a pasta “${fileEntryDisplayName(entry)}”?`,
+        description: destructivePlanDescription(plan),
+        confirmText: "Remover pasta",
+        destructive: true,
+      });
+      if (!approved) return true;
+      await api.confirmDestructive(nodeId, mount.mount_id, plan.plan_id, plan.token);
+      await Promise.all([loadFiles(currentPath), refreshJobs()]);
+      toast.success("Remoção iniciada. Acompanhe o andamento nos jobs.");
+    } catch (error) {
+      handleError(error);
+    }
+    return true;
+  }
+
   async function removeEntry(entry: FileEntry) {
+    if (entry.type === "directory" && (await removeDirectory(entry))) return;
     if (
       !(await confirm({
         title: `Remover “${fileEntryDisplayName(entry)}”?`,

@@ -1,3 +1,4 @@
+import type { DestructivePlan } from "./destructive-plan";
 import type {
   ApiError,
   AccessGroup,
@@ -503,6 +504,34 @@ export const api = {
       {
         method: "DELETE",
         headers: { "Idempotency-Key": crypto.randomUUID() },
+      },
+    ),
+  planDestructive: (
+    nodeId: string,
+    mountId: string,
+    plan: {
+      operation: "delete" | "move";
+      source_path: string;
+      destination_path?: string;
+      overwrite?: boolean;
+    },
+  ) =>
+    request<DestructivePlan>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/files/destructive-plans`,
+      { method: "POST", body: JSON.stringify(plan) },
+    ),
+  confirmDestructive: (
+    nodeId: string,
+    mountId: string,
+    planId: string,
+    token: string,
+  ) =>
+    request<unknown>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/files/destructive-plans/${encodeURIComponent(planId)}/confirm`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({ token }),
       },
     ),
   pairingInvites: (nodeId: string) =>
