@@ -285,6 +285,17 @@ dos modos assinados; sem elas a operação falha fechada, não volta ao caminho 
 - Desligar a opção não apaga as regras: uma negação tipada já gravada volta a negar
   tudo no caminho, como antes da opção existir.
 
+**Casos dourados**
+
+Quatro conjuntos travam o comportamento. Mudar uma semântica exige mudar o caso de propósito:
+
+- `testdata/filetype-selectors.json` e `testdata/filetype-context-cases.json`, carregados pelos testes dos dois módulos: extensão em maiúsculas, ponto final, espaços, nome só com ponto, dupla extensão, homógrafos, `\`, NUL, `.`/`..`, barra final, mount em maiúsculas.
+- `testdata/typed-operation-cases.json`, executado pelo Control Tower contra um node de mentira (`TestTypedOperationGoldenCases`): leitura, listagem, busca, ZIP, uso de disco, envio, criação de pasta, apagar, mover e copiar com nomes disfarçados (`./`, `//`, `..`, `%2E`, `%252E`, parâmetro repetido). O que importa: ou recusa aqui, ou adia ao node numa cópia protegida, ou chega ao node com contexto assinado. Nada chega sem assinatura quando uma regra tipada cobre o caminho, exceto o que o Control Tower decidiu sozinho.
+- O mesmo arquivo traz perfis de node antigos: sem nenhuma capacidade, sem leitura de árvore, sem confirmação do filtro (`X-Jolt-Access-Applied`) e com a consulta de capacidades falhando. Todos falham fechados e nunca entregam a resposta do node.
+- `TestSignedReadRefusesEveryTamperedEnvelope` (node): 34 variações de um envelope válido (assinatura, payload, regra de negação removida, validade estendida, chave desconhecida, versão, JSON duplicado ou com campo extra, cabeçalho duplicado, replay em outro arquivo, operação, mount, node ou raiz) devem ser recusadas sem servir o arquivo nem responder como se o filtro tivesse sido aplicado. `TestPlanCopyFilteredDestinationNamesCannotEvadeATypeDenial` faz o mesmo para o nome do destino de uma cópia.
+
+Cada conjunto foi conferido por mutação: enfraquecer a verificação de assinatura, validade, duração máxima, campos desconhecidos, chaves duplicadas, as checagens de capacidade ou a confirmação do node faz algum caso falhar.
+
 **O que ainda não existe**
 
 - Não há conferência automática contra o que cada credencial de agente permite (teto de
