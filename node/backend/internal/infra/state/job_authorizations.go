@@ -256,3 +256,13 @@ func (s *Store) DestructivePlanForJob(ctx context.Context, jobID string) (plan D
 	})
 	return plan, err
 }
+
+// JobAuthorizationBinding returns the scope a job's lease is bound to: the
+// actor, the nodes, grants, mounts and roots. It carries no access context.
+func (s *Store) JobAuthorizationBinding(ctx context.Context, jobID string) (signedauth.Binding, error) {
+	authorization, err := s.GetJobAuthorization(ctx, jobID)
+	if err != nil {
+		return signedauth.Binding{}, err
+	}
+	return authorization.Binding, nil
+}

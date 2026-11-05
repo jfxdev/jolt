@@ -75,7 +75,24 @@ func (s *Store) CreateJobWithItemsHashed(ctx context.Context, j entities.Job, it
 // non-runnable state. This is internal groundwork; the caller must validate
 // request permissions and supply a collision-resistant request hash.
 func (s *Store) CreateJobAwaitingAuthorization(ctx context.Context, j entities.Job, actorID, credentialID, key, hash string) (entities.Job, bool, error) {
-	if !signedauth.ValidKeyID(j.ID) || !signedauth.ValidKeyID(j.MountID) || !signedauth.ValidKeyID(actorID) || !signedauth.ValidKeyID(credentialID) || key == "" || hash == "" || j.State != "queued" || j.DestructivePlanID != "" || j.SignedAuthBound || j.RequiresSignedAuth || j.SignedAuthActorID != "" || j.SignedAuthCredentialID != "" || (j.Type != "delete" && j.Type != "copy_local" && j.Type != "move_local") {
+	if j.Type != "delete" && j.Type != "copy_local" && j.Type != "move_local" {
+		return entities.Job{}, false, ErrInUse
+	}
+	return s.createJobAwaitingAuthorization(ctx, j, nil, actorID, credentialID, key, hash)
+}
+
+// CreatePlannedJobAwaitingAuthorization does the same for a node-to-node copy,
+// persisting its plan items in the same transaction so the job can never run
+// without them.
+func (s *Store) CreatePlannedJobAwaitingAuthorization(ctx context.Context, j entities.Job, items []entities.JobItem, actorID, credentialID, key, hash string) (entities.Job, bool, error) {
+	if j.Type != "transfer_pull_batch" || len(items) == 0 {
+		return entities.Job{}, false, ErrInUse
+	}
+	return s.createJobAwaitingAuthorization(ctx, j, items, actorID, credentialID, key, hash)
+}
+
+func (s *Store) createJobAwaitingAuthorization(ctx context.Context, j entities.Job, items []entities.JobItem, actorID, credentialID, key, hash string) (entities.Job, bool, error) {
+	if !signedauth.ValidKeyID(j.ID) || !signedauth.ValidKeyID(j.MountID) || !signedauth.ValidKeyID(actorID) || !signedauth.ValidKeyID(credentialID) || key == "" || hash == "" || j.State != "queued" || j.DestructivePlanID != "" || j.SignedAuthBound || j.RequiresSignedAuth || j.SignedAuthActorID != "" || j.SignedAuthCredentialID != "" {
 		return entities.Job{}, false, ErrInUse
 	}
 	reused := false
@@ -108,6 +125,18 @@ func (s *Store) CreateJobAwaitingAuthorization(ctx context.Context, j entities.J
 		j.State, j.Phase, j.Error, j.NextAttemptAt = "waiting_validation", "waiting_authorization", "job execution requires authorization and validation", nil
 		if err := tx.put("jobs", j.ID, j.PeerNodeID, order(j.CreatedAt), j); err != nil {
 			return err
+		}
+		seen := map[string]bool{}
+		for _, item := range items {
+			item.JobID = j.ID
+			k := itemKey(item)
+			if seen[k] {
+				return errors.New("duplicate job item")
+			}
+			seen[k] = true
+			if err := tx.put("items", k, j.ID, fmt.Sprintf("%012d", item.Ordinal), item); err != nil {
+				return err
+			}
 		}
 		return tx.put("idempotency", key, "", "", idempotencyRecord{j.ID, hash})
 	})
@@ -172,7 +201,7 @@ func (s *Store) UpdateJobWithEvent(ctx context.Context, j entities.Job, event en
 // a confirmed destructive plan. A delete or move without a plan never runs.
 func securedJobKind(job entities.Job) bool {
 	switch job.Type {
-	case "copy_local":
+	case "copy_local", "transfer_pull_batch":
 		return job.DestructivePlanID == ""
 	case "delete", "move_local":
 		return job.DestructivePlanID != ""

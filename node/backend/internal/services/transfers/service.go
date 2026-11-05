@@ -2,6 +2,7 @@ package transfers
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,10 +21,12 @@ import (
 	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/entities"
 	"github.com/jfxdev/jolt/backend/internal/filepolicy"
+	"github.com/jfxdev/jolt/backend/internal/filetypes"
 	joltcrypto "github.com/jfxdev/jolt/backend/internal/infra/crypto"
 
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
 	"github.com/jfxdev/jolt/backend/internal/services/jobs"
+	"github.com/jfxdev/jolt/backend/internal/signedauth"
 )
 
 var (
@@ -374,28 +377,36 @@ func (s *Service) CreateDirectoryPull(ctx context.Context, request PullRequest, 
 }
 
 func (s *Service) PlanBatchPull(ctx context.Context, request BatchPullRequest) (entities.CopyPlan, error) {
+	plan, _, err := s.planBatch(ctx, request, nil)
+	return plan, err
+}
+
+// planBatch plans a batch pull. With access, only source entries the signed
+// policy lets the actor list and read are planned and every destination is
+// checked against it; omitted counts the source entries left out.
+func (s *Service) planBatch(ctx context.Context, request BatchPullRequest, access *jobs.TransferAccess) (entities.CopyPlan, int, error) {
 	operation := strings.ToLower(strings.TrimSpace(request.Operation))
 	if operation == "" {
 		operation = "copy"
 	}
 	if operation != "copy" && operation != "move" {
-		return entities.CopyPlan{}, fmt.Errorf("%w: operation must be copy or move", ErrInvalid)
+		return entities.CopyPlan{}, 0, fmt.Errorf("%w: operation must be copy or move", ErrInvalid)
 	}
 	paths, err := normalizeBatchPaths(request.SourcePaths)
 	if err != nil {
-		return entities.CopyPlan{}, err
+		return entities.CopyPlan{}, 0, err
 	}
 	sourceNames, err := batchSourceNames(request.SourcePaths, request.SourceNames)
 	if err != nil {
-		return entities.CopyPlan{}, err
+		return entities.CopyPlan{}, 0, err
 	}
 	peer, err := s.trustedPeer(ctx, request.PeerNodeID)
 	if err != nil {
-		return entities.CopyPlan{}, err
+		return entities.CopyPlan{}, 0, err
 	}
 	destinationGrant, destinationBase, err := s.receiveDestination(ctx, peer.NodeID, request.DestinationGrantID, request.DestinationPath, request.ConflictPolicy)
 	if err != nil {
-		return entities.CopyPlan{}, err
+		return entities.CopyPlan{}, 0, err
 	}
 	policy := normalizePolicy(request.ConflictPolicy)
 	checksum := request.VerifyChecksum || policy == "checksum" || operation == "move"
@@ -403,11 +414,12 @@ func (s *Service) PlanBatchPull(ctx context.Context, request BatchPullRequest) (
 		DestinationPath: destinationBase, ConflictPolicy: policy,
 		Items: make([]entities.JobItem, 0),
 	}
+	omitted := 0
 	seenDestinations := make(map[string]struct{}, len(paths))
 	for _, sourcePath := range paths {
 		if operation == "move" {
 			if err := s.validateRemoteMoveSource(ctx, peer, request.SourceGrantID, sourcePath); err != nil {
-				return entities.CopyPlan{}, err
+				return entities.CopyPlan{}, 0, err
 			}
 		}
 		rootName := sourceNames[sourcePath]
@@ -415,13 +427,13 @@ func (s *Service) PlanBatchPull(ctx context.Context, request BatchPullRequest) (
 			rootName = path.Base(sourcePath)
 		}
 		if _, exists := seenDestinations[rootName]; exists {
-			return entities.CopyPlan{}, fmt.Errorf("%w: selected roots map to the same destination name", ErrInvalid)
+			return entities.CopyPlan{}, 0, fmt.Errorf("%w: selected roots map to the same destination name", ErrInvalid)
 		}
 		seenDestinations[rootName] = struct{}{}
 		rootDestination := joinRelative(destinationBase, rootName)
-		rootPlan, err := s.planBatchRoot(ctx, peer, request.SourceGrantID, sourcePath, destinationGrant, rootDestination, policy, checksum, operation)
+		rootPlan, rootOmitted, err := s.planBatchRoot(ctx, peer, request.SourceGrantID, sourcePath, destinationGrant, rootDestination, policy, checksum, operation, access)
 		if err != nil {
-			return entities.CopyPlan{}, err
+			return entities.CopyPlan{}, 0, err
 		}
 		for index := range rootPlan.Items {
 			item := &rootPlan.Items[index]
@@ -440,6 +452,7 @@ func (s *Service) PlanBatchPull(ctx context.Context, request BatchPullRequest) (
 			}
 			plan.Items = append(plan.Items, *item)
 		}
+		omitted += rootOmitted
 		plan.BytesTotal += rootPlan.BytesTotal
 		plan.FilesTotal += rootPlan.FilesTotal
 		plan.CopyCount += rootPlan.CopyCount
@@ -447,7 +460,7 @@ func (s *Service) PlanBatchPull(ctx context.Context, request BatchPullRequest) (
 		plan.RenameCount += rootPlan.RenameCount
 		plan.ConflictCount += rootPlan.ConflictCount
 	}
-	return plan, nil
+	return plan, omitted, nil
 }
 
 func (s *Service) CreateBatchPull(ctx context.Context, request BatchPullRequest, idempotencyKey, requestHash string) (entities.Job, bool, error) {
@@ -485,17 +498,34 @@ func (s *Service) CreateBatchPull(ctx context.Context, request BatchPullRequest,
 	}, plan, idempotencyKey, requestHash)
 }
 
-func (s *Service) planBatchRoot(ctx context.Context, peer entities.Peer, sourceGrantID, sourcePath string, grant entities.TransferPathGrant, destinationPath, policy string, checksum bool, operation string) (entities.CopyPlan, error) {
+func (s *Service) planBatchRoot(ctx context.Context, peer entities.Peer, sourceGrantID, sourcePath string, grant entities.TransferPathGrant, destinationPath, policy string, checksum bool, operation string, access *jobs.TransferAccess) (entities.CopyPlan, int, error) {
 	entries, err := s.fetchRemoteManifest(ctx, peer, sourceGrantID, sourcePath, checksum)
 	if err != nil {
-		return entities.CopyPlan{}, err
+		return entities.CopyPlan{}, 0, err
 	}
 	plan := entities.CopyPlan{SourcePath: sourcePath, DestinationPath: destinationPath, ConflictPolicy: policy, Items: make([]entities.JobItem, 0, len(entries))}
 	now := time.Now().UTC()
 	blockedDirectories := make(map[string]struct{})
+	omittedDirectories := make(map[string]struct{})
+	omitted := 0
 	for _, entry := range entries {
 		if entry.Path == ".." || strings.HasPrefix(entry.Path, "../") || (entry.Type != "file" && entry.Type != "directory") || entry.Size < 0 {
-			return entities.CopyPlan{}, fmt.Errorf("%w: remote manifest contains an invalid item", ErrInvalid)
+			return entities.CopyPlan{}, 0, fmt.Errorf("%w: remote manifest contains an invalid item", ErrInvalid)
+		}
+		if access != nil {
+			// Descendants of an omitted directory are never judged, so their names
+			// are not even evaluated.
+			mountPath := access.SourceMountPath(joinRelative(sourcePath, entry.Path))
+			if hasBlockedParent(entry.Path, omittedDirectories) || !access.Source.AllowsListedEntry(mountPath, entry.Type) {
+				if entry.Path == "." {
+					return entities.CopyPlan{}, 0, filesystem.ErrFilteredHidden
+				}
+				omitted++
+				if entry.Type == "directory" {
+					omittedDirectories[entry.Path] = struct{}{}
+				}
+				continue
+			}
 		}
 		item := entities.JobItem{
 			SourcePath: joinRelative(sourcePath, entry.Path), DestinationPath: joinRelative(destinationPath, entry.Path),
@@ -506,14 +536,19 @@ func (s *Service) planBatchRoot(ctx context.Context, peer entities.Peer, sourceG
 			if errors.Is(err, ErrForbidden) && operation == "copy" {
 				continue
 			}
-			return entities.CopyPlan{}, err
+			return entities.CopyPlan{}, 0, err
 		}
 		if hasBlockedParent(entry.Path, blockedDirectories) {
 			item.Action = "conflict"
 		} else {
 			item.Action, item.DestinationPath, err = s.planRemoteAction(ctx, grant, item, policy)
 			if err != nil {
-				return entities.CopyPlan{}, err
+				return entities.CopyPlan{}, 0, err
+			}
+			if access != nil {
+				if err := s.checkDestinationAccess(ctx, grant.MountID, item, access); err != nil {
+					return entities.CopyPlan{}, 0, err
+				}
 			}
 		}
 		if item.Type == "directory" && item.Action == "conflict" {
@@ -536,7 +571,7 @@ func (s *Service) planBatchRoot(ctx context.Context, peer entities.Peer, sourceG
 		}
 		plan.Items = append(plan.Items, item)
 	}
-	return plan, nil
+	return plan, omitted, nil
 }
 
 func normalizeBatchPaths(values []string) ([]string, error) {
@@ -626,7 +661,15 @@ func (s *Service) executePullFile(ctx context.Context, peer entities.Peer, grant
 		if currentGrant.MountID != job.MountID {
 			return ErrForbidden
 		}
-		return validateGrantDestination(currentGrant, job.Destination)
+		if err := validateGrantDestination(currentGrant, job.Destination); err != nil {
+			return err
+		}
+		if access, filtered := jobs.TransferAccessFrom(ctx); filtered {
+			// The signed policy is checked again right before the file appears.
+			_, _, err := s.files.InspectCopyDestinationFiltered(ctx, currentGrant.MountID, job.Destination, "file", access.Destination)
+			return err
+		}
+		return nil
 	}
 	if job.ConflictPolicy == "skip" {
 		if _, err := s.files.Metadata(ctx, grant.MountID, job.Destination); err == nil {
@@ -777,6 +820,11 @@ func (s *Service) ExecuteDirectoryPull(ctx context.Context, job entities.Job, pr
 	if err != nil {
 		return job.BytesCompleted, err
 	}
+	// A job bound to a signed authorization never runs without its filters.
+	access, filtered := jobs.TransferAccessFrom(ctx)
+	if (job.SignedAuthBound || job.RequiresSignedAuth) && !filtered {
+		return job.BytesCompleted, ErrForbidden
+	}
 	items, err := s.store.ListJobItems(ctx, job.ID)
 	if err != nil {
 		return job.BytesCompleted, err
@@ -815,6 +863,21 @@ func (s *Service) ExecuteDirectoryPull(ctx context.Context, job entities.Job, pr
 		}
 		item.Attempt++
 		item.Error, item.UpdatedAt = "", time.Now().UTC()
+		if filtered {
+			// Re-judge each entry with the current policy: it may have changed
+			// since the plan was made.
+			if denied := s.itemDenied(ctx, grant.MountID, item, access); denied != "" {
+				item.State, item.Error = "failed", denied
+				warnings++
+				if item.Type == "file" {
+					filesFailed++
+				}
+				if err := s.store.UpdateJobItem(ctx, item); err != nil {
+					return bytesCompleted, err
+				}
+				continue
+			}
+		}
 		switch item.Action {
 		case "skip":
 			item.State = "skipped"
@@ -944,7 +1007,10 @@ func (s *Service) ExecuteDirectoryPull(ctx context.Context, job entities.Job, pr
 			return completed, firstErr
 		}
 	}
-	if warnings > 0 {
+	if warnings > 0 || job.SourcesOmitted > 0 {
+		if job.SourcesOmitted > 0 {
+			return bytesCompleted, jobs.WarningFor(warnings, job.SourcesOmitted)
+		}
 		return bytesCompleted, fmt.Errorf("%w: %d remote item(s) could not be copied", jobs.ErrWarnings, warnings)
 	}
 	if job.Type == "transfer_move_batch" {
@@ -1591,4 +1657,124 @@ func (b *closingBody) Close() error {
 	err := b.ReadCloser.Close()
 	b.close()
 	return err
+}
+
+// checkDestinationAccess confirms the signed policy lets the actor write the
+// item's final destination. Items that will not be written need no check.
+func (s *Service) checkDestinationAccess(ctx context.Context, mountID string, item entities.JobItem, access *jobs.TransferAccess) error {
+	switch item.Action {
+	case "copy", "overwrite", "rename", "create":
+	default:
+		return nil
+	}
+	_, _, err := s.files.InspectCopyDestinationFiltered(ctx, mountID, item.DestinationPath, item.Type, access.Destination)
+	return err
+}
+
+// signedTransferAccess builds the filters of a lease for a node-to-node copy.
+func signedTransferAccess(filter *filetypes.Filter, binding signedauth.Binding) (jobs.TransferAccess, error) {
+	destination, err := filesystem.NewAccessFilter(filter, "nodes/"+binding.DestinationNodeID+"/files/mounts/"+binding.DestinationMountID)
+	if err != nil {
+		return jobs.TransferAccess{}, ErrInvalid
+	}
+	source, err := filesystem.NewAccessFilter(filter, "nodes/"+binding.SourceNodeID+"/files/mounts/"+binding.SourceMountID)
+	if err != nil {
+		return jobs.TransferAccess{}, ErrInvalid
+	}
+	return jobs.TransferAccess{Destination: destination, Source: source, SourceRoot: binding.SourceRoot}, nil
+}
+
+func (s *Service) signedBatchJobRequest(ctx context.Context, request BatchPullRequest, sourceRoot, destinationMount string) (jobs.CreateRequest, string, error) {
+	if op := strings.ToLower(strings.TrimSpace(request.Operation)); op != "" && op != "copy" {
+		return jobs.CreateRequest{}, "", fmt.Errorf("%w: signed transfers only copy; a move needs its own plan", ErrInvalid)
+	}
+	destinationGrant, destinationBase, err := s.receiveDestination(ctx, strings.TrimSpace(request.PeerNodeID), request.DestinationGrantID, request.DestinationPath, request.ConflictPolicy)
+	if err != nil {
+		return jobs.CreateRequest{}, "", err
+	}
+	if destinationMount != "" && destinationGrant.MountID != destinationMount {
+		return jobs.CreateRequest{}, "", ErrForbidden
+	}
+	if destinationBase == "" {
+		destinationBase = "."
+	}
+	return jobs.CreateRequest{
+		Type: "transfer_pull_batch", MountID: destinationGrant.MountID, PeerNodeID: strings.TrimSpace(request.PeerNodeID),
+		SourceGrantID: strings.TrimSpace(request.SourceGrantID), DestinationGrantID: strings.TrimSpace(request.DestinationGrantID),
+		SourcePath: sourceRoot, Destination: destinationBase, ConflictPolicy: normalizePolicy(request.ConflictPolicy),
+		VerifyChecksum: request.VerifyChecksum, BandwidthLimit: request.BandwidthLimit, MaxParallelFiles: request.MaxParallelFiles,
+		MaxParallelChunks: request.MaxParallelChunks, CorrelationID: request.CorrelationID,
+	}, destinationBase, nil
+}
+
+// PrepareSignedBatchPull normalizes a node-to-node copy into the immutable
+// options a lease binds, without planning or creating anything.
+func (s *Service) PrepareSignedBatchPull(ctx context.Context, request BatchPullRequest) (signedauth.JobOptions, string, error) {
+	jobRequest, _, err := s.signedBatchJobRequest(ctx, request, ".", "")
+	if err != nil {
+		return signedauth.JobOptions{}, "", err
+	}
+	return s.jobs.PrepareSignedBatchPull(jobRequest)
+}
+
+// CreateSignedBatchPull plans a node-to-node copy under the filter of a signed,
+// job-bound lease and persists the job awaiting that authorization. Source
+// entries the filter hides are left out and counted; a destination the policy
+// does not let the actor write fails the whole plan.
+func (s *Service) CreateSignedBatchPull(ctx context.Context, request BatchPullRequest, nodeID, envelope, idempotencyKey string, keys map[string]ed25519.PublicKey) (entities.Job, bool, error) {
+	now := time.Now().UTC()
+	binding, err := signedauth.VerifiedJobLeaseBinding(envelope, keys, nodeID, now)
+	if err != nil || binding.Operation != "transfer_pull_batch" || binding.DestinationNodeID != nodeID || binding.SourceNodeID != strings.TrimSpace(request.PeerNodeID) ||
+		binding.SourceGrantID != strings.TrimSpace(request.SourceGrantID) || binding.DestinationGrantID != strings.TrimSpace(request.DestinationGrantID) || binding.JobOptionsDigest == "" {
+		return entities.Job{}, false, ErrInvalid
+	}
+	_, filter, err := signedauth.VerifyJobLease(envelope, keys, binding, nodeID, 1, now)
+	if err != nil {
+		return entities.Job{}, false, ErrInvalid
+	}
+	// A repeated request returns its job without fetching the manifest again.
+	hash, err := jobs.SignedBatchPullHash(binding)
+	if err != nil {
+		return entities.Job{}, false, ErrInvalid
+	}
+	if existing, storedHash, found, err := s.store.FindJobByIdempotency(ctx, idempotencyKey); err != nil {
+		return entities.Job{}, false, err
+	} else if found {
+		if storedHash != hash || !existing.RequiresSignedAuth {
+			return entities.Job{}, false, contracts.ErrIdempotencyConflict
+		}
+		return existing, true, nil
+	}
+	jobRequest, destinationBase, err := s.signedBatchJobRequest(ctx, request, binding.SourceRoot, binding.DestinationMountID)
+	if err != nil {
+		return entities.Job{}, false, err
+	}
+	if binding.DestinationRoot != destinationBase {
+		return entities.Job{}, false, ErrInvalid
+	}
+	access, err := signedTransferAccess(filter, binding)
+	if err != nil {
+		return entities.Job{}, false, err
+	}
+	plan, omitted, err := s.planBatch(ctx, request, &access)
+	if err != nil {
+		return entities.Job{}, false, err
+	}
+	plan.DestinationPath = destinationBase
+	return s.jobs.CreateSignedPlannedBatchPull(ctx, jobRequest, plan, omitted, nodeID, envelope, idempotencyKey, keys)
+}
+
+// itemDenied explains, without naming any path, why the current policy no
+// longer lets a planned item run; it returns an empty string when it does.
+func (s *Service) itemDenied(ctx context.Context, mountID string, item entities.JobItem, access jobs.TransferAccess) string {
+	if !access.Source.AllowsListedEntry(access.SourceMountPath(item.SourcePath), item.Type) {
+		return "the source is no longer permitted"
+	}
+	switch item.Action {
+	case "copy", "overwrite", "rename", "create":
+		if err := s.checkDestinationAccess(ctx, mountID, item, &access); err != nil {
+			return "the destination is no longer permitted"
+		}
+	}
+	return ""
 }

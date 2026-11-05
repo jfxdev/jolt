@@ -1267,11 +1267,19 @@ func mountReady(mount entities.Mount) bool {
 func (s *Service) executeOperation(ctx context.Context, job entities.Job) (int64, error) {
 	if job.SignedAuthBound || job.RequiresSignedAuth || job.DestructivePlanID != "" {
 		destructive := (job.Type == "delete" || job.Type == "move_local") && job.DestructivePlanID != "" && job.SignedAuthBound
-		if !destructive && !(job.Type == "copy_local" && job.DestructivePlanID == "") {
+		pull := job.Type == "transfer_pull_batch" && job.DestructivePlanID == "" && job.SignedAuthBound
+		if !destructive && !pull && !(job.Type == "copy_local" && job.DestructivePlanID == "") {
 			return 0, ErrAuthorizationRequired
 		}
 		if destructive {
 			return s.executeDestructive(ctx, job)
+		}
+		if pull {
+			// The remote executor enforces the filters on every entry; it must
+			// never run a protected pull without them.
+			if _, ok := TransferAccessFrom(ctx); !ok {
+				return 0, ErrAuthorizationRequired
+			}
 		}
 	}
 	switch job.Type {

@@ -181,6 +181,8 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 		mux.HandleFunc("POST /api/v1/transfers/pull/directory", s.createDirectoryPullTransfer)
 		mux.HandleFunc("POST /api/v1/transfers/pull/batch/plan", s.planBatchPullTransfer)
 		mux.HandleFunc("POST /api/v1/transfers/pull/batch", s.createBatchPullTransfer)
+		mux.HandleFunc("POST /api/v1/transfers/signed-pull/batch/prepare", s.prepareSignedBatchPull)
+		mux.HandleFunc("POST /api/v1/transfers/signed-pull/batch", s.createSignedBatchPull)
 	}
 	if s.registry != nil && s.config.MetricsToken != "" {
 		mux.HandleFunc("GET /metrics", s.metrics)
@@ -385,6 +387,9 @@ func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 			capabilities = append(capabilities, "signed_local_copy_execution_v1")
 			if _, ok := s.store.(jobs.DestructivePlanStore); ok {
 				capabilities = append(capabilities, "destructive_plans_v1")
+			}
+			if s.transfers != nil {
+				capabilities = append(capabilities, "signed_transfer_pull_v1")
 			}
 		}
 	}
@@ -2796,6 +2801,68 @@ paths:
                 verify_checksum: {type: boolean}
       responses:
         "200": {description: Complete totals and an item preview truncated to 500 entries when necessary}
+  /api/v1/transfers/signed-pull/batch/prepare:
+    post:
+      summary: Normalizes a node-to-node copy into the options a lease binds
+      description: Requires the operational bearer token. It plans and creates nothing. Only copies are accepted; a move needs its own plan. Available when the node runs signed jobs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [peer_node_id, source_grant_id, source_paths, destination_grant_id, destination_path]
+              properties:
+                peer_node_id: {type: string}
+                source_grant_id: {type: string}
+                source_paths: {type: array, items: {type: string}, description: Paths relative to the source grant}
+                source_names: {type: array, items: {type: string}}
+                destination_grant_id: {type: string}
+                destination_path: {type: string}
+                operation: {type: string, enum: [copy]}
+                conflict_policy: {type: string, enum: [skip, overwrite, rename, fail, checksum]}
+                verify_checksum: {type: boolean}
+                bandwidth_limit_bytes_per_second: {type: integer}
+                max_parallel_files: {type: integer}
+                max_parallel_chunks: {type: integer}
+      responses:
+        "200": {description: Normalized options, digest and execution_enabled}
+        "400": {description: Invalid request, a move, or the ask conflict policy}
+        "503": {description: Signed transfers unavailable on this node}
+  /api/v1/transfers/signed-pull/batch:
+    post:
+      summary: Plans a node-to-node copy under a signed lease and creates it awaiting authorization
+      description: Requires the operational bearer token, a job-bound signed envelope and an Idempotency-Key. The plan keeps only the source entries the signed policy lets the actor list and read (the count of omitted entries is recorded, never their names) and fails if a destination is not writable under it. The job is queued once its first authorization is registered and runs only while that authorization is renewed.
+      parameters:
+        - {in: header, name: X-Jolt-Access-Authorization, required: true, schema: {type: string}}
+        - {in: header, name: Idempotency-Key, required: true, schema: {type: string, maxLength: 128}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [peer_node_id, source_grant_id, source_paths, destination_grant_id, destination_path]
+              properties:
+                peer_node_id: {type: string}
+                source_grant_id: {type: string}
+                source_paths: {type: array, items: {type: string}, description: Paths relative to the source grant}
+                source_names: {type: array, items: {type: string}}
+                destination_grant_id: {type: string}
+                destination_path: {type: string}
+                operation: {type: string, enum: [copy]}
+                conflict_policy: {type: string, enum: [skip, overwrite, rename, fail, checksum]}
+                verify_checksum: {type: boolean}
+                bandwidth_limit_bytes_per_second: {type: integer}
+                max_parallel_files: {type: integer}
+                max_parallel_chunks: {type: integer}
+      responses:
+        "200": {description: Existing job returned for an identical request}
+        "202": {description: Job created in waiting_validation}
+        "400": {description: Invalid request, scope or signature}
+        "403": {description: A grant or the peer does not permit the transfer}
+        "409": {description: Idempotency key or job identifier conflict}
+        "503": {description: Signed transfers unavailable on this node}
   /api/v1/transfers/pull/batch:
     post:
       description: Persists one destination-owned batch job. Move forces checksum verification and source removal is requested only after every item has completed.
