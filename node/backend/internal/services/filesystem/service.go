@@ -477,7 +477,19 @@ func (s *Service) OpenFiltered(ctx context.Context, mountID, relative string, fi
 
 // Checksum calculates SHA-256 as a stream so large files are never loaded into memory.
 func (s *Service) Checksum(ctx context.Context, mountID, relative string) (string, error) {
-	file, _, err := s.Open(ctx, mountID, relative)
+	return s.checksumFiltered(ctx, mountID, relative, nil)
+}
+
+// ChecksumFiltered hashes only a file readable through the supplied filter.
+func (s *Service) ChecksumFiltered(ctx context.Context, mountID, relative string, filter *AccessFilter) (string, error) {
+	if filter == nil || filter.context == nil {
+		return "", ErrInvalid
+	}
+	return s.checksumFiltered(ctx, mountID, relative, filter)
+}
+
+func (s *Service) checksumFiltered(ctx context.Context, mountID, relative string, filter *AccessFilter) (string, error) {
+	file, _, err := s.OpenFiltered(ctx, mountID, relative, filter)
 	if err != nil {
 		return "", err
 	}
