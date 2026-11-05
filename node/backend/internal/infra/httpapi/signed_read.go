@@ -29,7 +29,7 @@ func (s *Server) guardSignedContext(next http.Handler) http.Handler {
 			return
 		}
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
-		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/jobs/signed-local-copy" {
+		if r.Method == http.MethodPost && (r.URL.Path == "/api/v1/jobs/signed-local-copy" || r.URL.Path == "/api/v1/transfers/signed-pull/batch" || r.URL.Path == "/api/v1/transfers/signed-pull/batch/plan") {
 			next.ServeHTTP(w, r)
 			return
 		}
