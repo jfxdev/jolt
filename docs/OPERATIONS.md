@@ -252,6 +252,22 @@ dos modos assinados; sem elas a operação falha fechada, não volta ao caminho 
 - No navegador de arquivos, uma entrada `visible` negada aparece com cadeado, sem
   abrir, baixar, selecionar nem menu de ações. As `hidden` não aparecem.
 
+**Acesso efetivo**
+
+- Access → Acesso efetivo mostra, para uma identidade (usuário ou conta de serviço) e uma
+  lista de caminhos, o que ela pode fazer em cada capability. Informe o tipo da entrada:
+  uma regra por tipo trata arquivo e pasta de forma diferente (`key.pem` como arquivo é
+  negado; uma pasta com esse nome continua navegável).
+- Cada célula é *permitido*, *negado* (sem concessão ou negação por caminho), *oculto*
+  (regra por tipo; o arquivo some e o acesso direto responde 404) ou *bloqueado* (aparece,
+  mas responde 403). Passar o mouse mostra as policies envolvidas.
+- Quem tem a role `admin` aparece como “administrador de fato”; uma conta de serviço em
+  node fora dos seus grupos de acesso ativos é negada. Exige `sudo` em
+  `control-tower/policies`, aceita até 50 caminhos por consulta e é auditada
+  (`effective_access`).
+- A consulta usa o mesmo avaliador do node, então é a resposta exata para o tipo informado.
+  Não substitui um teste com a conta real quando houver teto de agente ou CIDR.
+
 **Semântica**
 
 - O **node** decide o tipo real de cada entrada. Negação tipada vale só para arquivos;
@@ -271,9 +287,8 @@ dos modos assinados; sem elas a operação falha fechada, não volta ao caminho 
 
 **O que ainda não existe**
 
-- A **matriz de acesso efetivo** (quem pode o quê, por tipo) não existe na interface nem
-  na API: para conferir uma regra, leia a frase que o editor mostra e teste com uma
-  conta real.
+- Não há conferência automática contra o que cada credencial de agente permite (teto de
+  capabilities por token, CIDR): a matriz abaixo não os considera.
 - Não houve validação sob carga nem entre hosts. Trate o recurso como experimental.
 
 ## Rotinas

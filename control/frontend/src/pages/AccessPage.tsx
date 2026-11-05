@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { usePermissions } from "@/context/PermissionsContext";
 import { AccessGroupsDialog } from "@/components/admin/AccessGroupsDialog";
+import { EffectiveAccessPanel } from "@/components/admin/EffectiveAccessPanel";
 import { PoliciesDialog } from "@/components/admin/PoliciesDialog";
 import { RolesDialog } from "@/components/admin/RolesDialog";
 import { SharesPanel } from "@/components/admin/SharesPanel";
@@ -12,7 +13,7 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs";
 
-type AccessTab = "policies" | "roles" | "groups" | "shares";
+type AccessTab = "policies" | "effective" | "roles" | "groups" | "shares";
 
 export default function AccessPage() {
   const { hasPermission } = usePermissions();
@@ -37,6 +38,7 @@ export default function AccessPage() {
           : null;
   const currentTab =
     (activeTab === "policies" && canManagePolicies) ||
+    (activeTab === "effective" && canManagePolicies) ||
     (activeTab === "roles" && canManageRoles) ||
     (activeTab === "groups" && canManageGroups) ||
     (activeTab === "shares" && canManageShares)
@@ -67,6 +69,9 @@ export default function AccessPage() {
             {canManagePolicies && (
               <TabsTrigger value="policies">Policies</TabsTrigger>
             )}
+            {canManagePolicies && (
+              <TabsTrigger value="effective">Acesso efetivo</TabsTrigger>
+            )}
             {canManageRoles && <TabsTrigger value="roles">Roles</TabsTrigger>}
             {canManageGroups && <TabsTrigger value="groups">Grupos</TabsTrigger>}
             {canManageShares && (
@@ -81,6 +86,11 @@ export default function AccessPage() {
                 inline
                 onOpenChange={() => undefined}
               />
+            </TabsContent>
+          )}
+          {canManagePolicies && (
+            <TabsContent value="effective" className="pt-2">
+              <EffectiveAccessPanel active={currentTab === "effective"} />
             </TabsContent>
           )}
           {canManageRoles && (

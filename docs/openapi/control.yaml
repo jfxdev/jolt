@@ -122,6 +122,44 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/JSONObject'}
         '400': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/subjects/{actorType}/{subjectID}/effective-access:
+    post:
+      tags: [Administration]
+      summary: What an identity can do at concrete paths
+      description: >-
+        Read-only diagnostic for administrators with `sudo` on `control-tower/policies`.
+        Evaluates up to 50 paths with the evaluators the Control Tower and the node use.
+        Typed rules treat files and directories differently, so each check names the
+        entry type the node would find. `outcome` is `allowed`, `denied` (no grant or a
+        path denial), `hidden` (a typed rule makes the file disappear) or `blocked`
+        (shown but unusable). Per-credential agent ceilings and CIDR filters are not
+        considered. The query is audited.
+      parameters:
+        - {name: actorType, in: path, required: true, schema: {type: string, enum: [user, service_account]}}
+        - {name: subjectID, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [checks]
+              properties:
+                checks:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    type: object
+                    required: [path, entry_type]
+                    properties:
+                      path: {type: string, example: nodes/n1/files/mounts/media/docs/key.pem}
+                      entry_type: {type: string, enum: [file, directory]}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/about:
     get:
       tags: [System]

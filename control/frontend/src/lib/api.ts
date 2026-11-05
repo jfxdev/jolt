@@ -8,6 +8,8 @@ import type {
   AuditResponse,
   AuthUser,
   BuildInfo,
+  EffectiveAccessCheck,
+  EffectiveAccessResponse,
   Grant,
   IdentityState,
   Job,
@@ -113,6 +115,15 @@ async function requestText(path: string): Promise<string> {
 export const api = {
   me: () =>
     request<{ user: AuthUser }>("/api/v1/control-tower/auth/me"),
+  effectiveAccess: (
+    actorType: "user" | "service_account",
+    subjectId: string,
+    checks: EffectiveAccessCheck[],
+  ) =>
+    request<EffectiveAccessResponse>(
+      `/api/v1/control-tower/subjects/${encodeURIComponent(actorType)}/${encodeURIComponent(subjectId)}/effective-access`,
+      { method: "POST", body: JSON.stringify({ checks }) },
+    ),
   about: () =>
     request<BuildInfo>("/api/v1/control-tower/about"),
   permissions: (paths: string[]) =>

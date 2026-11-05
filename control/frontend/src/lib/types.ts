@@ -119,6 +119,33 @@ export interface Policy {
   rules: PolicyRule[];
 }
 
+export type EffectiveOutcome = "allowed" | "denied" | "hidden" | "blocked";
+
+export interface EffectiveCapability {
+  allowed: boolean;
+  denied: boolean;
+  outcome: EffectiveOutcome;
+  policy_ids: string[];
+  typed: boolean;
+}
+
+export interface EffectiveAccessCheck {
+  path: string;
+  entry_type: "file" | "directory";
+}
+
+export interface EffectiveAccessResult extends EffectiveAccessCheck {
+  capabilities: Record<string, EffectiveCapability>;
+  reason?: string;
+}
+
+export interface EffectiveAccessResponse {
+  subject: { actor_type: string; id: string; name?: string; role?: string; enabled: boolean };
+  typed_policies: boolean;
+  notes: string[];
+  results: EffectiveAccessResult[];
+}
+
 export interface Role {
   role_id: string;
   name: string;

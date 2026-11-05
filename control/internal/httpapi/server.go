@@ -159,6 +159,7 @@ func newServerHandler(cfg config.Config, storage *store.Store, logger *slog.Logg
 	mux.Handle("GET /api/v1/control-tower/auth/me", s.auth(http.HandlerFunc(s.me)))
 	mux.Handle("GET /api/v1/control-tower/about", s.auth(http.HandlerFunc(s.about)))
 	mux.Handle("POST /api/v1/control-tower/auth/permissions", s.auth(http.HandlerFunc(s.permissions)))
+	mux.Handle("POST /api/v1/control-tower/subjects/{actorType}/{subjectID}/effective-access", s.auth(http.HandlerFunc(s.effectiveAccess)))
 	mux.Handle("GET /api/v1/control-tower/users", s.auth(http.HandlerFunc(s.listUsers)))
 	mux.Handle("POST /api/v1/control-tower/users", s.auth(http.HandlerFunc(s.createUser)))
 	mux.Handle("PATCH /api/v1/control-tower/users/{userID}", s.auth(http.HandlerFunc(s.updateUser)))

@@ -52,23 +52,8 @@ func EvaluateTyped(policies []Policy, path, capability string, mode EntryMode) D
 		return Evaluate(policies, path, capability)
 	}
 	conservative := Evaluate(policies, path, capability)
-	context := filetypes.Context{Version: 1, Rules: []filetypes.Rule{}}
-	for _, policy := range policies {
-		for _, rule := range policy.Rules {
-			if !ruleMatches(rule, path) {
-				continue
-			}
-			if !ValidPath(rule.Path) {
-				return conservative
-			}
-			context.Rules = append(context.Rules, filetypes.Rule{
-				PolicyID: policy.ID, Path: NormalizePath(rule.Path), Capabilities: append([]string(nil), rule.Capabilities...),
-				FileTypes: rule.FileTypes, Visibility: rule.Visibility,
-			})
-		}
-	}
-	filter, err := context.Compile()
-	if err != nil || !ValidResourcePath(path) {
+	filter, ok := compileTyped(policies, path)
+	if !ok {
 		return conservative
 	}
 	file, directory := filter.Evaluate(path, capability, "file"), filter.Evaluate(path, capability, "directory")
@@ -82,6 +67,65 @@ func EvaluateTyped(policies []Policy, path, capability string, mode EntryMode) D
 	}
 	if decision.Denied {
 		decision.Allowed = false
+	}
+	return decision
+}
+
+// compileTyped builds the node's evaluator from the rules covering the path. It
+// reports false when the rules cannot be evaluated, so callers fail closed.
+func compileTyped(policies []Policy, path string) (*filetypes.Filter, bool) {
+	context := filetypes.Context{Version: 1, Rules: []filetypes.Rule{}}
+	for _, policy := range policies {
+		for _, rule := range policy.Rules {
+			if !ruleMatches(rule, path) {
+				continue
+			}
+			if !ValidPath(rule.Path) {
+				return nil, false
+			}
+			context.Rules = append(context.Rules, filetypes.Rule{
+				PolicyID: policy.ID, Path: NormalizePath(rule.Path), Capabilities: append([]string(nil), rule.Capabilities...),
+				FileTypes: rule.FileTypes, Visibility: rule.Visibility,
+			})
+		}
+	}
+	filter, err := context.Compile()
+	if err != nil || !ValidResourcePath(path) {
+		return nil, false
+	}
+	return filter, true
+}
+
+// EntryDecision is what the node decides for one entry whose type is known.
+// Visibility says, for a denied read or list that a typed rule caused, whether
+// the entry disappears ("hidden") or is shown but blocked ("visible").
+type EntryDecision struct {
+	Decision
+	Visibility string `json:"visibility,omitempty"`
+	Typed      bool   `json:"typed"`
+}
+
+// EvaluateEntry answers what the node would do with a file or directory at path,
+// given the type the node would find there. Unlike EvaluateTyped it does not
+// have to guess the type, so it is the exact answer for that entry. Anything it
+// cannot evaluate fails closed, as EvaluateTyped does.
+func EvaluateEntry(policies []Policy, path, capability, entryType string) EntryDecision {
+	path = NormalizePath(path)
+	if !HasTypedRules(policies, path) {
+		return EntryDecision{Decision: Evaluate(policies, path, capability)}
+	}
+	conservative := EntryDecision{Decision: Evaluate(policies, path, capability), Typed: true}
+	filter, ok := compileTyped(policies, path)
+	if !ok {
+		return conservative
+	}
+	result := filter.Evaluate(path, capability, entryType)
+	decision := EntryDecision{
+		Decision: Decision{Allowed: result.Allowed && !result.Denied, Denied: result.Denied, Path: path, Capability: capability, PolicyIDs: matchingPolicyIDs(policies, path)},
+		Typed:    true,
+	}
+	if result.Restricted && !decision.Allowed {
+		decision.Visibility = result.Visibility
 	}
 	return decision
 }

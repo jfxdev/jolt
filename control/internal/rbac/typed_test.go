@@ -109,3 +109,33 @@ func TestPathDenialsStayDeniedInBothModesAndFailuresAreClosed(t *testing.T) {
 		t.Fatal("HasTypedRules misjudged which paths a typed rule covers")
 	}
 }
+
+func TestEvaluateEntryAnswersForTheKnownTypeAndSaysHowADenialShows(t *testing.T) {
+	pem := &filetypes.Selector{Extensions: []string{"pem"}}
+	video := &filetypes.Selector{Classes: []string{"video"}}
+	policies := ExpandCompatibilityRules([]Policy{
+		typedPolicy("base", Rule{Path: mountPath, Capabilities: []string{"read", "list"}}),
+		typedPolicy("no-keys", Rule{Path: mountPath + "/**", Capabilities: []string{"deny", "read"}, FileTypes: pem, Visibility: "visible"}),
+		typedPolicy("videos", Rule{Path: mountPath + "/movies/**", Capabilities: []string{"write"}, FileTypes: video}),
+	})
+	for _, test := range []struct {
+		path, capability, entry, visibility string
+		allowed, denied                     bool
+	}{
+		{mountPath + "/a.pem", "read", "file", "visible", false, true},
+		{mountPath + "/a.pem", "read", "directory", "", true, false}, // a directory is not a key
+		{mountPath + "/a.pem", "list", "file", "", true, false},      // the denial lists only read
+		{mountPath + "/a.txt", "read", "file", "", true, false},
+		{mountPath + "/movies/a.mkv", "write", "file", "", true, false},
+		{mountPath + "/movies/a.txt", "write", "file", "", false, false},
+	} {
+		got := EvaluateEntry(policies, test.path, test.capability, test.entry)
+		if got.Allowed != test.allowed || got.Denied != test.denied || got.Visibility != test.visibility || !got.Typed {
+			t.Fatalf("%s %s %s: %+v", test.path, test.capability, test.entry, got)
+		}
+	}
+	plain := EvaluateEntry([]Policy{typedPolicy("p", Rule{Path: mountPath, Capabilities: []string{"read"}})}, mountPath, "read", "directory")
+	if !plain.Allowed || plain.Typed || plain.Visibility != "" {
+		t.Fatalf("without typed rules the answer is the legacy one: %+v", plain)
+	}
+}
