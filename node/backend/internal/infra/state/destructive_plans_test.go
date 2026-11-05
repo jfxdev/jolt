@@ -307,3 +307,48 @@ func TestDestructivePlanRejectsInvalidBindings(t *testing.T) {
 		t.Fatalf("different operation accepted: %v", err)
 	}
 }
+
+func TestDestructivePlanJobsWaitForExecutionValidation(t *testing.T) {
+	s, _ := openTest(t)
+	ctx, now := context.Background(), time.Now().UTC()
+	plan, job := testDestructivePlan(now)
+	plan.ID = "private-plan-id"
+	if err := s.CreateDestructivePlan(ctx, plan, now); err != nil {
+		t.Fatal(err)
+	}
+	accepted, repeated, err := s.AcceptDestructivePlan(ctx, plan.ID, plan.SubjectType, plan.SubjectID, plan.TokenHash, plan.TreeDigest, false, "", job, "key", strings.Repeat("c", 64), now)
+	if err != nil || repeated || accepted.State != "waiting_validation" || accepted.DestructivePlanID != plan.ID {
+		t.Fatalf("accepted=%+v repeated=%v err=%v", accepted, repeated, err)
+	}
+	if _, err := s.ClaimNextJob(ctx, now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unvalidated job claimed: %v", err)
+	}
+	for _, mutate := range []func(*entities.Job){
+		func(j *entities.Job) { j.State = "queued" },
+		func(j *entities.Job) { j.State = "running" },
+		func(j *entities.Job) { j.DestructivePlanID = "" },
+		func(j *entities.Job) { j.SourcePath = "other" },
+	} {
+		changed := accepted
+		mutate(&changed)
+		if err := s.UpdateJob(ctx, changed); !errors.Is(err, ErrInUse) {
+			t.Fatalf("unsafe update accepted: %+v %v", changed, err)
+		}
+		if err := s.UpdateJobWithEvent(ctx, changed, entities.JobEvent{JobID: changed.ID}); !errors.Is(err, ErrInUse) {
+			t.Fatalf("unsafe event update accepted: %+v %v", changed, err)
+		}
+	}
+	forged := job
+	forged.ID, forged.DestructivePlanID = "forged", plan.ID
+	if _, _, err := s.CreateJob(ctx, forged, ""); !errors.Is(err, ErrInUse) {
+		t.Fatalf("generic job creation bound a plan: %v", err)
+	}
+	encoded, err := json.Marshal(accepted)
+	if err != nil || strings.Contains(string(encoded), plan.ID) || strings.Contains(string(encoded), "destructive_plan_id") {
+		t.Fatalf("private binding exposed: %s %v", encoded, err)
+	}
+	accepted.State = "canceled"
+	if err := s.UpdateJob(ctx, accepted); err != nil {
+		t.Fatalf("cancel should remain available: %v", err)
+	}
+}

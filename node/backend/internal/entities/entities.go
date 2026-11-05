@@ -33,6 +33,7 @@ type FileEntry struct {
 
 type Job struct {
 	ParentJobID        string     `json:"-"`
+	DestructivePlanID  string     `json:"-" yaml:"destructive_plan_id,omitempty"`
 	ID                 string     `json:"job_id" yaml:"job_id"`
 	Type               string     `json:"type" yaml:"type"`
 	State              string     `json:"state" yaml:"state"`

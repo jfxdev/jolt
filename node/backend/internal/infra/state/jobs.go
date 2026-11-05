@@ -22,6 +22,9 @@ func (s *Store) CreateJobWithItems(ctx context.Context, j entities.Job, items []
 	return s.CreateJobWithItemsHashed(ctx, j, items, key, "")
 }
 func (s *Store) CreateJobWithItemsHashed(ctx context.Context, j entities.Job, items []entities.JobItem, key, hash string) (entities.Job, bool, error) {
+	if j.DestructivePlanID != "" {
+		return entities.Job{}, false, ErrInUse
+	}
 	reused := false
 	err := s.update(ctx, func(tx *transaction) error {
 		if key != "" {
@@ -84,6 +87,9 @@ func (s *Store) UpdateJob(ctx context.Context, j entities.Job) error {
 		if e != nil {
 			return e
 		}
+		if !validDestructiveJobUpdate(old, j) {
+			return ErrInUse
+		}
 		j.CreatedAt = old.CreatedAt
 		return tx.put("jobs", j.ID, j.PeerNodeID, order(j.CreatedAt), j)
 	})
@@ -97,6 +103,9 @@ func (s *Store) UpdateJobWithEvent(ctx context.Context, j entities.Job, event en
 		if e != nil {
 			return e
 		}
+		if !validDestructiveJobUpdate(old, j) {
+			return ErrInUse
+		}
 		j.CreatedAt = old.CreatedAt
 		if err := tx.put("jobs", j.ID, j.PeerNodeID, order(j.CreatedAt), j); err != nil {
 			return err
@@ -105,6 +114,25 @@ func (s *Store) UpdateJobWithEvent(ctx context.Context, j entities.Job, event en
 		key := fmt.Sprintf("%020d", event.ID)
 		return tx.put("events", key, event.JobID, key, event)
 	})
+}
+
+// Until execution-time plan validation is integrated, a plan-bound job may
+// only remain waiting, be paused, or be canceled. In particular, a generic
+// resume or retry must not start destructive work without revalidation.
+func validDestructiveJobUpdate(old, next entities.Job) bool {
+	if old.DestructivePlanID != next.DestructivePlanID {
+		return false
+	}
+	if old.DestructivePlanID == "" {
+		return true
+	}
+	if old.Type != next.Type || old.MountID != next.MountID || old.SourcePath != next.SourcePath || old.Destination != next.Destination || old.Overwrite != next.Overwrite || old.Recursive != next.Recursive || old.PeerNodeID != next.PeerNodeID || old.SourceGrantID != next.SourceGrantID || old.DestinationGrantID != next.DestinationGrantID {
+		return false
+	}
+	if old.State == "canceled" && next.State != "canceled" {
+		return false
+	}
+	return next.State == "waiting_validation" || next.State == "paused" || next.State == "canceled"
 }
 func (s *Store) GetJob(ctx context.Context, id string) (v entities.Job, err error) {
 	err = s.view(ctx, func() error { v, err = get[entities.Job](s, "jobs", id); return err })

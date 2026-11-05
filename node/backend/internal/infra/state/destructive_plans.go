@@ -118,6 +118,9 @@ func (s *Store) PurgeExpiredDestructivePlans(ctx context.Context, now time.Time)
 	removed := 0
 	err := s.update(ctx, func(tx *transaction) error {
 		for _, id := range keys(s, "destructive_plans", "") {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if removed == 1000 {
 				break
 			}
@@ -168,7 +171,7 @@ func (s *Store) AcceptDestructivePlan(ctx context.Context, id, subjectType, subj
 			return err
 		}
 		if !now.Before(plan.ExpiresAt) || now.Before(plan.CreatedAt) || subtle.ConstantTimeCompare([]byte(plan.TreeDigest), []byte(treeDigest)) != 1 ||
-			plan.DestinationExists != destinationExists || plan.DestinationDigest != destinationDigest || !signedauth.ValidKeyID(job.ID) || job.State != "queued" {
+			plan.DestinationExists != destinationExists || plan.DestinationDigest != destinationDigest || !signedauth.ValidKeyID(job.ID) || job.State != "queued" || job.DestructivePlanID != "" {
 			return ErrInUse
 		}
 		if _, exists := s.index["jobs"][job.ID]; exists {
@@ -181,6 +184,10 @@ func (s *Store) AcceptDestructivePlan(ctx context.Context, id, subjectType, subj
 			return err
 		}
 		plan.ConsumedJobID, plan.IdempotencyKey, plan.RequestHash = job.ID, idempotencyKey, requestHash
+		// No executable lease or execution-time tree revalidation exists yet.
+		// Persist the job fail-closed until that integration is complete.
+		job.DestructivePlanID = plan.ID
+		job.State, job.Phase, job.Error = "waiting_validation", "waiting_validation", "destructive plan execution requires authorization and tree revalidation"
 		if err := tx.put("destructive_plans", plan.ID, plan.SubjectID, order(plan.CreatedAt), plan); err != nil {
 			return err
 		}
