@@ -42,6 +42,7 @@ type Binding struct {
 	DestinationMountID string `json:"destination_mount_id"`
 	DestinationRoot    string `json:"destination_root"`
 	PlanID             string `json:"plan_id"`
+	JobOptionsDigest   string `json:"job_options_digest,omitempty"`
 }
 
 type Claims struct {
@@ -222,6 +223,9 @@ func validate(c Claims) error {
 		return ErrInvalid
 	}
 	b := c.Binding
+	if !validJobOptionsDigest(b.JobOptionsDigest) || b.JobOptionsDigest != "" && b.Operation != "delete" && b.Operation != "copy_local" && b.Operation != "move_local" && b.Operation != "transfer_pull" && b.Operation != "transfer_pull_directory" && b.Operation != "transfer_pull_batch" && b.Operation != "transfer_move_batch" {
+		return ErrInvalid
+	}
 	for _, value := range []string{b.ActorID, b.CredentialID, b.Operation, b.RequestID} {
 		if !identifier(value, true) {
 			return ErrInvalid

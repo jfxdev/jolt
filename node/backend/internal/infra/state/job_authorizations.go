@@ -66,6 +66,9 @@ func jobAuthorizationMatches(job entities.Job, expected signedauth.Binding, node
 	if job.RequiresSignedAuth && (job.SignedAuthActorID != expected.ActorID || job.SignedAuthCredentialID != expected.CredentialID) {
 		return false
 	}
+	if job.RequiresSignedAuth && expected.JobOptionsDigest == "" || expected.JobOptionsDigest != "" && expected.JobOptionsDigest != signedauth.JobOptionsDigest(signedauth.JobOptions{Overwrite: job.Overwrite, Recursive: job.Recursive, ConflictPolicy: job.ConflictPolicy, SourceChangePolicy: job.SourceChangePolicy, VerifyChecksum: job.VerifyChecksum, BandwidthLimit: job.BandwidthLimit, MaxParallelFiles: job.MaxParallelFiles, MaxParallelChunks: job.MaxParallelChunks, MaxAttempts: job.MaxAttempts}) {
+		return false
+	}
 	if expected.PlanID != job.ID || expected.Operation != job.Type || expected.RequestID != "" || expected.SourceRoot != job.SourcePath {
 		return false
 	}

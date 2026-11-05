@@ -18,6 +18,15 @@ import (
 
 var errSignedJobRegistrationUnavailable = errors.New("signed job registration unavailable")
 
+func supportsSignedJobRegistration(capabilities []string) bool {
+	registration, options := false, false
+	for _, capability := range capabilities {
+		registration = registration || capability == "signed_job_authorization_registration_v1"
+		options = options || capability == "signed_job_options_binding_v1"
+	}
+	return registration && options
+}
+
 // registerSignedLocalJobLease obtains job metadata from the registered node,
 // signs the current request actor's permissions, and requires explicit node
 // confirmation. It is internal until durable actor links and the renewal loop
@@ -33,11 +42,7 @@ func (s *Server) registerSignedLocalJobLease(r *http.Request, node store.Node, j
 	if err := s.callNodeJSON(r.Context(), node, http.MethodGet, "/api/v1/node", nil, &info, r.Header.Get("X-Correlation-ID")); err != nil {
 		return time.Time{}, errSignedJobRegistrationUnavailable
 	}
-	supported := false
-	for _, capability := range info.Capabilities {
-		supported = supported || capability == "signed_job_authorization_registration_v1"
-	}
-	if info.NodeID != node.ID || !supported {
+	if info.NodeID != node.ID || !supportsSignedJobRegistration(info.Capabilities) {
 		return time.Time{}, errSignedJobRegistrationUnavailable
 	}
 	var job signedLocalJob

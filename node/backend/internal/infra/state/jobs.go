@@ -175,7 +175,7 @@ func validSecuredJobUpdate(old, next entities.Job) bool {
 	if old.DestructivePlanID == "" && !old.SignedAuthBound && !old.RequiresSignedAuth {
 		return true
 	}
-	if old.Type != next.Type || old.MountID != next.MountID || old.SourcePath != next.SourcePath || old.Destination != next.Destination || old.Overwrite != next.Overwrite || old.Recursive != next.Recursive || old.ConflictPolicy != next.ConflictPolicy || old.SourceChangePolicy != next.SourceChangePolicy || old.VerifyChecksum != next.VerifyChecksum || old.PeerNodeID != next.PeerNodeID || old.SourceGrantID != next.SourceGrantID || old.DestinationGrantID != next.DestinationGrantID {
+	if old.Type != next.Type || old.MountID != next.MountID || old.SourcePath != next.SourcePath || old.Destination != next.Destination || old.Overwrite != next.Overwrite || old.Recursive != next.Recursive || old.ConflictPolicy != next.ConflictPolicy || old.SourceChangePolicy != next.SourceChangePolicy || old.VerifyChecksum != next.VerifyChecksum || old.BandwidthLimit != next.BandwidthLimit || old.MaxParallelFiles != next.MaxParallelFiles || old.MaxParallelChunks != next.MaxParallelChunks || old.MaxAttempts != next.MaxAttempts || old.PeerNodeID != next.PeerNodeID || old.SourceGrantID != next.SourceGrantID || old.DestinationGrantID != next.DestinationGrantID {
 		return false
 	}
 	if old.State == "canceled" && next.State != "canceled" {

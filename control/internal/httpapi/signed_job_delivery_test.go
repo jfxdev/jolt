@@ -19,7 +19,7 @@ import (
 )
 
 func TestDeliverPendingSignedJobLease(t *testing.T) {
-	for _, mode := range []string{"success", "lost response", "changed context", "revoked", "changed job", "missing registration capability", "wrong confirmation", "staged", "staged revoked", "staged changed job", "staged missing registration capability", "bound", "bound running", "bound revoked", "bound existing authorization", "bound missing registration capability"} {
+	for _, mode := range []string{"success", "lost response", "changed context", "revoked", "changed job", "changed options", "missing registration capability", "missing options capability", "wrong confirmation", "staged", "staged revoked", "staged changed job", "staged missing registration capability", "bound", "bound running", "bound revoked", "bound existing authorization", "bound missing registration capability"} {
 		t.Run(mode, func(t *testing.T) {
 			key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
 			keys := map[string]ed25519.PublicKey{"key": key.Public().(ed25519.PublicKey)}
@@ -35,15 +35,21 @@ func TestDeliverPendingSignedJobLease(t *testing.T) {
 				body := ""
 				switch r.URL.Path {
 				case "/api/v1/node":
-					caps := `["signed_job_authorization_status_v1","signed_job_authorization_registration_v1"]`
+					caps := `["signed_job_authorization_status_v1","signed_job_authorization_registration_v1","signed_job_options_binding_v1"]`
 					if mode == "missing registration capability" || mode == "staged missing registration capability" || mode == "bound missing registration capability" {
 						caps = `["signed_job_authorization_status_v1"]`
+					}
+					if mode == "missing options capability" {
+						caps = `["signed_job_authorization_status_v1","signed_job_authorization_registration_v1"]`
 					}
 					body = fmt.Sprintf(`{"node_id":"n1","capabilities":%s}`, caps)
 				case "/api/v1/jobs/job":
 					current := job
 					if mode == "changed job" || mode == "staged changed job" {
 						current.Source = "other"
+					}
+					if mode == "changed options" {
+						current.Overwrite = true
 					}
 					if mode == "bound running" {
 						current.State = "running"

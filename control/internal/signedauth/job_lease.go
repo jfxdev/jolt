@@ -26,7 +26,7 @@ func JobLeaseRequestID(jobID string, revision uint64) string {
 // trusted job state, never copied from an unverified envelope.
 func JobLeaseBinding(binding Binding, revision uint64) (Binding, error) {
 	requestID := JobLeaseRequestID(binding.PlanID, revision)
-	if requestID == "" || binding.RequestID != "" && binding.RequestID != requestID ||
+	if requestID == "" || !validJobOptionsDigest(binding.JobOptionsDigest) || binding.RequestID != "" && binding.RequestID != requestID ||
 		!identifier(binding.ActorID, true) || !identifier(binding.CredentialID, true) ||
 		!identifier(binding.SourceNodeID, true) || !identifier(binding.SourceMountID, true) ||
 		!identifier(binding.SourceGrantID, false) || !identifier(binding.DestinationNodeID, false) || !identifier(binding.DestinationGrantID, false) || !identifier(binding.DestinationMountID, false) ||

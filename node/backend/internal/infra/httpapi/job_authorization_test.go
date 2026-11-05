@@ -158,7 +158,7 @@ func TestJobAuthorizationEndpointVerifiesAndPersistsWithoutExecuting(t *testing.
 	r.Header.Set("Authorization", "Bearer secret")
 	info := httptest.NewRecorder()
 	h.ServeHTTP(info, r)
-	if info.Code != http.StatusOK || !strings.Contains(info.Body.String(), "signed_job_authorization_registration_v1") || !strings.Contains(info.Body.String(), "signed_job_authorization_status_v1") {
+	if info.Code != http.StatusOK || !strings.Contains(info.Body.String(), "signed_job_authorization_registration_v1") || !strings.Contains(info.Body.String(), "signed_job_authorization_status_v1") || !strings.Contains(info.Body.String(), "signed_job_options_binding_v1") {
 		t.Fatalf("capability: %d %s", info.Code, info.Body)
 	}
 	if strings.Contains(logs.String(), first) || strings.Contains(logs.String(), second) || strings.Contains(logs.String(), "private-actor") {

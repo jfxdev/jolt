@@ -54,7 +54,7 @@ func TestSignedLocalJobLeaseUsesCurrentPoliciesAndCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := signedauth.Binding{ActorID: operator.ID, CredentialID: "session-" + security.Digest("jolt-signed-session:"+session), Operation: job.Type, SourceNodeID: "n1", SourceMountID: "m", SourceRoot: job.Source, DestinationNodeID: "n1", DestinationMountID: "m", DestinationRoot: job.Destination, PlanID: job.ID}
+	expected := signedauth.Binding{ActorID: operator.ID, CredentialID: "session-" + security.Digest("jolt-signed-session:"+session), Operation: job.Type, SourceNodeID: "n1", SourceMountID: "m", SourceRoot: job.Source, DestinationNodeID: "n1", DestinationMountID: "m", DestinationRoot: job.Destination, PlanID: job.ID, JobOptionsDigest: job.optionsDigest()}
 	keys := map[string]ed25519.PublicKey{"key": key.Public().(ed25519.PublicKey)}
 	claims, filter, err := signedauth.VerifyJobLease(token, keys, expected, "n1", 1, now)
 	if err != nil || claims.ExpiresAt != now.Add(30*time.Second).Unix() || !filter.Evaluate(base+"/source", "read", "file").Allowed || !filter.Evaluate(base+"/folder/destination", "create", "file").Allowed {
@@ -216,7 +216,7 @@ func TestSignedJobLeaseRechecksServiceAccountAndGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding := signedauth.Binding{ActorID: account.ID, CredentialID: "token-" + credential.ID, Operation: "delete", SourceNodeID: "n1", SourceMountID: "m", SourceRoot: "tree", PlanID: "job"}
+	binding := signedauth.Binding{ActorID: account.ID, CredentialID: "token-" + credential.ID, Operation: "delete", SourceNodeID: "n1", SourceMountID: "m", SourceRoot: "tree", PlanID: "job", JobOptionsDigest: job.optionsDigest()}
 	claims, _, err := signedauth.VerifyJobLease(token, map[string]ed25519.PublicKey{"key": key.Public().(ed25519.PublicKey)}, binding, "n1", 1, now)
 	if err != nil || claims.ExpiresAt != deadline.Unix() {
 		t.Fatalf("credential deadline=%d want=%d err=%v", claims.ExpiresAt, deadline.Unix(), err)

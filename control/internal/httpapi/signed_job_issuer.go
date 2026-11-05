@@ -14,13 +14,25 @@ import (
 
 // signedLocalJob describes metadata obtained from the node, never the client.
 type signedLocalJob struct {
-	ID          string `json:"job_id"`
-	Type        string `json:"type"`
-	State       string `json:"state"`
-	MountID     string `json:"mount_id"`
-	Source      string `json:"source_path"`
-	Destination string `json:"destination_path"`
-	Overwrite   bool   `json:"overwrite"`
+	ID                 string `json:"job_id"`
+	Type               string `json:"type"`
+	State              string `json:"state"`
+	MountID            string `json:"mount_id"`
+	Source             string `json:"source_path"`
+	Destination        string `json:"destination_path"`
+	Overwrite          bool   `json:"overwrite"`
+	Recursive          bool   `json:"recursive"`
+	ConflictPolicy     string `json:"conflict_policy"`
+	SourceChangePolicy string `json:"source_change_policy"`
+	VerifyChecksum     bool   `json:"verify_checksum"`
+	BandwidthLimit     int64  `json:"bandwidth_limit_bytes_per_second"`
+	MaxParallelFiles   int    `json:"max_parallel_files"`
+	MaxParallelChunks  int    `json:"max_parallel_chunks"`
+	MaxAttempts        int    `json:"max_attempts"`
+}
+
+func (job signedLocalJob) optionsDigest() string {
+	return signedauth.JobOptionsDigest(signedauth.JobOptions{Overwrite: job.Overwrite, Recursive: job.Recursive, ConflictPolicy: job.ConflictPolicy, SourceChangePolicy: job.SourceChangePolicy, VerifyChecksum: job.VerifyChecksum, BandwidthLimit: job.BandwidthLimit, MaxParallelFiles: job.MaxParallelFiles, MaxParallelChunks: job.MaxParallelChunks, MaxAttempts: job.MaxAttempts})
 }
 
 // issueSignedLocalJobLease builds an authorization for a persisted local job.
@@ -89,14 +101,14 @@ func (s *Server) issueSignedLocalJobLease(r *http.Request, nodeID string, job si
 	source := fileScope(base, job.Source)
 	destination := fileScope(base, job.Destination)
 	var required []authorizationRequirement
-	binding := signedauth.Binding{ActorID: actor.ID, CredentialID: credential, Operation: job.Type, SourceNodeID: nodeID, SourceMountID: job.MountID, SourceRoot: job.Source, PlanID: job.ID}
+	binding := signedauth.Binding{ActorID: actor.ID, CredentialID: credential, Operation: job.Type, SourceNodeID: nodeID, SourceMountID: job.MountID, SourceRoot: job.Source, PlanID: job.ID, JobOptionsDigest: job.optionsDigest()}
 	switch job.Type {
 	case "delete":
 		required = []authorizationRequirement{{Path: source, Capability: "delete"}}
 	case "move_local":
 		binding.DestinationNodeID, binding.DestinationMountID, binding.DestinationRoot = nodeID, job.MountID, job.Destination
-		// The current envelope binds paths but not the overwrite flag. Require
-		// both destination capabilities until the options are bound as well.
+		// Require both destination capabilities until conflict handling and
+		// final destinations are revalidated during execution.
 		required = []authorizationRequirement{{Path: source, Capability: "read"}, {Path: source, Capability: "update"}, {Path: destination, Capability: "create"}, {Path: destination, Capability: "update"}}
 	case "copy_local":
 		binding.DestinationNodeID, binding.DestinationMountID, binding.DestinationRoot = nodeID, job.MountID, job.Destination

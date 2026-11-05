@@ -35,7 +35,7 @@ func TestRegisterSignedLocalJobLeaseRequiresNodeConfirmation(t *testing.T) {
 		status := http.StatusOK
 		switch r.URL.Path {
 		case "/api/v1/node":
-			id, caps := "n1", `["signed_job_authorization_registration_v1"]`
+			id, caps := "n1", `["signed_job_authorization_registration_v1","signed_job_options_binding_v1"]`
 			if mode == "wrong node" {
 				id = "other"
 			}
@@ -59,7 +59,7 @@ func TestRegisterSignedLocalJobLeaseRequiresNodeConfirmation(t *testing.T) {
 			if envelope == "client-supplied" || envelope == "" {
 				t.Error("client context forwarded")
 			}
-			expected := signedauth.Binding{ActorID: "admin", CredentialID: "session-" + security.Digest("jolt-signed-session:"+f.adminSession), Operation: job.Type, SourceNodeID: "n1", SourceMountID: "m", SourceRoot: job.Source, DestinationNodeID: "n1", DestinationMountID: "m", DestinationRoot: job.Destination, PlanID: job.ID}
+			expected := signedauth.Binding{ActorID: "admin", CredentialID: "session-" + security.Digest("jolt-signed-session:"+f.adminSession), Operation: job.Type, SourceNodeID: "n1", SourceMountID: "m", SourceRoot: job.Source, DestinationNodeID: "n1", DestinationMountID: "m", DestinationRoot: job.Destination, PlanID: job.ID, JobOptionsDigest: job.optionsDigest()}
 			claims, _, err := signedauth.VerifyJobLease(envelope, keys, expected, "n1", 1, time.Now())
 			if err != nil {
 				t.Errorf("node received invalid lease: %v", err)

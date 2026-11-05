@@ -50,11 +50,7 @@ func (s *Server) deliverPendingSignedJobLease(r *http.Request, nodeID, jobID str
 	if err := s.callNodeJSON(r.Context(), node, http.MethodGet, "/api/v1/node", nil, &info, r.Header.Get("X-Correlation-ID")); err != nil {
 		return fail()
 	}
-	supported := false
-	for _, capability := range info.Capabilities {
-		supported = supported || capability == "signed_job_authorization_registration_v1"
-	}
-	if info.NodeID != node.ID || !supported {
+	if info.NodeID != node.ID || !supportsSignedJobRegistration(info.Capabilities) {
 		return fail()
 	}
 	var job signedLocalJob

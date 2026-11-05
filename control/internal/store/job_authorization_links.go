@@ -133,7 +133,11 @@ func (s *Store) CreateJobAuthorizationLink(ctx context.Context, link JobAuthoriz
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO metadata(key,value) VALUES('minimum_security_version','5') ON CONFLICT(key) DO UPDATE SET value=CASE WHEN CAST(value AS INTEGER)<5 THEN '5' ELSE value END`); err != nil {
+	minimumVersion := "5"
+	if link.Binding.JobOptionsDigest != "" {
+		minimumVersion = "6"
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO metadata(key,value) VALUES('minimum_security_version',?) ON CONFLICT(key) DO UPDATE SET value=CASE WHEN CAST(value AS INTEGER)<CAST(excluded.value AS INTEGER) THEN excluded.value ELSE value END`, minimumVersion); err != nil {
 		return err
 	}
 	if err := appendAuditTx(ctx, tx, auditRecord{actorID: link.ActorID, actorType: link.ActorType, action: "bind_job_authorization", resource: "nodes/" + link.NodeID + "/jobs/" + link.JobID, result: "allowed", createdAt: stamp}); err != nil {

@@ -21,7 +21,7 @@ var (
 	ErrLastAdmin = errors.New("at least one enabled administrator is required")
 )
 
-const supportedSecurityVersion = 5
+const supportedSecurityVersion = 6
 
 type User struct {
 	ID           string    `json:"user_id"`

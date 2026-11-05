@@ -365,7 +365,7 @@ func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 			capabilities = append(capabilities, "signed_upload_sessions_v1", "signed_upload_reauthorize_v1", "signed_simple_upload_v1")
 		}
 		if _, ok := s.store.(signedJobAuthorizationRegistrar); ok {
-			capabilities = append(capabilities, "signed_job_authorization_registration_v1")
+			capabilities = append(capabilities, "signed_job_authorization_registration_v1", "signed_job_options_binding_v1")
 		}
 		if _, ok := s.store.(signedJobAuthorizationReporter); ok {
 			capabilities = append(capabilities, "signed_job_authorization_status_v1")

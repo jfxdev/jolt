@@ -319,6 +319,43 @@ func TestPreviousControlReaderRejectsJobLinks(t *testing.T) {
 	}
 }
 
+func TestJobOptionsLinkRequiresVersionSix(t *testing.T) {
+	s, file, link, _, now := newJobLinkFixture(t)
+	ctx := context.Background()
+	if err := s.CreateJobAuthorizationLink(ctx, link, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	checker := os.Getenv("JOLT_VERSION5_CONTROL_CHECKER")
+	if checker != "" {
+		if out, err := exec.Command(checker, file).CombinedOutput(); err != nil {
+			t.Fatalf("previous reader rejected v5: %v %s", err, out)
+		}
+	}
+	s, err := Open(file, testDatabaseKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.JobID, link.Binding.PlanID = "options-job", "options-job"
+	link.Binding.JobOptionsDigest = signedauth.JobOptionsDigest(signedauth.JobOptions{Overwrite: true})
+	if err := s.CreateJobAuthorizationLink(ctx, link, now); err != nil {
+		t.Fatal(err)
+	}
+	if version, err := s.Metadata(ctx, "minimum_security_version"); err != nil || version != "6" {
+		t.Fatalf("version=%q err=%v", version, err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if checker != "" {
+		if out, err := exec.Command(checker, file).CombinedOutput(); err == nil || !strings.Contains(string(out), "security version") {
+			t.Fatalf("previous reader accepted v6: %v %s", err, out)
+		}
+	}
+}
+
 func TestJobAuthorizationLinkRechecksStaticAutomationAndRejectsAgent(t *testing.T) {
 	s, _, base, key, now := newJobLinkFixture(t)
 	ctx := context.Background()

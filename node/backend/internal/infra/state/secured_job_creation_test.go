@@ -13,12 +13,14 @@ import (
 	"time"
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
+	"github.com/jfxdev/jolt/backend/internal/signedauth"
 )
 
 func TestCreateJobAwaitingAuthorization(t *testing.T) {
 	s, dir := openTest(t)
 	ctx, now := context.Background(), time.Now().UTC().Truncate(time.Second)
 	job, binding := testAuthorizedJob(now)
+	binding.JobOptionsDigest = signedauth.JobOptionsDigest(signedauth.JobOptions{})
 	created, repeated, err := s.CreateJobAwaitingAuthorization(ctx, job, binding.ActorID, binding.CredentialID, "request-key", "request-hash")
 	if err != nil || repeated || created.State != "waiting_validation" || !created.RequiresSignedAuth || created.SignedAuthBound || s.envelopeVersion != 6 {
 		t.Fatalf("created=%+v repeated=%v err=%v", created, repeated, err)
@@ -40,7 +42,7 @@ func TestCreateJobAwaitingAuthorization(t *testing.T) {
 	if _, _, err := s.CreateJob(ctx, other, "request-key"); !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("generic retry: %v", err)
 	}
-	for _, change := range []func(*entities.Job){func(j *entities.Job) { j.State = "queued" }, func(j *entities.Job) { j.RequiresSignedAuth = false }, func(j *entities.Job) { j.SignedAuthActorID = "other" }, func(j *entities.Job) { j.SignedAuthCredentialID = "other" }, func(j *entities.Job) { j.Destination = "other" }} {
+	for _, change := range []func(*entities.Job){func(j *entities.Job) { j.State = "queued" }, func(j *entities.Job) { j.RequiresSignedAuth = false }, func(j *entities.Job) { j.SignedAuthActorID = "other" }, func(j *entities.Job) { j.SignedAuthCredentialID = "other" }, func(j *entities.Job) { j.Destination = "other" }, func(j *entities.Job) { j.BandwidthLimit++ }, func(j *entities.Job) { j.MaxParallelFiles++ }, func(j *entities.Job) { j.MaxParallelChunks++ }, func(j *entities.Job) { j.MaxAttempts++ }} {
 		mutated := created
 		change(&mutated)
 		if err := s.UpdateJob(ctx, mutated); !errors.Is(err, ErrInUse) {
@@ -68,8 +70,21 @@ func TestCreateJobAwaitingAuthorization(t *testing.T) {
 	if _, err := s.RenewJobAuthorization(ctx, job.ID, "node", testJobLease(t, key, wrong, 1, now), wrong, keys, now); !errors.Is(err, ErrInUse) {
 		t.Fatalf("wrong credential accepted: %v", err)
 	}
+	wrong = binding
+	wrong.JobOptionsDigest = signedauth.JobOptionsDigest(signedauth.JobOptions{Overwrite: true})
+	if _, err := s.RenewJobAuthorization(ctx, job.ID, "node", testJobLease(t, key, wrong, 1, now), wrong, keys, now); !errors.Is(err, ErrInUse) {
+		t.Fatalf("wrong job options accepted: %v", err)
+	}
+	wrong = binding
+	wrong.JobOptionsDigest = ""
+	if _, err := s.RenewJobAuthorization(ctx, job.ID, "node", testJobLease(t, key, wrong, 1, now), wrong, keys, now); !errors.Is(err, ErrInUse) {
+		t.Fatalf("missing job options accepted: %v", err)
+	}
 	if _, err := s.RenewJobAuthorization(ctx, job.ID, "node", testJobLease(t, key, binding, 1, now), binding, keys, now); err != nil {
 		t.Fatal(err)
+	}
+	if _, filter, err := s.ValidateJobAuthorization(ctx, job.ID, "node", keys, now); err != nil || filter == nil {
+		t.Fatalf("bound options did not survive storage: filter=%v err=%v", filter, err)
 	}
 	if _, err := s.ClaimNextJob(ctx, now); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("job executed before runtime integration: %v", err)
