@@ -32,45 +32,48 @@ type FileEntry struct {
 }
 
 type Job struct {
-	ParentJobID        string     `json:"-"`
-	DestructivePlanID  string     `json:"-" yaml:"destructive_plan_id,omitempty"`
-	SignedAuthBound    bool       `json:"-" yaml:"has_signed_authorization,omitempty"`
-	ID                 string     `json:"job_id" yaml:"job_id"`
-	Type               string     `json:"type" yaml:"type"`
-	State              string     `json:"state" yaml:"state"`
-	Phase              string     `json:"phase" yaml:"phase"`
-	MountID            string     `json:"mount_id" yaml:"mount_id"`
-	PeerNodeID         string     `json:"peer_node_id,omitempty" yaml:"peer_node_id"`
-	SourceGrantID      string     `json:"source_grant_id,omitempty" yaml:"source_grant_id"`
-	DestinationGrantID string     `json:"destination_grant_id,omitempty" yaml:"destination_grant_id"`
-	SourceETag         string     `json:"source_etag,omitempty" yaml:"source_etag"`
-	SourcePath         string     `json:"source_path,omitempty" yaml:"source_path"`
-	Destination        string     `json:"destination_path,omitempty" yaml:"destination_path"`
-	BytesTotal         int64      `json:"bytes_total" yaml:"bytes_total"`
-	BytesCompleted     int64      `json:"bytes_completed" yaml:"bytes_completed"`
-	BytesPerSecond     float64    `json:"bytes_per_second,omitempty" yaml:"bytes_per_second"`
-	ETASeconds         *int64     `json:"eta_seconds,omitempty" yaml:"eta_seconds"`
-	ETAConfidence      string     `json:"eta_confidence,omitempty" yaml:"eta_confidence"`
-	FilesTotal         int        `json:"files_total" yaml:"files_total"`
-	FilesCompleted     int        `json:"files_completed" yaml:"files_completed"`
-	FilesFailed        int        `json:"files_failed" yaml:"files_failed"`
-	ConflictPolicy     string     `json:"conflict_policy,omitempty" yaml:"conflict_policy"`
-	SourceChangePolicy string     `json:"source_change_policy,omitempty" yaml:"source_change_policy"`
-	VerifyChecksum     bool       `json:"verify_checksum,omitempty" yaml:"verify_checksum"`
-	BandwidthLimit     int64      `json:"bandwidth_limit_bytes_per_second,omitempty" yaml:"bandwidth_limit_bytes_per_second"`
-	MaxParallelFiles   int        `json:"max_parallel_files,omitempty" yaml:"max_parallel_files"`
-	MaxParallelChunks  int        `json:"max_parallel_chunks,omitempty" yaml:"max_parallel_chunks"`
-	Overwrite          bool       `json:"overwrite,omitempty" yaml:"overwrite"`
-	Recursive          bool       `json:"recursive,omitempty" yaml:"recursive"`
-	Attempt            int        `json:"attempt" yaml:"attempt"`
-	MaxAttempts        int        `json:"max_attempts" yaml:"max_attempts"`
-	Error              string     `json:"error,omitempty" yaml:"error"`
-	CorrelationID      string     `json:"correlation_id" yaml:"correlation_id"`
-	CreatedAt          time.Time  `json:"created_at" yaml:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at" yaml:"updated_at"`
-	StartedAt          *time.Time `json:"started_at,omitempty" yaml:"started_at"`
-	NextAttemptAt      *time.Time `json:"next_attempt_at,omitempty" yaml:"next_attempt_at"`
-	CompletedAt        *time.Time `json:"completed_at,omitempty" yaml:"completed_at"`
+	ParentJobID            string     `json:"-"`
+	DestructivePlanID      string     `json:"-" yaml:"destructive_plan_id,omitempty"`
+	SignedAuthBound        bool       `json:"-" yaml:"has_signed_authorization,omitempty"`
+	RequiresSignedAuth     bool       `json:"-" yaml:"requires_signed_authorization,omitempty"`
+	SignedAuthActorID      string     `json:"-" yaml:"signed_authorization_actor_id,omitempty"`
+	SignedAuthCredentialID string     `json:"-" yaml:"signed_authorization_credential_id,omitempty"`
+	ID                     string     `json:"job_id" yaml:"job_id"`
+	Type                   string     `json:"type" yaml:"type"`
+	State                  string     `json:"state" yaml:"state"`
+	Phase                  string     `json:"phase" yaml:"phase"`
+	MountID                string     `json:"mount_id" yaml:"mount_id"`
+	PeerNodeID             string     `json:"peer_node_id,omitempty" yaml:"peer_node_id"`
+	SourceGrantID          string     `json:"source_grant_id,omitempty" yaml:"source_grant_id"`
+	DestinationGrantID     string     `json:"destination_grant_id,omitempty" yaml:"destination_grant_id"`
+	SourceETag             string     `json:"source_etag,omitempty" yaml:"source_etag"`
+	SourcePath             string     `json:"source_path,omitempty" yaml:"source_path"`
+	Destination            string     `json:"destination_path,omitempty" yaml:"destination_path"`
+	BytesTotal             int64      `json:"bytes_total" yaml:"bytes_total"`
+	BytesCompleted         int64      `json:"bytes_completed" yaml:"bytes_completed"`
+	BytesPerSecond         float64    `json:"bytes_per_second,omitempty" yaml:"bytes_per_second"`
+	ETASeconds             *int64     `json:"eta_seconds,omitempty" yaml:"eta_seconds"`
+	ETAConfidence          string     `json:"eta_confidence,omitempty" yaml:"eta_confidence"`
+	FilesTotal             int        `json:"files_total" yaml:"files_total"`
+	FilesCompleted         int        `json:"files_completed" yaml:"files_completed"`
+	FilesFailed            int        `json:"files_failed" yaml:"files_failed"`
+	ConflictPolicy         string     `json:"conflict_policy,omitempty" yaml:"conflict_policy"`
+	SourceChangePolicy     string     `json:"source_change_policy,omitempty" yaml:"source_change_policy"`
+	VerifyChecksum         bool       `json:"verify_checksum,omitempty" yaml:"verify_checksum"`
+	BandwidthLimit         int64      `json:"bandwidth_limit_bytes_per_second,omitempty" yaml:"bandwidth_limit_bytes_per_second"`
+	MaxParallelFiles       int        `json:"max_parallel_files,omitempty" yaml:"max_parallel_files"`
+	MaxParallelChunks      int        `json:"max_parallel_chunks,omitempty" yaml:"max_parallel_chunks"`
+	Overwrite              bool       `json:"overwrite,omitempty" yaml:"overwrite"`
+	Recursive              bool       `json:"recursive,omitempty" yaml:"recursive"`
+	Attempt                int        `json:"attempt" yaml:"attempt"`
+	MaxAttempts            int        `json:"max_attempts" yaml:"max_attempts"`
+	Error                  string     `json:"error,omitempty" yaml:"error"`
+	CorrelationID          string     `json:"correlation_id" yaml:"correlation_id"`
+	CreatedAt              time.Time  `json:"created_at" yaml:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at" yaml:"updated_at"`
+	StartedAt              *time.Time `json:"started_at,omitempty" yaml:"started_at"`
+	NextAttemptAt          *time.Time `json:"next_attempt_at,omitempty" yaml:"next_attempt_at"`
+	CompletedAt            *time.Time `json:"completed_at,omitempty" yaml:"completed_at"`
 }
 
 type JobItem struct {

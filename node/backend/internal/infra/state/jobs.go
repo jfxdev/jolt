@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/jfxdev/jolt/backend/internal/entities"
+	"github.com/jfxdev/jolt/backend/internal/signedauth"
 	"sort"
 	"time"
 )
@@ -22,7 +23,7 @@ func (s *Store) CreateJobWithItems(ctx context.Context, j entities.Job, items []
 	return s.CreateJobWithItemsHashed(ctx, j, items, key, "")
 }
 func (s *Store) CreateJobWithItemsHashed(ctx context.Context, j entities.Job, items []entities.JobItem, key, hash string) (entities.Job, bool, error) {
-	if j.DestructivePlanID != "" || j.SignedAuthBound {
+	if j.DestructivePlanID != "" || j.SignedAuthBound || j.RequiresSignedAuth || j.SignedAuthActorID != "" || j.SignedAuthCredentialID != "" {
 		return entities.Job{}, false, ErrInUse
 	}
 	reused := false
@@ -34,6 +35,9 @@ func (s *Store) CreateJobWithItemsHashed(ctx context.Context, j entities.Job, it
 					return ErrIdempotencyConflict
 				}
 				j, err = get[entities.Job](s, "jobs", v.JobID)
+				if err == nil && (j.RequiresSignedAuth || j.SignedAuthBound || j.DestructivePlanID != "") {
+					return ErrIdempotencyConflict
+				}
 				reused = err == nil
 				return err
 			} else if !errors.Is(err, ErrNotFound) {
@@ -64,6 +68,52 @@ func (s *Store) CreateJobWithItemsHashed(ctx context.Context, j entities.Job, it
 		return nil
 	})
 	return j, reused, err
+}
+
+// CreateJobAwaitingAuthorization persists an actor-bound local job in a
+// non-runnable state. This is internal groundwork; the caller must validate
+// request permissions and supply a collision-resistant request hash.
+func (s *Store) CreateJobAwaitingAuthorization(ctx context.Context, j entities.Job, actorID, credentialID, key, hash string) (entities.Job, bool, error) {
+	if !signedauth.ValidKeyID(j.ID) || !signedauth.ValidKeyID(j.MountID) || !signedauth.ValidKeyID(actorID) || !signedauth.ValidKeyID(credentialID) || key == "" || hash == "" || j.State != "queued" || j.DestructivePlanID != "" || j.SignedAuthBound || j.RequiresSignedAuth || j.SignedAuthActorID != "" || j.SignedAuthCredentialID != "" || (j.Type != "delete" && j.Type != "copy_local" && j.Type != "move_local") {
+		return entities.Job{}, false, ErrInUse
+	}
+	reused := false
+	err := s.update(ctx, func(tx *transaction) error {
+		previous, err := get[idempotencyRecord](s, "idempotency", key)
+		if err == nil {
+			if previous.RequestHash != hash {
+				return ErrIdempotencyConflict
+			}
+			stored, err := get[entities.Job](s, "jobs", previous.JobID)
+			if err != nil {
+				return err
+			}
+			if !stored.RequiresSignedAuth || stored.SignedAuthActorID != actorID || stored.SignedAuthCredentialID != credentialID {
+				return ErrIdempotencyConflict
+			}
+			j, reused = stored, true
+			return nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		if _, exists := s.index["jobs"][j.ID]; exists {
+			return ErrInUse
+		}
+		if err := s.ensureSecurityVersion(6); err != nil {
+			return err
+		}
+		j.RequiresSignedAuth, j.SignedAuthActorID, j.SignedAuthCredentialID = true, actorID, credentialID
+		j.State, j.Phase, j.Error, j.NextAttemptAt = "waiting_validation", "waiting_validation", "job execution requires authorization and validation", nil
+		if err := tx.put("jobs", j.ID, j.PeerNodeID, order(j.CreatedAt), j); err != nil {
+			return err
+		}
+		return tx.put("idempotency", key, "", "", idempotencyRecord{j.ID, hash})
+	})
+	if err != nil {
+		return entities.Job{}, false, err
+	}
+	return j, reused, nil
 }
 func (s *Store) FindJobByIdempotency(ctx context.Context, key string) (j entities.Job, hash string, found bool, err error) {
 	err = s.view(ctx, func() error {
@@ -119,10 +169,10 @@ func (s *Store) UpdateJobWithEvent(ctx context.Context, j entities.Job, event en
 // Until renewable execution is integrated, a secured job may only remain
 // waiting, be paused, or be canceled. Generic resume and retry cannot start it.
 func validSecuredJobUpdate(old, next entities.Job) bool {
-	if old.DestructivePlanID != next.DestructivePlanID || old.SignedAuthBound != next.SignedAuthBound {
+	if old.DestructivePlanID != next.DestructivePlanID || old.SignedAuthBound != next.SignedAuthBound || old.RequiresSignedAuth != next.RequiresSignedAuth || old.SignedAuthActorID != next.SignedAuthActorID || old.SignedAuthCredentialID != next.SignedAuthCredentialID {
 		return false
 	}
-	if old.DestructivePlanID == "" && !old.SignedAuthBound {
+	if old.DestructivePlanID == "" && !old.SignedAuthBound && !old.RequiresSignedAuth {
 		return true
 	}
 	if old.Type != next.Type || old.MountID != next.MountID || old.SourcePath != next.SourcePath || old.Destination != next.Destination || old.Overwrite != next.Overwrite || old.Recursive != next.Recursive || old.ConflictPolicy != next.ConflictPolicy || old.SourceChangePolicy != next.SourceChangePolicy || old.VerifyChecksum != next.VerifyChecksum || old.PeerNodeID != next.PeerNodeID || old.SourceGrantID != next.SourceGrantID || old.DestinationGrantID != next.DestinationGrantID {
@@ -172,7 +222,7 @@ func (s *Store) ClaimNextJob(ctx context.Context, now time.Time) (job entities.J
 			if e != nil {
 				return e
 			}
-			if j.State != "queued" || (j.NextAttemptAt != nil && j.NextAttemptAt.After(now)) {
+			if j.State != "queued" || j.DestructivePlanID != "" || j.SignedAuthBound || j.RequiresSignedAuth || (j.NextAttemptAt != nil && j.NextAttemptAt.After(now)) {
 				continue
 			}
 			j.State, j.Phase, j.UpdatedAt, j.NextAttemptAt = "running", "validation", now, nil
@@ -198,6 +248,9 @@ func (s *Store) changeJobs(ctx context.Context, now time.Time, states map[string
 				return e
 			}
 			if !match(j) {
+				continue
+			}
+			if !recovery && (j.DestructivePlanID != "" || j.SignedAuthBound || j.RequiresSignedAuth) {
 				continue
 			}
 			j.State, j.Phase, j.Error, j.UpdatedAt, j.NextAttemptAt = "queued", "validation", "", now, nil
@@ -231,8 +284,12 @@ func (s *Store) WakeWaitingMountJobs(ctx context.Context, id string, now time.Ti
 func itemKey(item entities.JobItem) string { return item.JobID + "\x00" + item.RelativePath }
 func (s *Store) ReplaceJobItems(ctx context.Context, id string, items []entities.JobItem) error {
 	return s.update(ctx, func(tx *transaction) error {
-		if _, err := get[entities.Job](s, "jobs", id); err != nil {
+		job, err := get[entities.Job](s, "jobs", id)
+		if err != nil {
 			return err
+		}
+		if job.RequiresSignedAuth || job.SignedAuthBound || job.DestructivePlanID != "" {
+			return ErrInUse
 		}
 		for _, key := range keys(s, "items", id) {
 			tx.remove("items", key)
@@ -267,6 +324,13 @@ func (s *Store) ListJobItems(ctx context.Context, id string) (out []entities.Job
 }
 func (s *Store) UpdateJobItem(ctx context.Context, item entities.JobItem) error {
 	return s.update(ctx, func(tx *transaction) error {
+		job, err := get[entities.Job](s, "jobs", item.JobID)
+		if err != nil {
+			return err
+		}
+		if job.RequiresSignedAuth || job.SignedAuthBound || job.DestructivePlanID != "" {
+			return ErrInUse
+		}
 		k := itemKey(item)
 		if _, ok := s.index["items"][k]; !ok {
 			return ErrNotFound

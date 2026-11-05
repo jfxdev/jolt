@@ -63,6 +63,9 @@ func (s *Store) RegisterSignedJobAuthorization(ctx context.Context, jobID, nodeI
 // jobAuthorizationMatches compares server-derived authorization scope with
 // the persisted job. Peer trust and grants are separate execution checks.
 func jobAuthorizationMatches(job entities.Job, expected signedauth.Binding, nodeID string) bool {
+	if job.RequiresSignedAuth && (job.SignedAuthActorID != expected.ActorID || job.SignedAuthCredentialID != expected.CredentialID) {
+		return false
+	}
 	if expected.PlanID != job.ID || expected.Operation != job.Type || expected.RequestID != "" || expected.SourceRoot != job.SourcePath {
 		return false
 	}
