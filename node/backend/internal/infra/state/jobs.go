@@ -202,6 +202,22 @@ func validSecuredJobUpdate(old, next entities.Job) bool {
 	return next.State == "waiting_validation" || next.State == "paused" || next.State == "canceled"
 }
 
+// jobItemsWritable lets only the executor that claimed a secured local copy
+// record its plan and progress; other secured jobs have no writable items.
+func jobItemsWritable(job entities.Job) bool {
+	if !job.RequiresSignedAuth && !job.SignedAuthBound && job.DestructivePlanID == "" {
+		return true
+	}
+	if !executableSecuredJob(job) {
+		return false
+	}
+	switch job.State {
+	case "running", "pause_requested", "cancel_requested":
+		return true
+	}
+	return false
+}
+
 // ClaimNextSecuredJob starts the oldest queued local copy whose persisted lease
 // still verifies for this node. Queued jobs without a valid lease are returned
 // to waiting_validation so that a later renewal resumes them.
@@ -310,7 +326,9 @@ func (s *Store) changeJobs(ctx context.Context, now time.Time, states map[string
 			if !match(j) {
 				continue
 			}
-			if !recovery && (j.DestructivePlanID != "" || j.SignedAuthBound || j.RequiresSignedAuth) {
+			// Waking a waiting job only queues it; a secured copy is still
+			// claimed solely through its verified lease.
+			if !recovery && (j.DestructivePlanID != "" || (j.SignedAuthBound || j.RequiresSignedAuth) && !executableSecuredJob(j)) {
 				continue
 			}
 			j.State, j.Phase, j.Error, j.UpdatedAt, j.NextAttemptAt = "queued", "validation", "", now, nil
@@ -348,7 +366,7 @@ func (s *Store) ReplaceJobItems(ctx context.Context, id string, items []entities
 		if err != nil {
 			return err
 		}
-		if job.RequiresSignedAuth || job.SignedAuthBound || job.DestructivePlanID != "" {
+		if !jobItemsWritable(job) {
 			return ErrInUse
 		}
 		for _, key := range keys(s, "items", id) {
@@ -388,7 +406,7 @@ func (s *Store) UpdateJobItem(ctx context.Context, item entities.JobItem) error 
 		if err != nil {
 			return err
 		}
-		if job.RequiresSignedAuth || job.SignedAuthBound || job.DestructivePlanID != "" {
+		if !jobItemsWritable(job) {
 			return ErrInUse
 		}
 		k := itemKey(item)

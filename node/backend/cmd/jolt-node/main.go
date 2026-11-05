@@ -105,6 +105,7 @@ func main() {
 	jobService.ConfigureBandwidth(cfg.NodeBandwidthLimit)
 	jobService.ConfigureParallelism(cfg.MaxParallelFilesPerJob, cfg.MaxParallelChunksPerFile)
 	jobService.ConfigureTimeouts(cfg.JobValidationTimeout, cfg.TransferChunkTimeout, cfg.JobNoProgressTimeout)
+	jobService.ConfigureSignedExecution(store, identity.NodeID, cfg.AuthorizationKeys)
 	jobContext, stopJobs := context.WithCancel(context.Background())
 	defer stopJobs()
 	pairingService := pairing.New(store, identity)

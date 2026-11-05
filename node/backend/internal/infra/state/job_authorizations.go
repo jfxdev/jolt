@@ -100,6 +100,11 @@ func (s *Store) RenewJobAuthorization(ctx context.Context, jobID, nodeID, envelo
 		}
 		switch job.State {
 		case "queued", "waiting_validation", "paused", "interrupted":
+		case "running":
+			// A claimed local copy renews its lease while it runs.
+			if !executableSecuredJob(job) {
+				return ErrInUse
+			}
 		default:
 			return ErrInUse
 		}
@@ -141,6 +146,10 @@ func (s *Store) RenewJobAuthorization(ctx context.Context, jobID, nodeID, envelo
 			return err
 		}
 		authorization = JobAuthorization{JobID: job.ID, Binding: expected, Revision: revision, Envelope: envelope, ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC()}
+		if job.State == "running" {
+			// The executor owns the job record; only the lease advances.
+			return tx.put("job_authorizations", job.ID, "", order(now), authorization)
+		}
 		job.SignedAuthBound = true
 		// A local copy that stopped for lack of authorization resumes by
 		// itself once a newer lease is recorded. Jobs interrupted by a restart

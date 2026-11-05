@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"math"
@@ -70,6 +71,9 @@ type Service struct {
 	noProgressTimeout        time.Duration
 	nodeBandwidth            *byteRateLimiter
 	remote                   RemoteExecutor
+	signed                   SignedExecutionStore
+	signedNodeID             string
+	signedKeys               map[string]ed25519.PublicKey
 
 	mu           sync.Mutex
 	ctx          context.Context
@@ -919,7 +923,7 @@ func (s *Service) worker() {
 		case <-ticker.C:
 		}
 		for {
-			job, err := s.store.ClaimNextJob(s.ctx, s.now())
+			job, err := s.claimNext()
 			if errors.Is(err, contracts.ErrNotFound) {
 				break
 			}
@@ -966,9 +970,22 @@ func (s *Service) checkMounts() {
 
 func (s *Service) execute(job entities.Job) {
 	ctx, cancel := context.WithCancel(s.ctx)
+	var guardErr error
+	if job.SignedAuthBound {
+		// Everything below, including validation, runs under the guard so
+		// that an expired or changed authorization stops it.
+		var stop context.CancelFunc
+		ctx, stop, guardErr = s.guardJob(ctx, job)
+		if stop != nil {
+			defer stop()
+		}
+	}
 	s.mu.Lock()
 	s.running[job.ID] = cancel
 	current, err := s.store.GetJob(ctx, job.ID)
+	if err == nil && current.State == "running" && guardErr != nil {
+		job, err = current, guardErr
+	}
 	if err == nil && current.State == "running" {
 		job = current
 		s.recordEvent(ctx, job, "job.validating", "validating mount before execution")
@@ -1248,6 +1265,9 @@ func mountReady(mount entities.Mount) bool {
 }
 
 func (s *Service) executeOperation(ctx context.Context, job entities.Job) (int64, error) {
+	if (job.SignedAuthBound || job.RequiresSignedAuth || job.DestructivePlanID != "") && job.Type != "copy_local" {
+		return 0, ErrAuthorizationRequired
+	}
 	switch job.Type {
 	case "mkdir":
 		return 0, s.files.CreateDirectory(ctx, job.MountID, job.Destination)
@@ -1791,6 +1811,14 @@ func (s *Service) finish(job entities.Job, operationErr error, bytes int64) {
 			current.State, current.Phase = "waiting_validation", "waiting_validation"
 			current.Error = "node stopped before the operation completed; explicit validation is required"
 			eventType = "job.interrupted"
+		} else if current.SignedAuthBound && authorizationLost(operationErr) {
+			// The checkpoints stay; a newer lease resumes the job.
+			current.State, current.Phase, current.NextAttemptAt = "waiting_validation", "waiting_authorization", nil
+			current.Error = "job authorization expired or changed; waiting for renewal"
+			if current.Attempt > 0 {
+				current.Attempt--
+			}
+			eventType = "job.waiting_authorization"
 		} else if operationErr == nil {
 			current.State, current.Phase, current.Error, current.CompletedAt = "completed", "finalization", "", &now
 			current.BytesCompleted, current.BytesTotal = bytes, bytes
