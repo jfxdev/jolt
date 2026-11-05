@@ -167,11 +167,23 @@ func (s *Store) UpdateJobWithEvent(ctx context.Context, j entities.Job, event en
 	})
 }
 
-// executableSecuredJob reports whether a secured job may run: only a local copy
-// bound to a renewable signed authorization. Destructive plans stay blocked
-// until their execution revalidates the plan identity.
+// securedJobKind reports whether the job is one the node knows how to run
+// under a signed authorization: a local copy, or a delete or move that carries
+// a confirmed destructive plan. A delete or move without a plan never runs.
+func securedJobKind(job entities.Job) bool {
+	switch job.Type {
+	case "copy_local":
+		return job.DestructivePlanID == ""
+	case "delete", "move_local":
+		return job.DestructivePlanID != ""
+	}
+	return false
+}
+
+// executableSecuredJob reports whether a secured job may run: one of those
+// kinds, bound to a renewable signed authorization.
 func executableSecuredJob(job entities.Job) bool {
-	return job.SignedAuthBound && job.DestructivePlanID == "" && job.Type == "copy_local"
+	return job.SignedAuthBound && securedJobKind(job)
 }
 
 // validSecuredJobUpdate keeps secured jobs from being started by a generic

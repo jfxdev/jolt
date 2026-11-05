@@ -154,7 +154,7 @@ func (s *Store) RenewJobAuthorization(ctx context.Context, jobID, nodeID, envelo
 		// A local copy that stopped for lack of authorization resumes by
 		// itself once a newer lease is recorded. Jobs interrupted by a restart
 		// or by an operator still need an explicit resume.
-		autoResume := job.Type == "copy_local" && job.DestructivePlanID == "" && (job.State == "queued" || job.State == "waiting_validation" && job.Phase == "waiting_authorization")
+		autoResume := securedJobKind(job) && (job.State == "queued" || job.State == "waiting_validation" && job.Phase == "waiting_authorization")
 		switch {
 		case job.State == "paused":
 		case autoResume:
@@ -228,4 +228,31 @@ func (s *Store) verifiedJobLease(job entities.Job, nodeID string, keys map[strin
 		return JobAuthorization{}, nil, ErrInUse
 	}
 	return current, checked, nil
+}
+
+// DestructivePlanForJob returns the confirmed plan a delete or move job runs.
+// It fails unless the plan was consumed by exactly this job.
+func (s *Store) DestructivePlanForJob(ctx context.Context, jobID string) (plan DestructivePlan, err error) {
+	if !signedauth.ValidKeyID(jobID) {
+		return DestructivePlan{}, ErrInUse
+	}
+	err = s.view(ctx, func() error {
+		job, err := get[entities.Job](s, "jobs", jobID)
+		if err != nil {
+			return err
+		}
+		if job.DestructivePlanID == "" {
+			return ErrInUse
+		}
+		current, err := get[DestructivePlan](s, "destructive_plans", job.DestructivePlanID)
+		if err != nil {
+			return err
+		}
+		if current.ConsumedJobID != job.ID || current.MountID != job.MountID || current.Source != job.SourcePath || current.Destination != job.Destination || current.Overwrite != job.Overwrite {
+			return ErrInUse
+		}
+		plan = current
+		return nil
+	})
+	return plan, err
 }

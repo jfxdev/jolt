@@ -293,3 +293,27 @@ type UploadSession struct {
 	UpdatedAt                 time.Time  `json:"updated_at" yaml:"updated_at"`
 	ExpiresAt                 time.Time  `json:"expires_at" yaml:"expires_at"`
 }
+
+// DestructivePlan is the persisted confirmation of a destructive tree
+// operation. The caller derives the subject from verified authorization and
+// independently inspects both the source tree and any existing destination.
+// The token is stored only as a hash.
+type DestructivePlan struct {
+	ID                string    `yaml:"id" json:"-"`
+	TokenHash         string    `yaml:"token_hash" json:"-"`
+	SubjectType       string    `yaml:"subject_type" json:"-"`
+	SubjectID         string    `yaml:"subject_id" json:"-"`
+	Operation         string    `yaml:"operation" json:"-"`
+	MountID           string    `yaml:"mount_id" json:"-"`
+	Source            string    `yaml:"source" json:"-"`
+	Destination       string    `yaml:"destination,omitempty" json:"-"`
+	Overwrite         bool      `yaml:"overwrite,omitempty" json:"-"`
+	DestinationExists bool      `yaml:"destination_exists,omitempty" json:"-"`
+	TreeDigest        string    `yaml:"tree_digest" json:"-"`
+	DestinationDigest string    `yaml:"destination_digest,omitempty" json:"-"`
+	CreatedAt         time.Time `yaml:"created_at" json:"-"`
+	ExpiresAt         time.Time `yaml:"expires_at" json:"-"`
+	ConsumedJobID     string    `yaml:"consumed_job_id,omitempty" json:"-"`
+	IdempotencyKey    string    `yaml:"idempotency_key,omitempty" json:"-"`
+	RequestHash       string    `yaml:"request_hash,omitempty" json:"-"`
+}

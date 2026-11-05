@@ -15,28 +15,9 @@ import (
 	"github.com/jfxdev/jolt/backend/internal/signedauth"
 )
 
-// DestructivePlan is an internal persistence contract. The caller must derive
-// the subject from verified authorization and independently inspect both the
-// source tree and any existing destination. No HTTP endpoint uses it yet.
-type DestructivePlan struct {
-	ID                string    `yaml:"id" json:"-"`
-	TokenHash         string    `yaml:"token_hash" json:"-"`
-	SubjectType       string    `yaml:"subject_type" json:"-"`
-	SubjectID         string    `yaml:"subject_id" json:"-"`
-	Operation         string    `yaml:"operation" json:"-"`
-	MountID           string    `yaml:"mount_id" json:"-"`
-	Source            string    `yaml:"source" json:"-"`
-	Destination       string    `yaml:"destination,omitempty" json:"-"`
-	Overwrite         bool      `yaml:"overwrite,omitempty" json:"-"`
-	DestinationExists bool      `yaml:"destination_exists,omitempty" json:"-"`
-	TreeDigest        string    `yaml:"tree_digest" json:"-"`
-	DestinationDigest string    `yaml:"destination_digest,omitempty" json:"-"`
-	CreatedAt         time.Time `yaml:"created_at" json:"-"`
-	ExpiresAt         time.Time `yaml:"expires_at" json:"-"`
-	ConsumedJobID     string    `yaml:"consumed_job_id,omitempty" json:"-"`
-	IdempotencyKey    string    `yaml:"idempotency_key,omitempty" json:"-"`
-	RequestHash       string    `yaml:"request_hash,omitempty" json:"-"`
-}
+// DestructivePlan is the persisted confirmation of a destructive tree
+// operation. See entities.DestructivePlan.
+type DestructivePlan = entities.DestructivePlan
 
 func planDigest(value string) bool {
 	if len(value) != 64 || strings.ToLower(value) != value {
@@ -184,10 +165,10 @@ func (s *Store) AcceptDestructivePlan(ctx context.Context, id, subjectType, subj
 			return err
 		}
 		plan.ConsumedJobID, plan.IdempotencyKey, plan.RequestHash = job.ID, idempotencyKey, requestHash
-		// No executable lease or execution-time tree revalidation exists yet.
-		// Persist the job fail-closed until that integration is complete.
+		// The job starts only through ClaimNextSecuredJob, which verifies its
+		// lease, and the executor revalidates the tree against the plan.
 		job.DestructivePlanID = plan.ID
-		job.State, job.Phase, job.Error = "waiting_validation", "waiting_validation", "destructive plan execution requires authorization and tree revalidation"
+		job.State, job.Phase, job.Error = "waiting_validation", "waiting_authorization", "destructive plan execution requires authorization"
 		if err := tx.put("destructive_plans", plan.ID, plan.SubjectID, order(plan.CreatedAt), plan); err != nil {
 			return err
 		}

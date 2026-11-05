@@ -334,7 +334,7 @@ func TestPlanBoundJobAuthorizationKeepsOriginalSubject(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, err := s.GetJob(ctx, job.ID)
-	if err != nil || stored.State != "waiting_validation" || stored.DestructivePlanID != plan.ID || !stored.SignedAuthBound {
+	if err != nil || stored.State != "queued" || stored.DestructivePlanID != plan.ID || !stored.SignedAuthBound {
 		t.Fatalf("bound job=%+v err=%v", stored, err)
 	}
 }

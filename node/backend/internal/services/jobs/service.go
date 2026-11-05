@@ -1265,8 +1265,14 @@ func mountReady(mount entities.Mount) bool {
 }
 
 func (s *Service) executeOperation(ctx context.Context, job entities.Job) (int64, error) {
-	if (job.SignedAuthBound || job.RequiresSignedAuth || job.DestructivePlanID != "") && job.Type != "copy_local" {
-		return 0, ErrAuthorizationRequired
+	if job.SignedAuthBound || job.RequiresSignedAuth || job.DestructivePlanID != "" {
+		destructive := (job.Type == "delete" || job.Type == "move_local") && job.DestructivePlanID != "" && job.SignedAuthBound
+		if !destructive && !(job.Type == "copy_local" && job.DestructivePlanID == "") {
+			return 0, ErrAuthorizationRequired
+		}
+		if destructive {
+			return s.executeDestructive(ctx, job)
+		}
 	}
 	switch job.Type {
 	case "mkdir":
