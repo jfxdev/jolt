@@ -1298,6 +1298,11 @@ components:
         version: {type: string, example: '2026-10-29'}
         commit: {type: string, example: 0123456789abcdef0123456789abcdef01234567}
         build_date: {type: string, example: '2026-10-29T12:00:00Z'}
+        features:
+          type: object
+          description: Optional behaviours this Control Tower was started with.
+          properties:
+            typed_policies: {type: boolean, description: 'True when policy rules may restrict by file type (CONTROL_TOWER_TYPED_POLICIES).'}
     Health:
       type: object
       required: [status]

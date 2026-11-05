@@ -386,8 +386,22 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// aboutResponse is the build plus the optional behaviours this Control Tower
+// was started with, so the interface offers only what the server will accept.
+type aboutResponse struct {
+	buildinfo.Info
+	Features aboutFeatures `json:"features"`
+}
+
+type aboutFeatures struct {
+	TypedPolicies bool `json:"typed_policies"`
+}
+
 func (s *Server) about(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, buildinfo.Current())
+	writeJSON(w, http.StatusOK, aboutResponse{
+		Info:     buildinfo.Current(),
+		Features: aboutFeatures{TypedPolicies: s.config.TypedPolicies},
+	})
 }
 
 type loginRequest struct {

@@ -25,6 +25,7 @@ export interface BuildInfo {
   version: string;
   commit: string;
   build_date: string;
+  features?: { typed_policies?: boolean };
 }
 
 export interface ServiceAccount {
@@ -94,9 +95,21 @@ export interface WorkloadIdentity extends WorkloadIdentityInput {
   updated_at: string;
 }
 
+// What a typed rule matches by file type. The node decides each entry's real
+// type; directories are never filtered by type.
+export interface FileTypeSelector {
+  classes?: string[];
+  extensions?: string[];
+  names?: string[];
+}
+
 export interface PolicyRule {
   path: string;
   capabilities: Capability[];
+  // Present only on typed rules, which the Control Tower accepts when typed
+  // policies are enabled.
+  file_types?: FileTypeSelector;
+  visibility?: "hidden" | "visible";
 }
 
 export interface Policy {
@@ -164,6 +177,8 @@ export interface FileEntry {
   size?: number;
   disk_usage?: number;
   modified_at?: string;
+  // The policy shows this entry but does not let the caller use it.
+  blocked?: boolean;
 }
 
 export interface BrowseResult {

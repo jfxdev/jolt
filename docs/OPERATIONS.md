@@ -239,6 +239,19 @@ assinatura: cada rota que alcança um arquivo precisa levar o contexto assinado,
 regra tipada deixaria passar o que esconde. Os nodes precisam anunciar as capacidades
 dos modos assinados; sem elas a operação falha fechada, não volta ao caminho sem filtro.
 
+**Editor e navegador**
+
+- Em Access → Policies cada regra tem “Restringir por tipo”: classes (vídeo, áudio,
+  imagem, documento, compactado, executável, segredo), extensões sem ponto, nomes exatos
+  e “Quando bloqueado” (ocultar ou mostrar bloqueado). O editor valida os mesmos limites
+  do servidor e descreve a regra em uma frase. Editar uma policy preserva os campos
+  tipados; antes da correção eles se perdiam no salvamento.
+- O controle fica desativado quando o Control Tower não foi iniciado com
+  `CONTROL_TOWER_TYPED_POLICIES`; `GET /api/v1/control-tower/about` informa isso em
+  `features.typed_policies`.
+- No navegador de arquivos, uma entrada `visible` negada aparece com cadeado, sem
+  abrir, baixar, selecionar nem menu de ações. As `hidden` não aparecem.
+
 **Semântica**
 
 - O **node** decide o tipo real de cada entrada. Negação tipada vale só para arquivos;
@@ -258,8 +271,9 @@ dos modos assinados; sem elas a operação falha fechada, não volta ao caminho 
 
 **O que ainda não existe**
 
-- Editor de regra, matriz de acesso efetivo e navegador de arquivos (cadeado, mensagens)
-  da interface ainda não conhecem tipos: use a API.
+- A **matriz de acesso efetivo** (quem pode o quê, por tipo) não existe na interface nem
+  na API: para conferir uma regra, leia a frase que o editor mostra e teste com uma
+  conta real.
 - Não houve validação sob carga nem entre hosts. Trate o recurso como experimental.
 
 ## Rotinas

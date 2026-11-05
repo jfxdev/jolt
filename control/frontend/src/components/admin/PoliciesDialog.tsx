@@ -35,6 +35,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { AdminDialogProps } from "./types";
+import { TypedRuleFields } from "./TypedRuleFields";
+import { cleanSelector, normalizeCapabilities, validateTypedRule } from "@/lib/policy-rules";
 import {
   AdminEntityDialog,
   EntityDialogFormLayout,
@@ -71,11 +73,16 @@ function emptyForm(): PolicyForm {
   };
 }
 
-function normalize(rule: PolicyRule, changed: Capability): Capability[] {
-  if (changed === "deny" && rule.capabilities.includes("deny")) return ["deny"];
-  if (changed !== "deny" && rule.capabilities.includes(changed))
-    return rule.capabilities.filter((c) => c !== "deny");
-  return rule.capabilities;
+// What the server receives: typed fields cleaned, and only on typed rules.
+function ruleForSave(rule: PolicyRule): PolicyRule {
+  const fileTypes = cleanSelector(rule.file_types);
+  if (!fileTypes) return { path: rule.path, capabilities: rule.capabilities };
+  return {
+    path: rule.path,
+    capabilities: rule.capabilities,
+    file_types: fileTypes,
+    visibility: rule.visibility ?? "hidden",
+  };
 }
 
 function segments(path: string): string[] {
@@ -140,6 +147,23 @@ export function PoliciesDialog({
   const [directNodeModes, setDirectNodeModes] = useState([true]);
   const [search, setSearch] = useState("");
   const [formOpen, setFormOpen] = useState(false);
+  const [typedPolicies, setTypedPolicies] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    void api
+      .about()
+      .then((about) => {
+        if (active) setTypedPolicies(about.features?.typed_policies === true);
+      })
+      .catch(() => {
+        if (active) setTypedPolicies(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -250,9 +274,12 @@ export function PoliciesDialog({
     setForm({
       name: policy.name,
       description: policy.description,
+      // Typed fields travel with the rule: dropping them here would turn a
+      // narrow typed rule into a path-wide one on the next save.
       rules: policy.rules.map((r) => ({
-        path: r.path,
+        ...r,
         capabilities: [...r.capabilities],
+        ...(r.file_types ? { file_types: structuredClone(r.file_types) } : {}),
       })),
     });
     setDirectNodeModes(policy.rules.map((rule) => isDirectNodePath(rule.path)));
@@ -267,11 +294,24 @@ export function PoliciesDialog({
         const capabilities = has
           ? rule.capabilities.filter((c) => c !== capability)
           : [...rule.capabilities, capability];
-        const next = { ...rule, capabilities };
-        return { ...next, capabilities: normalize(next, capability) };
+        return {
+          ...rule,
+          capabilities: normalizeCapabilities(
+            capabilities,
+            capability,
+            Boolean(rule.file_types),
+          ),
+        };
       });
       return { ...prev, rules };
     });
+  }
+
+  function setRule(index: number, rule: PolicyRule) {
+    setForm((prev) => ({
+      ...prev,
+      rules: prev.rules.map((current, i) => (i === index ? rule : current)),
+    }));
   }
 
   function setRulePath(index: number, path: string) {
@@ -345,13 +385,19 @@ export function PoliciesDialog({
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
+    const invalid = form.rules.findIndex((rule) => validateTypedRule(rule) !== "");
+    if (invalid >= 0) {
+      toast.error(`Regra ${invalid + 1}: ${validateTypedRule(form.rules[invalid])}`);
+      return;
+    }
+    const body = { ...form, rules: form.rules.map(ruleForSave) };
     setBusy(true);
     try {
       if (editingId) {
-        await api.updatePolicy(editingId, form);
+        await api.updatePolicy(editingId, body);
         toast.success("Policy atualizada.");
       } else {
-        await api.createPolicy(form);
+        await api.createPolicy(body);
         toast.success("Policy criada.");
       }
       reset();
@@ -708,6 +754,12 @@ export function PoliciesDialog({
                         </label>
                       ))}
                     </div>
+                    <TypedRuleFields
+                      rule={rule}
+                      index={index}
+                      enabled={typedPolicies}
+                      onChange={(next) => setRule(index, next)}
+                    />
                   </article>
                 );
               })}
