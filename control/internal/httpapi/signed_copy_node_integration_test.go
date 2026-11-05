@@ -182,6 +182,23 @@ func TestSignedCopyAgainstNodeProcess(t *testing.T) {
 	if err != nil || status.Revision != 1 {
 		t.Fatalf("node status=%+v err=%v", status, err)
 	}
+	if err := s.renewSignedLocalJob(ctx, nodeID, jobID); err != nil {
+		t.Fatalf("renewal: %v", err)
+	}
+	status, err = s.signedJobStatus(request, node, jobID)
+	if err != nil || status.Revision != 2 {
+		t.Fatalf("renewed node status=%+v err=%v", status, err)
+	}
+	if err := storage.DeleteSession(ctx, security.Digest(session)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.renewSignedLocalJob(ctx, nodeID, jobID); err == nil {
+		t.Fatal("revoked session renewed job")
+	}
+	status, err = s.signedJobStatus(request, node, jobID)
+	if err != nil || status.Revision != 2 {
+		t.Fatalf("revoked renewal changed node status=%+v err=%v", status, err)
+	}
 	var actual signedLocalJob
 	if err := s.callNodeJSON(ctx, node, http.MethodGet, "/api/v1/jobs/"+jobID, nil, &actual, ""); err != nil || actual.State != "waiting_validation" {
 		t.Fatalf("node job=%+v err=%v", actual, err)
