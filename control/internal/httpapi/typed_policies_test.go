@@ -27,7 +27,7 @@ type typedHarness struct {
 	calls    []string
 }
 
-func newTypedHarness(t *testing.T, typed bool, nodeHandler func(*http.Request) (int, http.Header, string)) *typedHarness {
+func newTypedHarness(t *testing.T, typed bool, nodeHandler func(*http.Request) (int, http.Header, string), options ...func(*config.Config)) *typedHarness {
 	t.Helper()
 	ctx, now := context.Background(), time.Now().UTC()
 	storage, err := store.Open(filepath.Join(t.TempDir(), "control.db"), make([]byte, 32))
@@ -63,8 +63,12 @@ func newTypedHarness(t *testing.T, typed bool, nodeHandler func(*http.Request) (
 		}
 		return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
-	h.handler = newHandler(config.Config{EncryptionKey: make([]byte, 32), StaticDir: t.TempDir(), TypedPolicies: typed, SignedLocalReads: true, SignedUploads: true, SignedLocalJobs: true,
-		AuthorizationSigningKeyID: "key", AuthorizationSigningKey: key}, storage, slog.New(slog.NewTextHandler(io.Discard, nil)), client)
+	cfg := config.Config{EncryptionKey: make([]byte, 32), StaticDir: t.TempDir(), TypedPolicies: typed, SignedLocalReads: true, SignedUploads: true, SignedLocalJobs: true,
+		AuthorizationSigningKeyID: "key", AuthorizationSigningKey: key}
+	for _, option := range options {
+		option(&cfg)
+	}
+	h.handler = newHandler(cfg, storage, slog.New(slog.NewTextHandler(io.Discard, nil)), client)
 	return h
 }
 

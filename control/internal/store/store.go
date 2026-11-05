@@ -21,7 +21,7 @@ var (
 	ErrLastAdmin = errors.New("at least one enabled administrator is required")
 )
 
-const supportedSecurityVersion = 7
+const supportedSecurityVersion = 8
 
 type User struct {
 	ID           string    `json:"user_id"`
@@ -191,6 +191,10 @@ func Open(path string, encryptionKey []byte) (*Store, error) {
 		database.Close()
 		return nil, err
 	}
+	if err := recoverPendingOperations(database); err != nil {
+		database.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -271,6 +275,15 @@ CREATE TABLE IF NOT EXISTS job_authorization_finished (
  node_id TEXT NOT NULL, job_id TEXT NOT NULL, finished_at TEXT NOT NULL,
  PRIMARY KEY(node_id,job_id), FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS pending_operations (
+ id TEXT PRIMARY KEY, requester_type TEXT NOT NULL, requester_id TEXT NOT NULL,
+ method TEXT NOT NULL, node_id TEXT NOT NULL, resource TEXT NOT NULL, raw_query TEXT NOT NULL,
+ body BLOB NOT NULL, body_sha256 TEXT NOT NULL, summary TEXT NOT NULL, requirements TEXT NOT NULL,
+ state TEXT NOT NULL, created_at TEXT NOT NULL, expires_at_ns INTEGER NOT NULL,
+ decided_by_type TEXT NOT NULL DEFAULT '', decided_by_id TEXT NOT NULL DEFAULT '', decided_at TEXT NOT NULL DEFAULT '',
+ note TEXT NOT NULL DEFAULT '', result_status INTEGER NOT NULL DEFAULT 0, result_body TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS pending_operations_state ON pending_operations(state, expires_at_ns);
 CREATE TABLE IF NOT EXISTS signed_copy_intents (
  node_id TEXT NOT NULL, job_id TEXT NOT NULL, actor_type TEXT NOT NULL, actor_id TEXT NOT NULL,
  credential_id TEXT NOT NULL, credential_digest TEXT NOT NULL, idempotency_key TEXT NOT NULL,
@@ -409,6 +422,7 @@ WHERE path LIKE 'workers/%'`); err != nil {
 	for _, statement := range []string{
 		`ALTER TABLE policy_rules ADD COLUMN file_types TEXT NOT NULL DEFAULT 'null'`,
 		`ALTER TABLE policy_rules ADD COLUMN visibility TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE policy_rules ADD COLUMN needs_approval TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE shares ADD COLUMN created_by_type TEXT NOT NULL DEFAULT 'user'`,
 		`ALTER TABLE shares ADD COLUMN created_credential_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE service_accounts ADD COLUMN kind TEXT NOT NULL DEFAULT 'automation'`,
@@ -1108,7 +1122,7 @@ func (s *Store) GetPolicy(ctx context.Context, id string) (Policy, error) {
 }
 
 func (s *Store) policyRules(ctx context.Context, policyID string) ([]rbac.Rule, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT path,capabilities,file_types,visibility FROM policy_rules WHERE policy_id=? ORDER BY position,id`, policyID)
+	rows, err := s.db.QueryContext(ctx, `SELECT path,capabilities,file_types,visibility,needs_approval FROM policy_rules WHERE policy_id=? ORDER BY position,id`, policyID)
 	if err != nil {
 		return nil, err
 	}
@@ -1116,9 +1130,14 @@ func (s *Store) policyRules(ctx context.Context, policyID string) ([]rbac.Rule, 
 	var rules []rbac.Rule
 	for rows.Next() {
 		var rule rbac.Rule
-		var encoded, selector string
-		if err := rows.Scan(&rule.Path, &encoded, &selector, &rule.Visibility); err != nil {
+		var encoded, selector, approval string
+		if err := rows.Scan(&rule.Path, &encoded, &selector, &rule.Visibility, &approval); err != nil {
 			return nil, err
+		}
+		if approval != "" && approval != "[]" {
+			if err := json.Unmarshal([]byte(approval), &rule.NeedsApproval); err != nil {
+				return nil, err
+			}
 		}
 		if err := json.Unmarshal([]byte(encoded), &rule.Capabilities); err != nil {
 			return nil, err
@@ -1204,8 +1223,19 @@ func insertPolicyRules(ctx context.Context, tx *sql.Tx, policyID string, rules [
 				return err
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO policy_rules(policy_id,path,capabilities,position,file_types,visibility) VALUES(?,?,?,?,?,?)`,
-			policyID, rule.Path, string(encoded), position, string(selector), rule.Visibility); err != nil {
+		approval := []byte("[]")
+		if len(rule.NeedsApproval) > 0 {
+			if approval, err = json.Marshal(rule.NeedsApproval); err != nil {
+				return err
+			}
+			// An older binary would read the rule as a plain grant and skip the
+			// approval, so keep it from opening a database that holds one.
+			if _, err := tx.ExecContext(ctx, `INSERT INTO metadata(key,value) VALUES('minimum_security_version','8') ON CONFLICT(key) DO UPDATE SET value=CASE WHEN CAST(value AS INTEGER)<8 THEN '8' ELSE value END`); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO policy_rules(policy_id,path,capabilities,position,file_types,visibility,needs_approval) VALUES(?,?,?,?,?,?,?)`,
+			policyID, rule.Path, string(encoded), position, string(selector), rule.Visibility, string(approval)); err != nil {
 			return err
 		}
 	}
@@ -1213,6 +1243,9 @@ func insertPolicyRules(ctx context.Context, tx *sql.Tx, policyID string, rules [
 }
 
 func validatePolicyTypeRule(rule rbac.Rule) error {
+	if !rbac.ValidNeedsApproval(rule) {
+		return errors.New("invalid approval marks")
+	}
 	if rule.FileTypes == nil {
 		if rule.Visibility != "" {
 			return errors.New("visibility requires file types")

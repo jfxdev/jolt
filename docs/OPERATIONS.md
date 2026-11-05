@@ -302,6 +302,55 @@ Cada conjunto foi conferido por mutação: enfraquecer a verificação de assina
   capabilities por token, CIDR): a matriz abaixo não os considera.
 - Não houve validação sob carga nem entre hosts. Trate o recurso como experimental.
 
+## Aprovação humana
+
+Uma regra de policy pode conceder `delete` ou `update` **somente com a aprovação de uma pessoa**
+(`needs_approval: ["delete"]`, na interface “Exigir aprovação para…”). A opção vem desativada:
+`CONTROL_TOWER_APPROVALS=true` liga as aprovações e `CONTROL_TOWER_APPROVAL_WEBHOOK_URL`
+(https, sem credenciais; `http` só em loopback) avisa um webhook de cada pedido novo.
+
+**Como funciona**
+
+- Pedido: apagar, mover ou copiar arquivos pela API de arquivos (corpo JSON de até 16 KiB) em um
+  caminho cuja concessão exige aprovação não executa. O Control Tower guarda o pedido exatamente como
+  veio e responde `202` com `pending_operation_id` e a validade de **cinco minutos**. Um pedido idêntico
+  ainda aguardando devolve o mesmo id; cada identidade tem até 20 pedidos abertos.
+- Decisão: em Access → Aprovações (ou `POST …/pending-operations/{id}/approve|reject`), uma **pessoa**
+  autenticada com `sudo` em `control-tower/approvals`. Chave de API, conta de serviço e agente não
+  decidem. Quem tem a role `admin` decide sem regra.
+- Execução: ao aprovar, o Control Tower **reexecuta o pedido guardado como o aprovador**, com as
+  permissões atuais dele; só os requisitos aprovados passam pela porta da aprovação. Antes disso confere
+  de novo se quem pediu ainda pode (conta ativa, policies atuais, node no grupo). Aprovar não dá mais
+  poder a ninguém: se o aprovador não pode apagar aquilo, o pedido falha e nada muda.
+- Aprovar o próprio pedido exige confirmação explícita (`acknowledge_self_approval`).
+- Repetir a aprovação devolve o resultado guardado (`replayed: true`) e não executa de novo. A cópia
+  reexecutada usa a chave `approval-<id>`, então nem um nó que cria jobs por chave cria dois.
+- Se o Control Tower reiniciar durante a execução, o pedido vira `indeterminate`: não se sabe se chegou
+  ao node, e ele **nunca** é reexecutado sozinho.
+- Cada passo (pedido, aprovação, rejeição, execução) vai para a auditoria. O webhook leva só o tipo da
+  operação, node, mount, quem pediu e a validade: nunca caminhos, corpo ou credenciais.
+
+**Falha fechada**
+
+- Onde o Control Tower não consegue guardar o pedido (envio com sobrescrita, mover ou copiar entre nodes,
+  plano de pasta, share), uma concessão marcada é **recusada** (`approval_unsupported`), nunca concedida.
+- Com as aprovações desligadas, a marca continua valendo: a concessão é recusada. Desligar a opção não
+  afrouxa nada. Uma policy que carrega marcas não pode ser editada com a opção desligada.
+- O marcador de versão mínima do banco sobe para 8 ao gravar a primeira marca, para que um binário que
+  não as conhece não leia a concessão como comum. Faça rollback só com backup anterior à ativação.
+- A marca vale só em regras por caminho; uma regra por tipo não pode pedi-la.
+
+**O que ainda não existe**
+
+- Agentes **não** podem pedir aprovação: o perfil `agent` continua só leitura, e é uma decisão separada
+  ampliar isso.
+- Apagar ou mover **pasta** (plano e confirmação), transferências entre nodes e envios continuam
+  recusados quando a concessão exige aprovação. Aprovar um plano criado por outra credencial é o próximo
+  passo.
+- Em Access → Acesso efetivo uma concessão assim aparece como “exige aprovação”.
+- A integridade do corpo guardado é conferida (SHA-256) antes de executar; o servidor não tem teste que
+  adultere o banco, só o de unidade da conferência.
+
 ## Rotinas
 
 **Diária**

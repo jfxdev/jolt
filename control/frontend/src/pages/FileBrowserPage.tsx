@@ -29,6 +29,7 @@ import { FileSearchBar } from "@/components/files/FileSearchBar";
 import { ShareDialog } from "@/components/files/ShareDialog";
 import { UploadQueue, type UploadItem } from "@/components/files/UploadQueue";
 import { useResumableUploads } from "@/hooks/useResumableUploads";
+import { asPendingApproval, pendingToast } from "@/lib/approvals";
 
 type TransferSelection = {
   entries: FileEntry[];
@@ -388,12 +389,19 @@ export default function FileBrowserPage() {
       return;
     if (!mount) return;
     try {
-      await api.removeFile(
+      const answer = await api.removeFile(
         nodeId,
         mount.mount_id,
         entry.path,
         entry.type === "directory",
       );
+      // A policy may ask a person to approve the delete first; nothing was
+      // removed yet, so the listing stays as it is.
+      const pending = asPendingApproval(answer);
+      if (pending) {
+        toast.info(pendingToast(pending));
+        return;
+      }
       await Promise.all([loadFiles(currentPath), refreshJobs()]);
       toast.success("Item removido.");
     } catch (error) {

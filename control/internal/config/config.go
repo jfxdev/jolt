@@ -27,6 +27,8 @@ type Config struct {
 	SignedLocalReads          bool
 	SignedLocalJobs           bool
 	TypedPolicies             bool
+	Approvals                 bool
+	ApprovalWebhookURL        string
 	SignedUploads             bool
 	AuditRetentionDays        int
 	AuditHashChain            bool
@@ -101,6 +103,23 @@ func Load() (Config, error) {
 		if err != nil {
 			return Config{}, errors.New("CONTROL_TOWER_TYPED_POLICIES must be a boolean")
 		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("CONTROL_TOWER_APPROVALS")); raw != "" {
+		cfg.Approvals, err = strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, errors.New("CONTROL_TOWER_APPROVALS must be a boolean")
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("CONTROL_TOWER_APPROVAL_WEBHOOK_URL")); raw != "" {
+		parsed, parseErr := url.Parse(raw)
+		loopback := parsed != nil && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1")
+		if parseErr != nil || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" || (parsed.Scheme != "https" && !(parsed.Scheme == "http" && loopback)) {
+			return Config{}, errors.New("CONTROL_TOWER_APPROVAL_WEBHOOK_URL must be an https URL without credentials")
+		}
+		if !cfg.Approvals {
+			return Config{}, errors.New("CONTROL_TOWER_APPROVAL_WEBHOOK_URL requires CONTROL_TOWER_APPROVALS")
+		}
+		cfg.ApprovalWebhookURL = raw
 	}
 	if raw := strings.TrimSpace(os.Getenv("CONTROL_TOWER_SIGNED_UPLOADS")); raw != "" {
 		cfg.SignedUploads, err = strconv.ParseBool(raw)

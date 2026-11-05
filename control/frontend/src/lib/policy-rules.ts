@@ -1,4 +1,4 @@
-import type { Capability, FileTypeSelector, PolicyRule } from "./types.ts";
+import type { ApprovalCapability, Capability, FileTypeSelector, PolicyRule } from "./types.ts";
 
 // The classes the server knows, with the label an operator reads.
 export const FILE_TYPE_CLASSES: { id: string; label: string }[] = [
@@ -114,6 +114,11 @@ export function describeSelector(selector: FileTypeSelector | undefined): string
 
 /** A sentence that says what a rule does, so a typed rule is not left to be decoded. */
 export function describeRule(rule: PolicyRule): string {
+  const approval = describeApproval(rule);
+  return `${describeRuleBase(rule)}${approval ? ` ${approval}` : ""}`.trim();
+}
+
+function describeRuleBase(rule: PolicyRule): string {
   const deny = rule.capabilities.includes("deny");
   const actions = rule.capabilities.filter((value) => value !== "deny");
   if (!rule.file_types) {
@@ -127,4 +132,56 @@ export function describeRule(rule: PolicyRule): string {
     return `Nega ${what || "todas as operações em"} arquivos ${kind}.${visibility} Pastas não são afetadas.`;
   }
   return `Permite ${what} somente arquivos ${kind}; pastas continuam navegáveis.${visibility}`;
+}
+
+export const APPROVAL_CAPABILITIES: { id: ApprovalCapability; label: string }[] = [
+  { id: "delete", label: "Apagar" },
+  { id: "update", label: "Alterar, sobrescrever e mover" },
+];
+
+/** True when the rule grants the capability, counting that write grants update. */
+function grants(rule: PolicyRule, capability: ApprovalCapability): boolean {
+  return rule.capabilities.includes(capability) || (capability === "update" && rule.capabilities.includes("write"));
+}
+
+export function canAskApproval(rule: PolicyRule, capability: ApprovalCapability): boolean {
+  return !rule.file_types && !rule.capabilities.includes("deny") && grants(rule, capability);
+}
+
+export function setApproval(rule: PolicyRule, capability: ApprovalCapability, on: boolean): PolicyRule {
+  const current = rule.needs_approval ?? [];
+  const next = on ? [...current.filter((value) => value !== capability), capability] : current.filter((value) => value !== capability);
+  const { needs_approval: _dropped, ...rest } = rule;
+  void _dropped;
+  return next.length ? { ...rest, needs_approval: next } : rest;
+}
+
+/** Drops marks the rule no longer supports, after a capability or type changed. */
+export function pruneApproval(rule: PolicyRule): PolicyRule {
+  let result = rule;
+  for (const capability of rule.needs_approval ?? []) {
+    if (!canAskApproval(rule, capability)) result = setApproval(result, capability, false);
+  }
+  return result;
+}
+
+/** Mirrors what the server refuses about approval marks; "" when acceptable. */
+export function validateApproval(rule: PolicyRule): string {
+  const marks = rule.needs_approval ?? [];
+  if (!marks.length) return "";
+  if (rule.file_types) return "A aprovação não vale para regras por tipo.";
+  if (rule.capabilities.includes("deny")) return "Uma negação não pede aprovação.";
+  if (new Set(marks).size !== marks.length) return "Há aprovações repetidas.";
+  for (const mark of marks) {
+    if (!APPROVAL_CAPABILITIES.some((entry) => entry.id === mark)) return "Só apagar e alterar podem pedir aprovação.";
+    if (!grants(rule, mark)) return `A regra precisa conceder “${mark}” para exigir aprovação.`;
+  }
+  return "";
+}
+
+export function describeApproval(rule: PolicyRule): string {
+  const marks = rule.needs_approval ?? [];
+  if (!marks.length) return "";
+  const names = marks.map((mark) => (mark === "delete" ? "apagar" : "alterar, sobrescrever ou mover"));
+  return `Exige a aprovação de uma pessoa para ${names.join(" e para ")}.`;
 }

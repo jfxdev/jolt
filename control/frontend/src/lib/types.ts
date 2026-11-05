@@ -25,7 +25,7 @@ export interface BuildInfo {
   version: string;
   commit: string;
   build_date: string;
-  features?: { typed_policies?: boolean };
+  features?: { typed_policies?: boolean; approvals?: boolean };
 }
 
 export interface ServiceAccount {
@@ -110,6 +110,53 @@ export interface PolicyRule {
   // policies are enabled.
   file_types?: FileTypeSelector;
   visibility?: "hidden" | "visible";
+  // Capabilities this rule grants only once a person approves each request.
+  needs_approval?: ApprovalCapability[];
+}
+
+export type ApprovalCapability = "delete" | "update";
+
+export type PendingState =
+  | "pending"
+  | "executing"
+  | "executed"
+  | "failed"
+  | "rejected"
+  | "expired"
+  | "indeterminate";
+
+// What a file operation answers (202) when a policy asks for a person's approval.
+export interface PendingApprovalNotice {
+  pending_operation_id: string;
+  state: "pending_approval";
+  expires_at: string;
+  operation: "delete" | "move" | "copy";
+}
+
+export interface PendingOperation {
+  pending_operation_id: string;
+  requester_type: string;
+  requester_id: string;
+  requester_name?: string;
+  method: string;
+  node_id: string;
+  resource: string;
+  summary: { operation?: string; mount_id?: string; paths?: string[] };
+  requirements: { path: string; capability: string }[];
+  state: PendingState;
+  created_at: string;
+  expires_at: string;
+  decided_by_id?: string;
+  decided_by_name?: string;
+  decided_at?: string;
+  note?: string;
+  result_status?: number;
+}
+
+export interface ApprovalDecision {
+  pending_operation: PendingOperation;
+  result: { status: number; body?: unknown };
+  replayed?: boolean;
 }
 
 export interface Policy {
@@ -119,7 +166,7 @@ export interface Policy {
   rules: PolicyRule[];
 }
 
-export type EffectiveOutcome = "allowed" | "denied" | "hidden" | "blocked";
+export type EffectiveOutcome = "allowed" | "denied" | "hidden" | "blocked" | "approval";
 
 export interface EffectiveCapability {
   allowed: boolean;

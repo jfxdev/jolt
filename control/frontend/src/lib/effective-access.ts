@@ -8,6 +8,7 @@ const LABELS: Record<EffectiveOutcome, string> = {
   denied: "Negado",
   hidden: "Oculto",
   blocked: "Bloqueado",
+  approval: "Exige aprovação",
 };
 
 const MEANINGS: Record<EffectiveOutcome, string> = {
@@ -15,6 +16,7 @@ const MEANINGS: Record<EffectiveOutcome, string> = {
   denied: "Nenhuma regra concede a operação, ou uma regra por caminho a nega.",
   hidden: "Uma regra por tipo nega a operação e o arquivo some da listagem; o acesso direto responde 404.",
   blocked: "Uma regra por tipo nega a operação; o arquivo aparece, mas não pode ser usado (403).",
+  approval: "A regra concede a operação somente depois que uma pessoa aprova cada pedido.",
 };
 
 export function outcomeLabel(outcome: EffectiveOutcome): string {
@@ -23,7 +25,7 @@ export function outcomeLabel(outcome: EffectiveOutcome): string {
 
 /** The glyph shown in a cell; the label travels separately for screen readers. */
 export function outcomeSymbol(outcome: EffectiveOutcome): string {
-  return { allowed: "✓", denied: "✗", hidden: "◌", blocked: "🔒" }[outcome];
+  return { allowed: "✓", denied: "✗", hidden: "◌", blocked: "🔒", approval: "✋" }[outcome];
 }
 
 /**

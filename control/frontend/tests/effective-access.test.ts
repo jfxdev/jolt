@@ -3,9 +3,9 @@ import { test } from "node:test";
 import { describeReason, explainCell, outcomeLabel, outcomeSymbol, suggestPath } from "../src/lib/effective-access.ts";
 
 test("every outcome has a label and a symbol that tell them apart", () => {
-  const outcomes = ["allowed", "denied", "hidden", "blocked"] as const;
-  assert.equal(new Set(outcomes.map(outcomeLabel)).size, 4);
-  assert.equal(new Set(outcomes.map(outcomeSymbol)).size, 4);
+  const outcomes = ["allowed", "denied", "hidden", "blocked", "approval"] as const;
+  assert.equal(new Set(outcomes.map(outcomeLabel)).size, 5);
+  assert.equal(new Set(outcomes.map(outcomeSymbol)).size, 5);
 });
 
 test("a cell names the policies that decided it and says when a type rule did", () => {

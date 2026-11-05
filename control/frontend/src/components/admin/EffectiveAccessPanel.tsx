@@ -47,6 +47,7 @@ const CELL_STYLE = {
   denied: "text-destructive",
   hidden: "text-amber-700 dark:text-amber-400",
   blocked: "text-amber-700 dark:text-amber-400",
+  approval: "text-sky-700 dark:text-sky-400",
 } as const;
 
 // Shows what an identity can do at concrete paths, as the Control Tower and the
@@ -287,7 +288,7 @@ export function EffectiveAccessPanel({ active }: { active: boolean }) {
             </Table>
           </div>
           <p className="text-xs text-muted-foreground">
-            ✓ permitido · ✗ negado · ◌ oculto (some da listagem) · 🔒 bloqueado (aparece, mas não abre).
+            ✓ permitido · ✗ negado · ◌ oculto (some da listagem) · 🔒 bloqueado (aparece, mas não abre) · ✋ exige aprovação de uma pessoa.
             Passe o mouse sobre uma célula para ver as policies envolvidas.
           </p>
         </div>

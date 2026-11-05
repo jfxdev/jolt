@@ -19,6 +19,7 @@ const CONTROL_PERMISSION_PATHS = [
   "control-tower/service-accounts",
   "control-tower/access-groups",
   "control-tower/policies",
+  "control-tower/approvals",
   "control-tower/roles",
   "control-tower/nodes",
   "control-tower/connections",

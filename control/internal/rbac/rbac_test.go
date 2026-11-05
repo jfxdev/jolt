@@ -306,3 +306,86 @@ func TestDeniesWithinIgnoresAllowRulesAndOtherFamilies(t *testing.T) {
 		t.Fatal("an allow rule or an unrelated family triggered a deny")
 	}
 }
+
+func TestNeedsApprovalFollowsTheMostSpecificGrant(t *testing.T) {
+	base := "nodes/n/files/mounts/m"
+	policies := []Policy{
+		{ID: "wide", Rules: []Rule{{Path: base + "/**", Capabilities: []string{"read", "delete"}, NeedsApproval: []string{"delete"}}}},
+		{ID: "plain", Rules: []Rule{{Path: base + "/scratch/**", Capabilities: []string{"delete"}}}},
+		{ID: "write", Rules: []Rule{{Path: base + "/inbox/**", Capabilities: []string{"write"}, NeedsApproval: []string{"update"}}}},
+	}
+	for _, test := range []struct {
+		path, capability  string
+		allowed, approval bool
+	}{
+		{base + "/docs/a.txt", "delete", true, true},
+		{base + "/docs/a.txt", "read", true, false},
+		{base + "/scratch/a.txt", "delete", true, false}, // a more specific, unmarked grant wins
+		{base + "/inbox/a.txt", "update", true, true},    // write grants update, and the mark names update
+		{base + "/inbox/a.txt", "create", true, false},   // the mark is per capability
+		{base + "/docs/a.txt", "update", false, false},
+	} {
+		got := Evaluate(policies, test.path, test.capability)
+		if got.Allowed != test.allowed || got.NeedsApproval != test.approval {
+			t.Fatalf("%s %s: %+v", test.path, test.capability, got)
+		}
+	}
+	// Two grants at the same specificity: one mark is enough.
+	both := []Policy{
+		{ID: "a", Rules: []Rule{{Path: base + "/x/**", Capabilities: []string{"delete"}}}},
+		{ID: "b", Rules: []Rule{{Path: base + "/x/**", Capabilities: []string{"delete"}, NeedsApproval: []string{"delete"}}}},
+	}
+	if got := Evaluate(both, base+"/x/f", "delete"); !got.Allowed || !got.NeedsApproval {
+		t.Fatalf("a mark at the same specificity was dropped: %+v", got)
+	}
+	// A denial still wins and carries no approval.
+	denied := append([]Policy{{ID: "d", Rules: []Rule{{Path: base + "/**", Capabilities: []string{"deny"}}}}}, policies...)
+	if got := Evaluate(denied, base+"/docs/a.txt", "delete"); got.Allowed || got.NeedsApproval {
+		t.Fatalf("denial: %+v", got)
+	}
+}
+
+func TestTypedEvaluatorsKeepTheApprovalMarkOfPathRules(t *testing.T) {
+	base := "nodes/n/files/mounts/m"
+	policies := []Policy{
+		{ID: "wide", Rules: []Rule{{Path: base + "/**", Capabilities: []string{"read", "delete"}, NeedsApproval: []string{"delete"}}}},
+		{ID: "no-keys", Rules: []Rule{{Path: base + "/**", Capabilities: []string{"deny", "read"}, FileTypes: &filetypes.Selector{Extensions: []string{"pem"}}}}},
+	}
+	// The typed denial makes the path evaluator deny everything here, so only
+	// the typed evaluators can say a plain file may be deleted. They must not
+	// lose the mark while doing it.
+	if got := EvaluateEntry(policies, base+"/a.txt", "delete", "file"); !got.Allowed || !got.NeedsApproval {
+		t.Fatalf("entry: %+v", got)
+	}
+	for _, mode := range []EntryMode{EveryEntry, NodeFiltered} {
+		if got := EvaluateTyped(policies, base+"/a.txt", "delete", mode); !got.Allowed || !got.NeedsApproval {
+			t.Fatalf("mode %d: %+v", mode, got)
+		}
+	}
+	if got := EvaluateEntry(policies, base+"/a.txt", "read", "file"); !got.Allowed || got.NeedsApproval {
+		t.Fatalf("an unmarked capability asked for approval: %+v", got)
+	}
+}
+
+func TestValidNeedsApproval(t *testing.T) {
+	for name, test := range map[string]struct {
+		rule Rule
+		ok   bool
+	}{
+		"none":               {Rule{Path: "nodes/n", Capabilities: []string{"read"}}, true},
+		"delete":             {Rule{Path: "nodes/n", Capabilities: []string{"delete"}, NeedsApproval: []string{"delete"}}, true},
+		"update via write":   {Rule{Path: "nodes/n", Capabilities: []string{"write"}, NeedsApproval: []string{"update"}}, true},
+		"both":               {Rule{Path: "nodes/n", Capabilities: []string{"delete", "update"}, NeedsApproval: []string{"delete", "update"}}, true},
+		"not granted":        {Rule{Path: "nodes/n", Capabilities: []string{"read"}, NeedsApproval: []string{"delete"}}, false},
+		"not destructive":    {Rule{Path: "nodes/n", Capabilities: []string{"read"}, NeedsApproval: []string{"read"}}, false},
+		"on a denial":        {Rule{Path: "nodes/n", Capabilities: []string{"deny", "delete"}, NeedsApproval: []string{"delete"}}, false},
+		"on a typed rule":    {Rule{Path: "nodes/n", Capabilities: []string{"delete"}, NeedsApproval: []string{"delete"}, FileTypes: &filetypes.Selector{Extensions: []string{"x"}}}, false},
+		"repeated":           {Rule{Path: "nodes/n", Capabilities: []string{"delete"}, NeedsApproval: []string{"delete", "delete"}}, false},
+		"upper case":         {Rule{Path: "nodes/n", Capabilities: []string{"delete"}, NeedsApproval: []string{"DELETE"}}, false},
+		"unknown capability": {Rule{Path: "nodes/n", Capabilities: []string{"delete"}, NeedsApproval: []string{"sudo"}}, false},
+	} {
+		if got := ValidNeedsApproval(test.rule); got != test.ok {
+			t.Fatalf("%s: %v", name, got)
+		}
+	}
+}

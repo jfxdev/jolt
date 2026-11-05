@@ -68,6 +68,9 @@ func EvaluateTyped(policies []Policy, path, capability string, mode EntryMode) D
 	if decision.Denied {
 		decision.Allowed = false
 	}
+	// Approval marks live on path rules the typed evaluator does not read; ask
+	// the path evaluator so a typed rule on the same path cannot drop one.
+	decision.NeedsApproval = decision.Allowed && approvalMarked(policies, path, capability)
 	return decision
 }
 
@@ -127,6 +130,7 @@ func EvaluateEntry(policies []Policy, path, capability, entryType string) EntryD
 	if result.Restricted && !decision.Allowed {
 		decision.Visibility = result.Visibility
 	}
+	decision.NeedsApproval = decision.Allowed && approvalMarked(policies, path, capability)
 	return decision
 }
 

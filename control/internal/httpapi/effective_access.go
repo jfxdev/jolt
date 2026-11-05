@@ -29,7 +29,8 @@ type effectiveCapability struct {
 	Allowed bool `json:"allowed"`
 	Denied  bool `json:"denied"`
 	// Outcome is allowed, denied (no grant or a path denial), hidden (a typed
-	// rule makes the entry disappear) or blocked (shown but unusable).
+	// rule makes the entry disappear), blocked (shown but unusable) or approval
+	// (granted once a person approves the request).
 	Outcome   string   `json:"outcome"`
 	PolicyIDs []string `json:"policy_ids"`
 	Typed     bool     `json:"typed"`
@@ -185,17 +186,21 @@ func (s *Server) effectiveCapability(policies []rbac.Policy, check effectiveAcce
 	if ids == nil {
 		ids = []string{}
 	}
-	outcome := "allowed"
+	outcome, allowed := "denied", false
 	switch {
+	case decision.Allowed && decision.NeedsApproval && s.config.Approvals:
+		// Granted once a person approves the request.
+		outcome = "approval"
+	case decision.Allowed && decision.NeedsApproval:
+		// Approvals are off, so the mark makes this grant a refusal.
 	case decision.Allowed:
+		outcome, allowed = "allowed", true
 	case decision.Visibility == "hidden":
 		outcome = "hidden"
 	case decision.Visibility == "visible":
 		outcome = "blocked"
-	default:
-		outcome = "denied"
 	}
-	return effectiveCapability{Allowed: decision.Allowed, Denied: decision.Denied, Outcome: outcome, PolicyIDs: ids, Typed: decision.Typed}
+	return effectiveCapability{Allowed: allowed, Denied: decision.Denied, Outcome: outcome, PolicyIDs: ids, Typed: decision.Typed}
 }
 
 func hasTypedRules(policies []rbac.Policy) bool {

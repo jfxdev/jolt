@@ -159,6 +159,10 @@ func newServerHandler(cfg config.Config, storage *store.Store, logger *slog.Logg
 	mux.Handle("GET /api/v1/control-tower/auth/me", s.auth(http.HandlerFunc(s.me)))
 	mux.Handle("GET /api/v1/control-tower/about", s.auth(http.HandlerFunc(s.about)))
 	mux.Handle("POST /api/v1/control-tower/auth/permissions", s.auth(http.HandlerFunc(s.permissions)))
+	mux.Handle("GET /api/v1/control-tower/pending-operations", s.auth(http.HandlerFunc(s.listPendingOperations)))
+	mux.Handle("GET /api/v1/control-tower/pending-operations/{operationID}", s.auth(http.HandlerFunc(s.getPendingOperation)))
+	mux.Handle("POST /api/v1/control-tower/pending-operations/{operationID}/approve", s.auth(http.HandlerFunc(s.approvePendingOperation)))
+	mux.Handle("POST /api/v1/control-tower/pending-operations/{operationID}/reject", s.auth(http.HandlerFunc(s.rejectPendingOperation)))
 	mux.Handle("POST /api/v1/control-tower/subjects/{actorType}/{subjectID}/effective-access", s.auth(http.HandlerFunc(s.effectiveAccess)))
 	mux.Handle("GET /api/v1/control-tower/users", s.auth(http.HandlerFunc(s.listUsers)))
 	mux.Handle("POST /api/v1/control-tower/users", s.auth(http.HandlerFunc(s.createUser)))
@@ -396,12 +400,13 @@ type aboutResponse struct {
 
 type aboutFeatures struct {
 	TypedPolicies bool `json:"typed_policies"`
+	Approvals     bool `json:"approvals"`
 }
 
 func (s *Server) about(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, aboutResponse{
 		Info:     buildinfo.Current(),
-		Features: aboutFeatures{TypedPolicies: s.config.TypedPolicies},
+		Features: aboutFeatures{TypedPolicies: s.config.TypedPolicies, Approvals: s.config.Approvals},
 	})
 }
 
@@ -764,6 +769,17 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, path, capabil
 		s.fail(w, r, err)
 		return false
 	}
+	if decision.NeedsApproval && !decision.Allowed {
+		if collector, ok := r.Context().Value(approvalCollectorKey{}).(*approvalCollector); ok {
+			// Keep going: the request is stored for approval once every
+			// requirement has been looked at.
+			collector.add(decision.Path, decision.Capability)
+			return true
+		}
+		s.auditAuthorizationDecision(r, decision)
+		writeError(w, r, http.StatusForbidden, "approval_unsupported", "Esta operação exige aprovação humana, que só está disponível para apagar, mover e copiar arquivos pela API de arquivos.")
+		return false
+	}
 	s.auditAuthorizationDecision(r, decision)
 	if decision.Allowed {
 		return true
@@ -930,9 +946,9 @@ func (s *Server) evaluateAuthorization(r *http.Request, path, capability string)
 	}
 	expanded := rbac.ExpandCompatibilityRules(policies)
 	if s.config.TypedPolicies {
-		return rbac.EvaluateTyped(expanded, path, capability, s.entryMode(r)), nil
+		return s.applyApproval(r, rbac.EvaluateTyped(expanded, path, capability, s.entryMode(r))), nil
 	}
-	return rbac.Evaluate(expanded, path, capability), nil
+	return s.applyApproval(r, rbac.Evaluate(expanded, path, capability)), nil
 }
 
 type nodeFilteredKey struct{}
@@ -1651,7 +1667,7 @@ func (s *Server) createPolicy(w http.ResponseWriter, r *http.Request) {
 		s.audit(r, "create", resource, "denied")
 		return
 	}
-	if !normalizePolicyRequest(&input, s.config.TypedPolicies) {
+	if !normalizePolicyRequest(&input, s.config.TypedPolicies, s.config.Approvals) {
 		s.audit(r, "create", resource, "denied")
 		writeError(w, r, http.StatusBadRequest, "invalid_policy", "Nome, descrição, paths ou capabilities da policy são inválidos.")
 		return
@@ -1694,13 +1710,17 @@ func (s *Server) updatePolicy(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, http.StatusConflict, "file_type_policy_unavailable", "A edição desta policy exige a integração completa das restrições de tipo.")
 			return
 		}
+		if len(rule.NeedsApproval) > 0 && !s.config.Approvals {
+			writeError(w, r, http.StatusConflict, "approval_policy_unavailable", "A edição desta policy exige as aprovações humanas habilitadas, ou as marcas de aprovação seriam perdidas.")
+			return
+		}
 	}
 	var input policyRequest
 	if !decodeJSON(w, r, &input) {
 		s.audit(r, "update", resource, "denied")
 		return
 	}
-	if !normalizePolicyRequest(&input, s.config.TypedPolicies) {
+	if !normalizePolicyRequest(&input, s.config.TypedPolicies, s.config.Approvals) {
 		s.audit(r, "update", resource, "denied")
 		writeError(w, r, http.StatusBadRequest, "invalid_policy", "Nome, descrição, paths ou capabilities da policy são inválidos.")
 		return
@@ -2072,7 +2092,7 @@ func subjectPolicyResource(subjectType, subjectID string) string {
 // normalizePolicyRequest validates a policy. Typed rules (file types and
 // visibility) are accepted only when typed policies are enabled, which means
 // every operation that reaches a file enforces them.
-func normalizePolicyRequest(input *policyRequest, typedPolicies bool) bool {
+func normalizePolicyRequest(input *policyRequest, typedPolicies, approvals bool) bool {
 	input.Name = strings.TrimSpace(input.Name)
 	input.Description = strings.TrimSpace(input.Description)
 	if !validServiceAccountName(input.Name) || len(input.Description) > 512 || len(input.Rules) == 0 || len(input.Rules) > 100 {
@@ -2112,6 +2132,17 @@ func normalizePolicyRequest(input *policyRequest, typedPolicies bool) bool {
 			return false
 		}
 		rule.Capabilities = normalized
+		if len(rule.NeedsApproval) > 0 {
+			if !approvals {
+				return false
+			}
+			for position, value := range rule.NeedsApproval {
+				rule.NeedsApproval[position] = strings.ToLower(strings.TrimSpace(value))
+			}
+			if !rbac.ValidNeedsApproval(*rule) {
+				return false
+			}
+		}
 	}
 	return true
 }
@@ -3144,6 +3175,7 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusConflict, "use_logical_transfer", "Com jobs assinados ativos, use a transferência lógica (POST /api/v1/nodes/{nodeID}/transfers) em vez do pull direto.")
 		return
 	}
+	r, collector := s.withApprovalCollector(r, resource)
 	targets := fileTargets{}
 	if isMountFileResource(resource) {
 		parsed, err := fileTargetsFromRequest(r)
@@ -3223,6 +3255,10 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 		if (treeMutationResource(resource, r.Method) || strings.HasPrefix(resource, "transfers/")) && strings.Contains(requirement.Path, "/files/mounts/") && !s.authorizeTreeContents(w, r, requirement.Path) {
 			return
 		}
+	}
+	if collector != nil && len(collector.requirements) > 0 {
+		s.keepForApproval(w, r, resource, targets, collector)
+		return
 	}
 	node, err := s.store.GetNode(r.Context(), r.PathValue("nodeID"))
 	if err != nil {

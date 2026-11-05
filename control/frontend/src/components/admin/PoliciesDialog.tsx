@@ -35,8 +35,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { AdminDialogProps } from "./types";
+import { ApprovalRuleFields } from "./ApprovalRuleFields";
 import { TypedRuleFields } from "./TypedRuleFields";
-import { cleanSelector, normalizeCapabilities, validateTypedRule } from "@/lib/policy-rules";
+import { cleanSelector, normalizeCapabilities, pruneApproval, validateApproval, validateTypedRule } from "@/lib/policy-rules";
 import {
   AdminEntityDialog,
   EntityDialogFormLayout,
@@ -76,7 +77,13 @@ function emptyForm(): PolicyForm {
 // What the server receives: typed fields cleaned, and only on typed rules.
 function ruleForSave(rule: PolicyRule): PolicyRule {
   const fileTypes = cleanSelector(rule.file_types);
-  if (!fileTypes) return { path: rule.path, capabilities: rule.capabilities };
+  if (!fileTypes) {
+    return {
+      path: rule.path,
+      capabilities: rule.capabilities,
+      ...(rule.needs_approval?.length ? { needs_approval: rule.needs_approval } : {}),
+    };
+  }
   return {
     path: rule.path,
     capabilities: rule.capabilities,
@@ -148,6 +155,7 @@ export function PoliciesDialog({
   const [search, setSearch] = useState("");
   const [formOpen, setFormOpen] = useState(false);
   const [typedPolicies, setTypedPolicies] = useState(false);
+  const [approvals, setApprovals] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -155,10 +163,16 @@ export function PoliciesDialog({
     void api
       .about()
       .then((about) => {
-        if (active) setTypedPolicies(about.features?.typed_policies === true);
+        if (active) {
+          setTypedPolicies(about.features?.typed_policies === true);
+          setApprovals(about.features?.approvals === true);
+        }
       })
       .catch(() => {
-        if (active) setTypedPolicies(false);
+        if (active) {
+          setTypedPolicies(false);
+          setApprovals(false);
+        }
       });
     return () => {
       active = false;
@@ -280,6 +294,7 @@ export function PoliciesDialog({
         ...r,
         capabilities: [...r.capabilities],
         ...(r.file_types ? { file_types: structuredClone(r.file_types) } : {}),
+        ...(r.needs_approval ? { needs_approval: [...r.needs_approval] } : {}),
       })),
     });
     setDirectNodeModes(policy.rules.map((rule) => isDirectNodePath(rule.path)));
@@ -294,14 +309,15 @@ export function PoliciesDialog({
         const capabilities = has
           ? rule.capabilities.filter((c) => c !== capability)
           : [...rule.capabilities, capability];
-        return {
+        // A capability the rule no longer grants cannot keep its approval mark.
+        return pruneApproval({
           ...rule,
           capabilities: normalizeCapabilities(
             capabilities,
             capability,
             Boolean(rule.file_types),
           ),
-        };
+        });
       });
       return { ...prev, rules };
     });
@@ -385,9 +401,10 @@ export function PoliciesDialog({
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
-    const invalid = form.rules.findIndex((rule) => validateTypedRule(rule) !== "");
+    const problem = (rule: PolicyRule) => validateTypedRule(rule) || validateApproval(rule);
+    const invalid = form.rules.findIndex((rule) => problem(rule) !== "");
     if (invalid >= 0) {
-      toast.error(`Regra ${invalid + 1}: ${validateTypedRule(form.rules[invalid])}`);
+      toast.error(`Regra ${invalid + 1}: ${problem(form.rules[invalid])}`);
       return;
     }
     const body = { ...form, rules: form.rules.map(ruleForSave) };
@@ -758,6 +775,12 @@ export function PoliciesDialog({
                       rule={rule}
                       index={index}
                       enabled={typedPolicies}
+                      onChange={(next) => setRule(index, pruneApproval(next))}
+                    />
+                    <ApprovalRuleFields
+                      rule={rule}
+                      index={index}
+                      enabled={approvals}
                       onChange={(next) => setRule(index, next)}
                     />
                   </article>

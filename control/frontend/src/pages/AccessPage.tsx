@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { usePermissions } from "@/context/PermissionsContext";
 import { AccessGroupsDialog } from "@/components/admin/AccessGroupsDialog";
+import { ApprovalsPanel } from "@/components/admin/ApprovalsPanel";
 import { EffectiveAccessPanel } from "@/components/admin/EffectiveAccessPanel";
 import { PoliciesDialog } from "@/components/admin/PoliciesDialog";
 import { RolesDialog } from "@/components/admin/RolesDialog";
@@ -13,12 +14,13 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs";
 
-type AccessTab = "policies" | "effective" | "roles" | "groups" | "shares";
+type AccessTab = "policies" | "effective" | "approvals" | "roles" | "groups" | "shares";
 
 export default function AccessPage() {
   const { hasPermission } = usePermissions();
   const [activeTab, setActiveTab] = useState<AccessTab | null>(null);
   const canManagePolicies = hasPermission("control-tower/policies", "sudo");
+  const canSeeApprovals = hasPermission("control-tower/approvals", "list");
   const canManageRoles = hasPermission("control-tower/roles", "sudo");
   const canManageGroups = hasPermission(
     "control-tower/access-groups",
@@ -29,7 +31,9 @@ export default function AccessPage() {
   const canManageShares = hasPermission("control-tower/shares", "list");
   const firstTab = canManagePolicies
     ? "policies"
-    : canManageRoles
+    : canSeeApprovals
+      ? "approvals"
+      : canManageRoles
       ? "roles"
       : canManageGroups
         ? "groups"
@@ -39,6 +43,7 @@ export default function AccessPage() {
   const currentTab =
     (activeTab === "policies" && canManagePolicies) ||
     (activeTab === "effective" && canManagePolicies) ||
+    (activeTab === "approvals" && canSeeApprovals) ||
     (activeTab === "roles" && canManageRoles) ||
     (activeTab === "groups" && canManageGroups) ||
     (activeTab === "shares" && canManageShares)
@@ -72,6 +77,9 @@ export default function AccessPage() {
             {canManagePolicies && (
               <TabsTrigger value="effective">Acesso efetivo</TabsTrigger>
             )}
+            {canSeeApprovals && (
+              <TabsTrigger value="approvals">Aprovações</TabsTrigger>
+            )}
             {canManageRoles && <TabsTrigger value="roles">Roles</TabsTrigger>}
             {canManageGroups && <TabsTrigger value="groups">Grupos</TabsTrigger>}
             {canManageShares && (
@@ -91,6 +99,11 @@ export default function AccessPage() {
           {canManagePolicies && (
             <TabsContent value="effective" className="pt-2">
               <EffectiveAccessPanel active={currentTab === "effective"} />
+            </TabsContent>
+          )}
+          {canSeeApprovals && (
+            <TabsContent value="approvals" className="pt-2">
+              <ApprovalsPanel active={currentTab === "approvals"} />
             </TabsContent>
           )}
           {canManageRoles && (

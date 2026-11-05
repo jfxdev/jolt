@@ -279,3 +279,42 @@ func TestTypedPoliciesNeedEveryOperationToCarryASignedContext(t *testing.T) {
 		t.Fatalf("typed policies default off: %v", err)
 	}
 }
+
+func TestApprovalsAreOffByDefaultAndTheWebhookIsStrict(t *testing.T) {
+	t.Setenv("CONTROL_TOWER_ADMIN_PASSWORD", "a-secure-admin-password")
+	t.Setenv("CONTROL_TOWER_DB_ENCRYPTION_KEY", "a-secure-encryption-key-that-is-long-enough")
+	if cfg, err := Load(); err != nil || cfg.Approvals || cfg.ApprovalWebhookURL != "" {
+		t.Fatalf("defaults: %+v %v", cfg, err)
+	}
+	t.Setenv("CONTROL_TOWER_APPROVALS", "maybe")
+	if _, err := Load(); err == nil {
+		t.Fatal("an invalid value was accepted")
+	}
+	t.Setenv("CONTROL_TOWER_APPROVALS", "true")
+	if cfg, err := Load(); err != nil || !cfg.Approvals {
+		t.Fatalf("approvals on: %v", err)
+	}
+	for url, ok := range map[string]bool{
+		"https://hooks.example.com/jolt":        true,
+		"http://127.0.0.1:9000/hook":            true,
+		"http://localhost/hook":                 true,
+		"http://hooks.example.com/jolt":         false,
+		"https://user:secret@hooks.example.com": false,
+		"https://hooks.example.com/x#frag":      false,
+		"ftp://hooks.example.com":               false,
+		"not a url":                             false,
+		"https://":                              false,
+	} {
+		t.Setenv("CONTROL_TOWER_APPROVAL_WEBHOOK_URL", url)
+		cfg, err := Load()
+		if (err == nil) != ok || ok && cfg.ApprovalWebhookURL != url {
+			t.Fatalf("%q: ok=%v err=%v", url, ok, err)
+		}
+	}
+	// A webhook has nothing to notify about without approvals.
+	t.Setenv("CONTROL_TOWER_APPROVAL_WEBHOOK_URL", "https://hooks.example.com/jolt")
+	t.Setenv("CONTROL_TOWER_APPROVALS", "false")
+	if _, err := Load(); err == nil {
+		t.Fatal("a webhook was accepted with approvals off")
+	}
+}

@@ -7,7 +7,9 @@ import type {
   AuditEvent,
   AuditResponse,
   AuthUser,
+  ApprovalDecision,
   BuildInfo,
+  PendingOperation,
   EffectiveAccessCheck,
   EffectiveAccessResponse,
   Grant,
@@ -115,6 +117,25 @@ async function requestText(path: string): Promise<string> {
 export const api = {
   me: () =>
     request<{ user: AuthUser }>("/api/v1/control-tower/auth/me"),
+  pendingOperations: (options: { state?: string; mine?: boolean } = {}) => {
+    const query = new URLSearchParams();
+    if (options.state) query.set("state", options.state);
+    if (options.mine) query.set("mine", "true");
+    const text = query.toString();
+    return request<ListResponse<PendingOperation>>(
+      `/api/v1/control-tower/pending-operations${text ? `?${text}` : ""}`,
+    );
+  },
+  approvePendingOperation: (id: string, acknowledgeSelfApproval: boolean) =>
+    request<ApprovalDecision>(
+      `/api/v1/control-tower/pending-operations/${encodeURIComponent(id)}/approve`,
+      { method: "POST", body: JSON.stringify({ acknowledge_self_approval: acknowledgeSelfApproval }) },
+    ),
+  rejectPendingOperation: (id: string, note: string) =>
+    request<PendingOperation>(
+      `/api/v1/control-tower/pending-operations/${encodeURIComponent(id)}/reject`,
+      { method: "POST", body: JSON.stringify({ note }) },
+    ),
   effectiveAccess: (
     actorType: "user" | "service_account",
     subjectId: string,

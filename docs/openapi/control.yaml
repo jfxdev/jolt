@@ -160,6 +160,75 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/pending-operations:
+    get:
+      tags: [Administration]
+      summary: List requests waiting for, or past, a human decision
+      description: >-
+        Needs `list` on `control-tower/approvals`; `mine=true` lists only the caller's own
+        requests. Answers 404 `approvals_disabled` unless CONTROL_TOWER_APPROVALS is on.
+      parameters:
+        - {name: state, in: query, schema: {type: string, enum: [pending, executing, executed, failed, rejected, expired, indeterminate]}}
+        - {name: mine, in: query, schema: {type: boolean}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/pending-operations/{operationID}:
+    get:
+      tags: [Administration]
+      summary: One request waiting for a decision
+      description: The requester may read their own request; anyone else needs `list` on `control-tower/approvals`.
+      parameters:
+        - {name: operationID, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/pending-operations/{operationID}/approve:
+    post:
+      tags: [Administration]
+      summary: Approve a waiting request and run it
+      description: >-
+        A person (never an API key or agent) with `sudo` on `control-tower/approvals`. The
+        stored request is replayed as the approver, with the approver's own current
+        permissions, after the requester's are checked again; a request the approver may not
+        make fails. Approving your own request needs `acknowledge_self_approval`. Repeating
+        the call returns the stored result with `replayed: true` and never runs it twice. A
+        request not decided within five minutes expires (410).
+      parameters:
+        - {name: operationID, in: path, required: true, schema: {type: string}}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                acknowledge_self_approval: {type: boolean}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '410': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/pending-operations/{operationID}/reject:
+    post:
+      tags: [Administration]
+      summary: Reject a waiting request
+      parameters:
+        - {name: operationID, in: path, required: true, schema: {type: string}}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: {type: string, maxLength: 256}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/about:
     get:
       tags: [System]
@@ -1341,6 +1410,7 @@ components:
           description: Optional behaviours this Control Tower was started with.
           properties:
             typed_policies: {type: boolean, description: 'True when policy rules may restrict by file type (CONTROL_TOWER_TYPED_POLICIES).'}
+            approvals: {type: boolean, description: 'True when rules may require human approval (CONTROL_TOWER_APPROVALS).'}
     Health:
       type: object
       required: [status]
@@ -1429,6 +1499,14 @@ components:
                 type: string
                 enum: [hidden, visible]
                 description: Only with file_types. hidden (default) answers 404 and omits the entry; visible lists it and answers 403.
+              needs_approval:
+                type: array
+                items: {type: string, enum: [delete, update]}
+                description: |
+                  Capabilities this rule grants only once a person approves each request.
+                  Accepted only when the Control Tower runs with approvals enabled. Each one
+                  must be granted by the rule; not allowed on a deny or a typed rule. Where a
+                  request cannot be kept for approval the capability is refused, never granted.
     CreateShare:
       type: object
       required: [node_id, mount_id, path]
