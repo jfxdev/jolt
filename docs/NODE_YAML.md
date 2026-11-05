@@ -89,8 +89,16 @@ the signing key; enabled reads fail closed if the node lacks the capability or
 does not confirm enforcement. Public share listings, content and archives also
 use signed contexts based on the creator's current permissions when this option
 is enabled. Each signed response expires within 30 seconds,
-including for a slow client. Other node operations reject signed contexts, and
-jobs do not yet renew them. `CONTROL_TOWER_SIGNED_UPLOADS=true` separately
+including for a slow client. Other node operations reject signed contexts.
+`CONTROL_TOWER_SIGNED_LOCAL_JOBS=true` makes local copies signed jobs: the
+Control Tower derives the actor and policy context when the copy is created and
+renews the lease every 10 seconds, rechecking the credential, groups and
+policies each time. The node runs the copy under that lease, applies the filter
+to every source and destination, and stops within 30 seconds of the last
+renewal, keeping its checkpoints; a newer lease resumes it. Entries the filter
+hides are skipped and reported only as a count. The `ask` conflict policy is
+not supported for these copies, and delete, move and transfers are not covered
+yet. `CONTROL_TOWER_SIGNED_UPLOADS=true` separately
 enables signed resumable upload creation, chunks, completion and abort. The
 node requires fresh signed contexts for bound sessions and enforces filtering
 before publication. An explicit resume or discard reauthorizes an old unbound
