@@ -2,6 +2,8 @@ package filesystem
 
 import (
 	"io/fs"
+	"path"
+	"strings"
 	"time"
 )
 
@@ -33,4 +35,17 @@ func (f *AccessFilter) AllowsListedEntry(relative, kind string) bool {
 		return decision.visible && decision.traversable
 	}
 	return decision.visible && decision.readable
+}
+
+// AllowsEntryCapability reports whether the signed policy grants a capability on
+// an entry given by its mount-relative path, such as delete on a move's source.
+func (f *AccessFilter) AllowsEntryCapability(relative, kind, capability string) bool {
+	if f == nil || f.context == nil || (kind != "file" && kind != "directory") || path.IsAbs(relative) || strings.ContainsAny(relative, "\\\x00") {
+		return false
+	}
+	resource := f.base
+	if relative != "" && relative != "." {
+		resource += "/" + relative
+	}
+	return f.context.Evaluate(resource, capability, kind).Allowed
 }

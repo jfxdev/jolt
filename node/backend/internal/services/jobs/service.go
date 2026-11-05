@@ -1267,7 +1267,7 @@ func mountReady(mount entities.Mount) bool {
 func (s *Service) executeOperation(ctx context.Context, job entities.Job) (int64, error) {
 	if job.SignedAuthBound || job.RequiresSignedAuth || job.DestructivePlanID != "" {
 		destructive := (job.Type == "delete" || job.Type == "move_local") && job.DestructivePlanID != "" && job.SignedAuthBound
-		pull := job.Type == "transfer_pull_batch" && job.DestructivePlanID == "" && job.SignedAuthBound
+		pull := job.SignedAuthBound && (job.Type == "transfer_pull_batch" && job.DestructivePlanID == "" || job.Type == "transfer_move_batch" && job.DestructivePlanID != "")
 		if !destructive && !pull && !(job.Type == "copy_local" && job.DestructivePlanID == "") {
 			return 0, ErrAuthorizationRequired
 		}

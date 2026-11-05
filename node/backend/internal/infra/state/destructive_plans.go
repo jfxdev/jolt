@@ -183,3 +183,26 @@ func (s *Store) AcceptDestructivePlan(ctx context.Context, id, subjectType, subj
 	})
 	return accepted, repeated, err
 }
+
+// CreateTransferMovePlan records the confirmation of a node-to-node move. The
+// plan binds the subject, the destination mount and a digest of the planned
+// entries and request; it has no source path of its own. Like every destructive
+// plan it writes the security-version header first.
+func (s *Store) CreateTransferMovePlan(ctx context.Context, plan DestructivePlan, now time.Time) error {
+	if !signedauth.ValidKeyID(plan.ID) || !signedauth.ValidKeyID(plan.SubjectID) || !signedauth.ValidKeyID(plan.MountID) ||
+		(plan.SubjectType != "user" && plan.SubjectType != "service_account") || !planDigest(plan.TokenHash) || !planDigest(plan.TreeDigest) || now.IsZero() ||
+		plan.Operation != "transfer_move" || plan.Source != "" || plan.Destination != "" || plan.Overwrite || plan.DestinationExists || plan.DestinationDigest != "" ||
+		plan.ConsumedJobID != "" || plan.IdempotencyKey != "" || plan.RequestHash != "" {
+		return errors.New("invalid transfer move plan")
+	}
+	plan.CreatedAt, plan.ExpiresAt = now.UTC(), now.UTC().Add(5*time.Minute)
+	return s.update(ctx, func(tx *transaction) error {
+		if _, exists := s.index["destructive_plans"][plan.ID]; exists {
+			return ErrInUse
+		}
+		if err := s.ensureSecurityVersion(4); err != nil {
+			return err
+		}
+		return tx.put("destructive_plans", plan.ID, plan.SubjectID, order(plan.CreatedAt), plan)
+	})
+}

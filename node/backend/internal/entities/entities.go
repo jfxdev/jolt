@@ -113,6 +113,16 @@ type CopyPlan struct {
 	Items           []JobItem `json:"items" yaml:"items"`
 	Truncated       bool      `json:"truncated,omitempty" yaml:"truncated"`
 	SourcesOmitted  int       `json:"sources_omitted,omitempty" yaml:"sources_omitted"`
+	// MovePlan is the one-use confirmation of a node-to-node move.
+	MovePlan *MovePlanInfo `json:"move_plan,omitempty" yaml:"-"`
+}
+
+// MovePlanInfo is returned once, when a move is planned; the token is never
+// stored in clear.
+type MovePlanInfo struct {
+	PlanID    string    `json:"plan_id"`
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 type JobEvent struct {
@@ -317,4 +327,11 @@ type DestructivePlan struct {
 	ConsumedJobID     string    `yaml:"consumed_job_id,omitempty" json:"-"`
 	IdempotencyKey    string    `yaml:"idempotency_key,omitempty" json:"-"`
 	RequestHash       string    `yaml:"request_hash,omitempty" json:"-"`
+}
+
+// MovePlanBinding names the confirmed plan a node-to-node move consumes when it
+// is created, and the digest of the planned entries it must still match.
+type MovePlanBinding struct {
+	PlanID, SubjectType, TokenHash, Digest string
+	Now                                    time.Time
 }

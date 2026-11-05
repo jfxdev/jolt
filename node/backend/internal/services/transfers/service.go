@@ -3,6 +3,8 @@ package transfers
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,7 +57,13 @@ type PullRequest struct {
 // references to exact grants.
 type BatchPullRequest struct {
 	PullRequest
-	SourcePaths []string
+	// SubjectType, MovePlanID and MovePlanToken belong to a signed move: the
+	// Control Tower names the authenticated subject, and the move consumes the
+	// one-use confirmation of its plan.
+	SubjectType   string
+	MovePlanID    string
+	MovePlanToken string
+	SourcePaths   []string
 	// SourceNames preserve mount-relative root names when a selected path is
 	// exactly the root of a more restrictive send grant.
 	SourceNames []string
@@ -1099,6 +1107,12 @@ func (s *Service) cleanupMovedSources(ctx context.Context, peer entities.Peer, j
 		if !foundRoot {
 			return fmt.Errorf("%w: move item has no selected root", ErrInvalid)
 		}
+		if access, filtered := jobs.TransferAccessFrom(ctx); filtered && !access.Source.AllowsEntryCapability(access.SourceMountPath(item.SourcePath), item.Type, "delete") {
+			// Never delete what the lease does not let the actor delete.
+			item.SourceCleanupState, item.Error, item.UpdatedAt = "failed", "the source is no longer permitted", time.Now().UTC()
+			_ = s.store.UpdateJobItem(context.Background(), item)
+			return ErrForbidden
+		}
 		expectedETag := sourceEntryETag(item)
 		if item.Type == "directory" {
 			// Deleting descendants updates the directory mtime by design. A
@@ -1688,8 +1702,16 @@ func signedTransferAccess(filter *filetypes.Filter, binding signedauth.Binding) 
 }
 
 func (s *Service) signedBatchJobRequest(ctx context.Context, request BatchPullRequest, sourceRoot, destinationMount string) (jobs.CreateRequest, string, error) {
-	if op := strings.ToLower(strings.TrimSpace(request.Operation)); op != "" && op != "copy" {
-		return jobs.CreateRequest{}, "", fmt.Errorf("%w: signed transfers only copy; a move needs its own plan", ErrInvalid)
+	operation := strings.ToLower(strings.TrimSpace(request.Operation))
+	if operation == "" {
+		operation = "copy"
+	}
+	if operation != "copy" && operation != "move" {
+		return jobs.CreateRequest{}, "", fmt.Errorf("%w: operation must be copy or move", ErrInvalid)
+	}
+	typeName := "transfer_pull_batch"
+	if operation == "move" {
+		typeName = "transfer_move_batch"
 	}
 	destinationGrant, destinationBase, err := s.receiveDestination(ctx, strings.TrimSpace(request.PeerNodeID), request.DestinationGrantID, request.DestinationPath, request.ConflictPolicy)
 	if err != nil {
@@ -1702,7 +1724,7 @@ func (s *Service) signedBatchJobRequest(ctx context.Context, request BatchPullRe
 		destinationBase = "."
 	}
 	return jobs.CreateRequest{
-		Type: "transfer_pull_batch", MountID: destinationGrant.MountID, PeerNodeID: strings.TrimSpace(request.PeerNodeID),
+		Type: typeName, MountID: destinationGrant.MountID, PeerNodeID: strings.TrimSpace(request.PeerNodeID),
 		SourceGrantID: strings.TrimSpace(request.SourceGrantID), DestinationGrantID: strings.TrimSpace(request.DestinationGrantID),
 		SourcePath: sourceRoot, Destination: destinationBase, ConflictPolicy: normalizePolicy(request.ConflictPolicy),
 		VerifyChecksum: request.VerifyChecksum, BandwidthLimit: request.BandwidthLimit, MaxParallelFiles: request.MaxParallelFiles,
@@ -1720,23 +1742,33 @@ func (s *Service) PrepareSignedBatchPull(ctx context.Context, request BatchPullR
 	return s.jobs.PrepareSignedBatchPull(jobRequest)
 }
 
-// signedBatchPlan is a node-to-node copy planned under a verified lease.
+// ErrMoveIncomplete means a move cannot proceed because part of the selection is
+// hidden from the actor: moving deletes the source, so it needs all of it.
+var ErrMoveIncomplete = errors.New("a move needs access to every selected entry")
+
+// signedBatchPlan is a node-to-node copy or move planned under a verified lease.
 type signedBatchPlan struct {
 	binding         signedauth.Binding
 	request         jobs.CreateRequest
 	destinationBase string
 	plan            entities.CopyPlan
 	omitted         int
+	move            bool
 }
 
-// planSignedBatch verifies the lease and plans the copy under its filter.
-// Source entries the filter hides are left out and counted; a destination the
-// policy does not let the actor write fails the whole plan.
+// planSignedBatch verifies the lease and plans the transfer under its filter.
+// Source entries the filter hides are left out and counted for a copy; a move
+// refuses them, since it deletes the source afterwards. A destination the policy
+// does not let the actor write fails the whole plan.
 func (s *Service) planSignedBatch(ctx context.Context, request BatchPullRequest, nodeID, envelope string, keys map[string]ed25519.PublicKey) (signedBatchPlan, error) {
 	now := time.Now().UTC()
 	binding, err := signedauth.VerifiedJobLeaseBinding(envelope, keys, nodeID, now)
-	if err != nil || binding.Operation != "transfer_pull_batch" || binding.DestinationNodeID != nodeID || binding.SourceNodeID != strings.TrimSpace(request.PeerNodeID) ||
+	if err != nil || binding.DestinationNodeID != nodeID || binding.SourceNodeID != strings.TrimSpace(request.PeerNodeID) ||
 		binding.SourceGrantID != strings.TrimSpace(request.SourceGrantID) || binding.DestinationGrantID != strings.TrimSpace(request.DestinationGrantID) || binding.JobOptionsDigest == "" {
+		return signedBatchPlan{}, ErrInvalid
+	}
+	move := strings.ToLower(strings.TrimSpace(request.Operation)) == "move"
+	if (move && binding.Operation != "transfer_move_batch") || (!move && binding.Operation != "transfer_pull_batch") {
 		return signedBatchPlan{}, ErrInvalid
 	}
 	_, filter, err := signedauth.VerifyJobLease(envelope, keys, binding, nodeID, 1, now)
@@ -1758,23 +1790,56 @@ func (s *Service) planSignedBatch(ctx context.Context, request BatchPullRequest,
 	if err != nil {
 		return signedBatchPlan{}, err
 	}
+	if move && omitted > 0 {
+		return signedBatchPlan{}, ErrMoveIncomplete
+	}
 	plan.DestinationPath, plan.SourcesOmitted = destinationBase, omitted
-	return signedBatchPlan{binding: binding, request: jobRequest, destinationBase: destinationBase, plan: plan, omitted: omitted}, nil
+	return signedBatchPlan{binding: binding, request: jobRequest, destinationBase: destinationBase, plan: plan, omitted: omitted, move: move}, nil
 }
 
-// PlanSignedBatchPull previews a node-to-node copy under a signed lease without
-// creating anything. The preview only carries entries the policy lets the actor
-// list and read; the omitted ones are counted, never named.
+// movePlanDigest identifies exactly what a move would do: the actor, both
+// endpoints, the policy and every planned entry with its size, time, checksum
+// and action. A confirmation only counts if a fresh plan has the same digest.
+func movePlanDigest(binding signedauth.Binding, plan entities.CopyPlan) string {
+	hash := sha256.New()
+	write := func(parts ...string) {
+		for _, part := range parts {
+			_, _ = hash.Write([]byte(part))
+			_, _ = hash.Write([]byte{0})
+		}
+	}
+	write("jolt-transfer-move-plan-v1", binding.ActorID, binding.SourceNodeID, binding.SourceGrantID, binding.SourceMountID, binding.SourceRoot,
+		binding.DestinationNodeID, binding.DestinationGrantID, binding.DestinationMountID, binding.DestinationRoot, binding.JobOptionsDigest, plan.ConflictPolicy)
+	items := append([]entities.JobItem(nil), plan.Items...)
+	sort.Slice(items, func(i, j int) bool { return items[i].SourcePath < items[j].SourcePath })
+	for _, item := range items {
+		write(item.SourcePath, item.DestinationPath, item.Type, strconv.FormatInt(item.Size, 10), strconv.FormatInt(item.ModifiedAt.UnixNano(), 10), item.Checksum, item.Action, strconv.FormatBool(item.SourceRoot))
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+// PlanSignedBatchPull previews a node-to-node copy or move under a signed lease
+// without creating a job. The preview only carries entries the policy lets the
+// actor list and read; omitted ones are counted, never named. A move preview
+// also records its one-use confirmation, which a later creation must present.
 func (s *Service) PlanSignedBatchPull(ctx context.Context, request BatchPullRequest, nodeID, envelope string, keys map[string]ed25519.PublicKey) (entities.CopyPlan, error) {
 	planned, err := s.planSignedBatch(ctx, request, nodeID, envelope, keys)
 	if err != nil {
 		return entities.CopyPlan{}, err
 	}
+	if planned.move {
+		confirmation, err := s.jobs.CreateTransferMovePlan(ctx, request.SubjectType, planned.binding.ActorID, planned.request.MountID, movePlanDigest(planned.binding, planned.plan))
+		if err != nil {
+			return entities.CopyPlan{}, err
+		}
+		planned.plan.MovePlan = &confirmation
+	}
 	return planned.plan, nil
 }
 
-// CreateSignedBatchPull plans a node-to-node copy under the filter of a signed,
-// job-bound lease and persists the job awaiting that authorization.
+// CreateSignedBatchPull plans a node-to-node copy or move under the filter of a
+// signed, job-bound lease and persists the job awaiting that authorization. A
+// move must present the confirmation of a plan with the same digest.
 func (s *Service) CreateSignedBatchPull(ctx context.Context, request BatchPullRequest, nodeID, envelope, idempotencyKey string, keys map[string]ed25519.PublicKey) (entities.Job, bool, error) {
 	now := time.Now().UTC()
 	binding, err := signedauth.VerifiedJobLeaseBinding(envelope, keys, nodeID, now)
@@ -1798,7 +1863,20 @@ func (s *Service) CreateSignedBatchPull(ctx context.Context, request BatchPullRe
 	if err != nil {
 		return entities.Job{}, false, err
 	}
-	return s.jobs.CreateSignedPlannedBatchPull(ctx, planned.request, planned.plan, planned.omitted, nodeID, envelope, idempotencyKey, keys)
+	var confirmation *jobs.MoveConfirmation
+	if planned.move {
+		if request.MovePlanID == "" || request.MovePlanToken == "" || request.SubjectType == "" {
+			return entities.Job{}, false, jobs.ErrPlanRejected
+		}
+		confirmation = &jobs.MoveConfirmation{PlanID: request.MovePlanID, SubjectType: request.SubjectType, Token: request.MovePlanToken, Digest: movePlanDigest(planned.binding, planned.plan)}
+	}
+	job, repeated, err := s.jobs.CreateSignedPlannedBatchPull(ctx, planned.request, planned.plan, planned.omitted, nodeID, envelope, idempotencyKey, keys, confirmation)
+	if err != nil && planned.move && errors.Is(err, contracts.ErrInUse) {
+		// The plan was not found, belongs to someone else, expired, was used, or
+		// no longer matches what is on disk. One answer for all of them.
+		return entities.Job{}, false, jobs.ErrTreeChanged
+	}
+	return job, repeated, err
 }
 
 // itemDenied explains, without naming any path, why the current policy no

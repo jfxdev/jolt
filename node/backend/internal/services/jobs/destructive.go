@@ -69,6 +69,9 @@ func (s *Service) planStore() (DestructivePlanStore, error) {
 	return store, nil
 }
 
+// HashPlanToken is how a confirmation token is stored and compared.
+func HashPlanToken(token string) string { return hashPlanToken(token) }
+
 func hashPlanToken(token string) string {
 	sum := sha256.Sum256([]byte("jolt-destructive-plan-token-v1\x00" + token))
 	return hex.EncodeToString(sum[:])
@@ -248,4 +251,29 @@ func (s *Service) executeDestructive(ctx context.Context, job entities.Job) (int
 		return snapshot.Bytes, s.files.DeleteFiltered(ctx, job.MountID, plan.Source, true, filter)
 	}
 	return snapshot.Bytes, s.files.MoveFiltered(ctx, job.MountID, plan.Source, plan.Destination, plan.Overwrite, filter)
+}
+
+type transferMovePlanStore interface {
+	CreateTransferMovePlan(ctx context.Context, plan entities.DestructivePlan, now time.Time) error
+}
+
+// CreateTransferMovePlan records the confirmation of a node-to-node move. The
+// digest covers the request and every planned entry, so the confirmation fails
+// if anything the operator saw has changed.
+func (s *Service) CreateTransferMovePlan(ctx context.Context, subjectType, subjectID, mountID, digest string) (entities.MovePlanInfo, error) {
+	store, ok := s.store.(transferMovePlanStore)
+	if !ok {
+		return entities.MovePlanInfo{}, fmt.Errorf("%w: move plans are unavailable", ErrInvalid)
+	}
+	var random [32]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return entities.MovePlanInfo{}, err
+	}
+	token := base64.RawURLEncoding.EncodeToString(random[:])
+	plan := entities.DestructivePlan{ID: filesystem.NewID("plan"), TokenHash: hashPlanToken(token), SubjectType: subjectType, SubjectID: subjectID, Operation: "transfer_move", MountID: mountID, TreeDigest: digest}
+	now := s.now().UTC()
+	if err := store.CreateTransferMovePlan(ctx, plan, now); err != nil {
+		return entities.MovePlanInfo{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	return entities.MovePlanInfo{PlanID: plan.ID, Token: token, ExpiresAt: now.Add(5 * time.Minute)}, nil
 }

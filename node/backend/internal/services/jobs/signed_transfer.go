@@ -16,11 +16,20 @@ type signedPlannedJobCreator interface {
 	CreatePlannedJobAwaitingAuthorization(context.Context, entities.Job, []entities.JobItem, string, string, string, string) (entities.Job, bool, error)
 }
 
-// prepareSignedBatchPull normalizes a node-to-node copy into the immutable
-// options its lease binds. Moves are refused: they delete the source and need a
-// plan of their own.
+type signedPlannedMoveCreator interface {
+	CreatePlannedMoveAwaitingAuthorization(context.Context, entities.Job, []entities.JobItem, string, string, string, string, entities.MovePlanBinding) (entities.Job, bool, error)
+}
+
+// MoveConfirmation is the one-use confirmation a node-to-node move consumes.
+type MoveConfirmation struct {
+	PlanID, SubjectType, Token, Digest string
+}
+
+// prepareSignedBatchPull normalizes a node-to-node copy or move into the
+// immutable options its lease binds. A move always verifies checksums, since it
+// deletes the source once the copy is proven.
 func (s *Service) prepareSignedBatchPull(request CreateRequest) (CreateRequest, signedauth.JobOptions, error) {
-	if request.Type != "transfer_pull_batch" || request.PeerNodeID == "" || request.SourceGrantID == "" || request.DestinationGrantID == "" || request.MountID == "" || s.remote == nil {
+	if request.Type != "transfer_pull_batch" && request.Type != "transfer_move_batch" || request.PeerNodeID == "" || request.SourceGrantID == "" || request.DestinationGrantID == "" || request.MountID == "" || s.remote == nil {
 		return CreateRequest{}, signedauth.JobOptions{}, fmt.Errorf("%w: a signed remote copy needs a peer, both grants and a mount", ErrInvalid)
 	}
 	if request.BandwidthLimit < 0 || request.BandwidthLimit > 1<<40 || request.MaxParallelFiles < 0 || request.MaxParallelFiles > 32 || request.MaxParallelChunks < 0 || request.MaxParallelChunks > 16 {
@@ -34,7 +43,7 @@ func (s *Service) prepareSignedBatchPull(request CreateRequest) (CreateRequest, 
 		return CreateRequest{}, signedauth.JobOptions{}, fmt.Errorf("%w: conflict_policy ask is not supported for signed jobs", ErrInvalid)
 	}
 	request.ConflictPolicy, request.Recursive = policy, true
-	if policy == "checksum" {
+	if policy == "checksum" || request.Type == "transfer_move_batch" {
 		request.VerifyChecksum = true
 	}
 	job := s.newJob(request, "queued")
@@ -67,15 +76,14 @@ func SignedBatchPullHash(binding signedauth.Binding) (string, error) {
 // CreateSignedPlannedBatchPull verifies a job-bound lease and atomically
 // persists the job, in waiting_validation, together with its filtered plan.
 // plan and omitted come from planning under that lease's own filter.
-func (s *Service) CreateSignedPlannedBatchPull(ctx context.Context, request CreateRequest, plan entities.CopyPlan, omitted int, nodeID, envelope, idempotencyKey string, keys map[string]ed25519.PublicKey) (entities.Job, bool, error) {
+func (s *Service) CreateSignedPlannedBatchPull(ctx context.Context, request CreateRequest, plan entities.CopyPlan, omitted int, nodeID, envelope, idempotencyKey string, keys map[string]ed25519.PublicKey, move *MoveConfirmation) (entities.Job, bool, error) {
 	invalid := func() (entities.Job, bool, error) { return entities.Job{}, false, ErrInvalid }
-	creator, ok := s.store.(signedPlannedJobCreator)
 	now := s.now().UTC()
-	if !ok || idempotencyKey == "" || now.IsZero() || len(plan.Items) == 0 || omitted < 0 {
+	if idempotencyKey == "" || now.IsZero() || len(plan.Items) == 0 || omitted < 0 || (request.Type == "transfer_move_batch") != (move != nil) {
 		return invalid()
 	}
 	binding, err := signedauth.VerifiedJobLeaseBinding(envelope, keys, nodeID, now)
-	if err != nil || binding.Operation != "transfer_pull_batch" || binding.DestinationNodeID != nodeID || binding.SourceNodeID != request.PeerNodeID ||
+	if err != nil || binding.Operation != request.Type || binding.DestinationNodeID != nodeID || binding.SourceNodeID != request.PeerNodeID ||
 		binding.SourceGrantID != request.SourceGrantID || binding.DestinationGrantID != request.DestinationGrantID ||
 		binding.DestinationMountID != request.MountID || binding.SourceRoot != request.SourcePath || binding.DestinationRoot != request.Destination || binding.JobOptionsDigest == "" {
 		return invalid()
@@ -101,7 +109,24 @@ func (s *Service) CreateSignedPlannedBatchPull(ctx context.Context, request Crea
 	if err != nil {
 		return invalid()
 	}
-	created, repeated, err := creator.CreatePlannedJobAwaitingAuthorization(ctx, job, items, binding.ActorID, binding.CredentialID, idempotencyKey, requestHash)
+	var created entities.Job
+	var repeated bool
+	if move != nil {
+		// A move is destructive: it also needs its one-use confirmation, and
+		// leaves nothing out, since the source is deleted afterwards.
+		creator, ok := s.store.(signedPlannedMoveCreator)
+		if !ok || omitted != 0 {
+			return invalid()
+		}
+		created, repeated, err = creator.CreatePlannedMoveAwaitingAuthorization(ctx, job, items, binding.ActorID, binding.CredentialID, idempotencyKey, requestHash,
+			entities.MovePlanBinding{PlanID: move.PlanID, SubjectType: move.SubjectType, TokenHash: HashPlanToken(move.Token), Digest: move.Digest, Now: now})
+	} else {
+		creator, ok := s.store.(signedPlannedJobCreator)
+		if !ok {
+			return invalid()
+		}
+		created, repeated, err = creator.CreatePlannedJobAwaitingAuthorization(ctx, job, items, binding.ActorID, binding.CredentialID, idempotencyKey, requestHash)
+	}
 	if err != nil {
 		return entities.Job{}, false, err
 	}

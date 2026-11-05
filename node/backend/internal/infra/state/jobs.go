@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"github.com/jfxdev/jolt/backend/internal/entities"
@@ -78,7 +79,7 @@ func (s *Store) CreateJobAwaitingAuthorization(ctx context.Context, j entities.J
 	if j.Type != "delete" && j.Type != "copy_local" && j.Type != "move_local" {
 		return entities.Job{}, false, ErrInUse
 	}
-	return s.createJobAwaitingAuthorization(ctx, j, nil, actorID, credentialID, key, hash)
+	return s.createJobAwaitingAuthorization(ctx, j, nil, actorID, credentialID, key, hash, nil)
 }
 
 // CreatePlannedJobAwaitingAuthorization does the same for a node-to-node copy,
@@ -88,10 +89,24 @@ func (s *Store) CreatePlannedJobAwaitingAuthorization(ctx context.Context, j ent
 	if j.Type != "transfer_pull_batch" || len(items) == 0 {
 		return entities.Job{}, false, ErrInUse
 	}
-	return s.createJobAwaitingAuthorization(ctx, j, items, actorID, credentialID, key, hash)
+	return s.createJobAwaitingAuthorization(ctx, j, items, actorID, credentialID, key, hash, nil)
 }
 
-func (s *Store) createJobAwaitingAuthorization(ctx context.Context, j entities.Job, items []entities.JobItem, actorID, credentialID, key, hash string) (entities.Job, bool, error) {
+// MovePlanBinding is the confirmation a node-to-node move consumes; see entities.
+type MovePlanBinding = entities.MovePlanBinding
+
+// CreatePlannedMoveAwaitingAuthorization persists a node-to-node move together
+// with its plan items and consumes its one-use confirmation, in one transaction.
+// The plan must belong to the lease's actor, carry the token and the same digest
+// of planned entries, and not have expired; a repeated request returns the job.
+func (s *Store) CreatePlannedMoveAwaitingAuthorization(ctx context.Context, j entities.Job, items []entities.JobItem, actorID, credentialID, key, hash string, plan MovePlanBinding) (entities.Job, bool, error) {
+	if j.Type != "transfer_move_batch" || len(items) == 0 || !signedauth.ValidKeyID(plan.PlanID) || !planDigest(plan.TokenHash) || !planDigest(plan.Digest) || plan.Now.IsZero() {
+		return entities.Job{}, false, ErrInUse
+	}
+	return s.createJobAwaitingAuthorization(ctx, j, items, actorID, credentialID, key, hash, &plan)
+}
+
+func (s *Store) createJobAwaitingAuthorization(ctx context.Context, j entities.Job, items []entities.JobItem, actorID, credentialID, key, hash string, plan *MovePlanBinding) (entities.Job, bool, error) {
 	if !signedauth.ValidKeyID(j.ID) || !signedauth.ValidKeyID(j.MountID) || !signedauth.ValidKeyID(actorID) || !signedauth.ValidKeyID(credentialID) || key == "" || hash == "" || j.State != "queued" || j.DestructivePlanID != "" || j.SignedAuthBound || j.RequiresSignedAuth || j.SignedAuthActorID != "" || j.SignedAuthCredentialID != "" {
 		return entities.Job{}, false, ErrInUse
 	}
@@ -106,7 +121,7 @@ func (s *Store) createJobAwaitingAuthorization(ctx context.Context, j entities.J
 			if err != nil {
 				return err
 			}
-			if !stored.RequiresSignedAuth || stored.SignedAuthActorID != actorID || stored.SignedAuthCredentialID != credentialID {
+			if !stored.RequiresSignedAuth || stored.SignedAuthActorID != actorID || stored.SignedAuthCredentialID != credentialID || plan != nil && stored.DestructivePlanID != plan.PlanID {
 				return ErrIdempotencyConflict
 			}
 			j, reused = stored, true
@@ -120,6 +135,11 @@ func (s *Store) createJobAwaitingAuthorization(ctx context.Context, j entities.J
 		}
 		if err := s.ensureSecurityVersion(6); err != nil {
 			return err
+		}
+		if plan != nil {
+			if err := consumeMovePlan(tx, s, plan, actorID, &j, key, hash); err != nil {
+				return err
+			}
 		}
 		j.RequiresSignedAuth, j.SignedAuthActorID, j.SignedAuthCredentialID = true, actorID, credentialID
 		j.State, j.Phase, j.Error, j.NextAttemptAt = "waiting_validation", "waiting_authorization", "job execution requires authorization and validation", nil
@@ -203,7 +223,7 @@ func securedJobKind(job entities.Job) bool {
 	switch job.Type {
 	case "copy_local", "transfer_pull_batch":
 		return job.DestructivePlanID == ""
-	case "delete", "move_local":
+	case "delete", "move_local", "transfer_move_batch":
 		return job.DestructivePlanID != ""
 	}
 	return false
@@ -529,4 +549,22 @@ func (s *Store) JobSummary(ctx context.Context) (summary entities.JobSummary, er
 		return nil
 	})
 	return
+}
+
+// consumeMovePlan checks a move plan against the confirmation and marks it used
+// by the job. Every mismatch is the same refusal, so a caller learns nothing
+// about which part was wrong.
+func consumeMovePlan(tx *transaction, s *Store, binding *MovePlanBinding, actorID string, job *entities.Job, key, hash string) error {
+	plan, err := get[DestructivePlan](s, "destructive_plans", binding.PlanID)
+	if err != nil {
+		return ErrInUse
+	}
+	if plan.Operation != "transfer_move" || plan.SubjectType != binding.SubjectType || plan.SubjectID != actorID || plan.MountID != job.MountID || plan.ConsumedJobID != "" ||
+		subtle.ConstantTimeCompare([]byte(plan.TokenHash), []byte(binding.TokenHash)) != 1 || subtle.ConstantTimeCompare([]byte(plan.TreeDigest), []byte(binding.Digest)) != 1 ||
+		!binding.Now.Before(plan.ExpiresAt) || binding.Now.Before(plan.CreatedAt) {
+		return ErrInUse
+	}
+	plan.ConsumedJobID, plan.IdempotencyKey, plan.RequestHash = job.ID, key, hash
+	job.DestructivePlanID = plan.ID
+	return tx.put("destructive_plans", plan.ID, plan.SubjectID, order(plan.CreatedAt), plan)
 }

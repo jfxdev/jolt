@@ -625,6 +625,11 @@ type batchPullTransferRequest struct {
 	BandwidthLimit     int64    `json:"bandwidth_limit_bytes_per_second"`
 	MaxParallelFiles   int      `json:"max_parallel_files"`
 	MaxParallelChunks  int      `json:"max_parallel_chunks"`
+	// Used only by signed moves: the authenticated subject the Control Tower
+	// names and the confirmation the move consumes.
+	SubjectType   string `json:"subject_type"`
+	MovePlanID    string `json:"plan_id"`
+	MovePlanToken string `json:"plan_token"`
 }
 
 func (r batchPullTransferRequest) transferRequest(correlationID string) transfers.BatchPullRequest {
@@ -637,6 +642,7 @@ func (r batchPullTransferRequest) transferRequest(correlationID string) transfer
 			MaxParallelChunks: r.MaxParallelChunks, CorrelationID: correlationID,
 		},
 		SourcePaths: r.SourcePaths, SourceNames: r.SourceNames, Operation: r.Operation,
+		SubjectType: r.SubjectType, MovePlanID: r.MovePlanID, MovePlanToken: r.MovePlanToken,
 	}
 }
 
@@ -1763,6 +1769,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, code = http.StatusConflict, "invalid_job_state"
 	case errors.Is(err, jobs.ErrInvalid):
 		status, code = http.StatusBadRequest, "invalid_job_request"
+	case errors.Is(err, transfers.ErrMoveIncomplete):
+		status, code = http.StatusConflict, "move_incomplete"
 	case errors.Is(err, jobs.ErrTreeChanged):
 		status, code = http.StatusConflict, "tree_changed"
 	case errors.Is(err, jobs.ErrPlanRejected):
@@ -2805,7 +2813,7 @@ paths:
   /api/v1/transfers/signed-pull/batch/prepare:
     post:
       summary: Normalizes a node-to-node copy into the options a lease binds
-      description: Requires the operational bearer token. It plans and creates nothing. Only copies are accepted; a move needs its own plan. Available when the node runs signed jobs.
+      description: Requires the operational bearer token. It plans and creates nothing. A move is accepted too and needs a plan. Previewing it records a one-use confirmation (move_plan) that creation must present. Available when the node runs signed jobs.
       requestBody:
         required: true
         content:
@@ -2820,7 +2828,10 @@ paths:
                 source_names: {type: array, items: {type: string}}
                 destination_grant_id: {type: string}
                 destination_path: {type: string}
-                operation: {type: string, enum: [copy]}
+                operation: {type: string, enum: [copy, move]}
+                subject_type: {type: string, enum: [user, service_account], description: Only for a move; the subject the Control Tower authenticated}
+                plan_id: {type: string, description: Only when creating a move; the plan it consumes}
+                plan_token: {type: string, description: Only when creating a move}
                 conflict_policy: {type: string, enum: [skip, overwrite, rename, fail, checksum]}
                 verify_checksum: {type: boolean}
                 bandwidth_limit_bytes_per_second: {type: integer}

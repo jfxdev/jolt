@@ -104,7 +104,7 @@ func (s *Service) guardJob(ctx context.Context, job entities.Job) (context.Conte
 		return ctx, nil, contracts.ErrJobAuthorizationUnavailable
 	}
 	guarded = withAccessFilter(guarded, access)
-	if job.Type == "transfer_pull_batch" {
+	if job.Type == "transfer_pull_batch" || job.Type == "transfer_move_batch" {
 		binding, err := s.signed.JobAuthorizationBinding(ctx, job.ID)
 		if err != nil || binding.SourceNodeID != job.PeerNodeID || binding.DestinationNodeID != s.signedNodeID {
 			stop()
