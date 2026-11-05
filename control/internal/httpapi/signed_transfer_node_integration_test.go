@@ -121,7 +121,7 @@ func TestSignedTransferAgainstTwoNodeProcesses(t *testing.T) {
 	stop(source)
 	stop(destination)
 	write(source, configuration(source, fmt.Sprintf(`
-  - {id: out, peer_node_id: %s, mount_id: files, path: ".", direction: send, permissions: {read: true}, visible_to_peer: true, enabled: true}`, destination.id)))
+  - {id: out, peer_node_id: %s, mount_id: files, path: ".", direction: send, permissions: {read: true, delete: true}, visible_to_peer: true, enabled: true}`, destination.id)))
 	write(destination, configuration(destination, fmt.Sprintf(`
   - {id: in, peer_node_id: %s, mount_id: files, path: ".", direction: receive, permissions: {write: true}, conflict_policies: [fail, overwrite, rename, skip, checksum], visible_to_peer: true, enabled: true}`, source.id)))
 	idBefore := [2]string{source.id, destination.id}
@@ -163,7 +163,7 @@ func TestSignedTransferAgainstTwoNodeProcesses(t *testing.T) {
 	srcBase, dstBase := "nodes/"+source.id+"/files/mounts/files", "nodes/"+destination.id+"/files/mounts/files"
 	policy := store.Policy{ID: "operator-transfer", Name: "operator-transfer", CreatedAt: now, UpdatedAt: now, Rules: []rbac.Rule{
 		{Path: "nodes/" + destination.id + "/transfers", Capabilities: []string{"execute", "create"}},
-		{Path: srcBase + "/**", Capabilities: []string{"read", "list"}},
+		{Path: srcBase + "/**", Capabilities: []string{"read", "list", "update", "delete"}},
 		{Path: dstBase + "/**", Capabilities: []string{"read", "list", "create", "update"}},
 		{Path: srcBase + "/**", Capabilities: []string{"deny", "read"}, FileTypes: &filetypes.Selector{Extensions: []string{"pem"}}},
 	}}
@@ -295,6 +295,62 @@ func TestSignedTransferAgainstTwoNodeProcesses(t *testing.T) {
 	server.renewActiveSignedJobs(ctx)
 	if active, err := storage.ListActiveJobAuthorizationLinks(ctx, 10); err != nil || len(active) != 0 {
 		t.Fatalf("a finished transfer is still renewed: %d %v", len(active), err)
+	}
+
+	// A move is previewed, confirmed with its one-use token, and only then does
+	// the source disappear.
+	put(source, "mv/a.txt", "moved a")
+	put(source, "mv/sub/b.txt", "moved b")
+	move := body("mv")
+	move["operation"] = "move"
+	if w := call("operator", http.MethodPost, transfers, move, map[string]string{"Idempotency-Key": "move-0"}); w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "plan_required") {
+		t.Fatalf("a move without a plan: %d %s", w.Code, w.Body)
+	}
+	if _, err := os.Stat(filepath.Join(source.mount, "mv/a.txt")); err != nil {
+		t.Fatalf("a refused move changed the source: %v", err)
+	}
+	movePreview := call("operator", http.MethodPost, transfers+"/plan", move, nil)
+	var moved struct {
+		Plan struct {
+			FilesTotal int `json:"files_total"`
+			MovePlan   struct {
+				ID    string `json:"plan_id"`
+				Token string `json:"token"`
+			} `json:"move_plan"`
+		} `json:"plan"`
+	}
+	if movePreview.Code != http.StatusOK || json.Unmarshal(movePreview.Body.Bytes(), &moved) != nil || moved.Plan.FilesTotal != 2 || moved.Plan.MovePlan.Token == "" {
+		t.Fatalf("move preview: %d %s", movePreview.Code, movePreview.Body)
+	}
+	if _, err := os.Stat(filepath.Join(source.mount, "mv/a.txt")); err != nil {
+		t.Fatalf("previewing a move changed the source: %v", err)
+	}
+	move["move_plan"] = map[string]any{"plan_id": moved.Plan.MovePlan.ID, "token": moved.Plan.MovePlan.Token}
+	confirmed := call("operator", http.MethodPost, transfers, move, map[string]string{"Idempotency-Key": "move-1"})
+	if confirmed.Code != http.StatusAccepted || json.Unmarshal(confirmed.Body.Bytes(), &job) != nil {
+		t.Fatalf("confirm move: %d %s", confirmed.Code, confirmed.Body)
+	}
+	if state, _, message := waitJob(job.ID, 30*time.Second, func(state, _ string) bool { return state == "completed" || state == "failed" }); state != "completed" {
+		t.Fatalf("move %s: %s", state, message)
+	}
+	if content("mv/a.txt") != "moved a" || content("mv/sub/b.txt") != "moved b" {
+		t.Fatal("the moved tree did not arrive")
+	}
+	if _, err := os.Stat(filepath.Join(source.mount, "mv")); !os.IsNotExist(err) {
+		t.Fatalf("the source survived a completed move: %v", err)
+	}
+	// The confirmation is one-use, and a move that would leave a hidden entry
+	// behind is refused when it is previewed.
+	if again := call("operator", http.MethodPost, transfers, move, map[string]string{"Idempotency-Key": "move-2"}); again.Code < 400 {
+		t.Fatalf("a consumed plan was accepted: %d %s", again.Code, again.Body)
+	}
+	hiddenMove := body("tree")
+	hiddenMove["operation"] = "move"
+	if w := call("operator", http.MethodPost, transfers+"/plan", hiddenMove, nil); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "move_incomplete") || strings.Contains(w.Body.String(), "secret") {
+		t.Fatalf("a move with a hidden entry: %d %s", w.Code, w.Body)
+	}
+	if _, err := os.Stat(filepath.Join(source.mount, "tree/secret.pem")); err != nil {
+		t.Fatalf("a refused move touched the source: %v", err)
 	}
 
 	// Revoking the operator's session stops a copy that is still running.

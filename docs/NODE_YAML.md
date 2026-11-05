@@ -105,8 +105,11 @@ are left out (and counted), the destination is checked for every item and again
 right before a file is published, and the pull stops within 30 seconds of the
 last renewal. It needs `authorization_public_keys` on the destination node and
 node identities that match their registered IDs. Direct pulls are refused while
-this mode is on, and moving a directory between nodes is refused until it has a
-plan. `CONTROL_TOWER_SIGNED_UPLOADS=true` separately
+this mode is on. A move between nodes runs the same way but needs a plan: the
+preview records a one-use confirmation, creating the move must present it, and a
+fresh plan must still match it exactly. A move refuses a selection that has an
+entry hidden from the actor, and its source cleanup deletes only what the lease
+lets the actor delete. `CONTROL_TOWER_SIGNED_UPLOADS=true` separately
 enables signed resumable upload creation, chunks, completion and abort. The
 node requires fresh signed contexts for bound sessions and enforces filtering
 before publication. An explicit resume or discard reauthorizes an old unbound

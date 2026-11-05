@@ -381,6 +381,8 @@ export interface TransferPlan {
 	remote_file?: boolean;
 	// Source entries the current policy hides; they are counted, never listed.
 	sources_omitted?: number;
+	// The one-use confirmation of a move, returned when the move is previewed.
+	move_plan?: { plan_id: string; token: string; expires_at: string };
 }
 
 export interface LogicalTransferRequest {
@@ -392,6 +394,8 @@ export interface LogicalTransferRequest {
 	bandwidth_limit_bytes_per_second?: number;
 	max_parallel_files?: number;
 	max_parallel_chunks?: number;
+	// Required to create a move: the confirmation returned by its preview.
+	move_plan?: { plan_id: string; token: string };
 }
 
 export interface TransferTargetMount {

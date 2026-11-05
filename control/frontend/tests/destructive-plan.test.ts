@@ -49,3 +49,19 @@ test("a preview that left entries out says so, by count only", () => {
   assert.equal(omittedSourcesNotice({ ...plan, sources_omitted: 3 }), "3 entradas da origem não estão acessíveis para você e não serão copiadas.");
   assert.equal(omittedSourcesNotice({ ...plan, sources_omitted: -2 }), "");
 });
+
+import { moveNotice, withMovePlan } from "../src/lib/transfer-preview.ts";
+
+test("a move is created only with the confirmation of its preview", () => {
+  const request = { operation: "move" as const, source: { node_id: "a", mount_id: "m", paths: ["x"] }, destination: { mount_id: "n", path: "" } };
+  const plan = { files_total: 1, bytes_total: 1, copy_count: 1, conflict_count: 0, move_plan: { plan_id: "plan_1", token: "t", expires_at: "2099-01-01T00:00:00Z" } };
+  assert.deepEqual(withMovePlan(request, plan)?.move_plan, { plan_id: "plan_1", token: "t" });
+  assert.equal(withMovePlan(request, null), null);
+  assert.equal(withMovePlan(request, { ...plan, move_plan: undefined }), null);
+  const copy = { ...request, operation: "copy" as const };
+  assert.deepEqual(withMovePlan(copy, null), copy);
+  assert.equal(withMovePlan(copy, plan)?.move_plan, undefined);
+  assert.match(moveNotice("move", plan), /apagados/);
+  assert.equal(moveNotice("copy", plan), "");
+  assert.equal(moveNotice("move", null), "");
+});

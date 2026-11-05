@@ -813,9 +813,13 @@ paths:
         With signed local jobs enabled, a copy is planned by the destination node
         under the caller's current policy and runs only while its authorization is
         renewed: entries the policy hides are left out and reported as a count, and
-        the job id is derived from the actor and the Idempotency-Key. Moving a
-        directory answers 409 plan_required, and the direct pull routes answer 409
-        use_logical_transfer.
+        the job id is derived from the actor and the Idempotency-Key. A move needs
+        its preview first: the plan response carries move_plan (plan_id and a
+        one-use token) and creating the move must send it back as move_plan,
+        otherwise 422 plan_required. The node refuses the move when anything it
+        previewed changed (409 tree_changed) or when part of the selection is
+        hidden from the caller (409 move_incomplete). The direct pull routes
+        answer 409 use_logical_transfer.
         Idempotency-Key is required (1–512 characters). Repeating the same key
         and logical payload returns the existing job. Reusing the key with a
         different payload returns 409 idempotency_conflict. Records are durable;

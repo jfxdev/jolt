@@ -1,4 +1,4 @@
-import type { FileEntry, TransferPlan } from "./types";
+import type { FileEntry, LogicalTransferRequest, TransferPlan } from "./types";
 
 export interface TransferPreviewEntry {
   key: string;
@@ -65,4 +65,17 @@ export function omittedSourcesNotice(plan: TransferPlan | null): string {
   if (!Number.isInteger(omitted) || omitted <= 0) return "";
   const noun = omitted === 1 ? "entrada da origem não está acessível" : "entradas da origem não estão acessíveis";
   return `${omitted} ${noun} para você e ${omitted === 1 ? "não será copiada" : "não serão copiadas"}.`;
+}
+
+/** A move deletes its source once the copy is verified, so say it before confirming. */
+export function moveNotice(operation: "copy" | "move", plan: TransferPlan | null): string {
+  if (operation !== "move" || !plan) return "";
+  return "Os itens de origem serão apagados depois que a cópia for verificada. Esta confirmação vale por 5 minutos.";
+}
+
+/** The creation request of a previewed transfer; a move carries its one-use confirmation. */
+export function withMovePlan(request: LogicalTransferRequest, plan: TransferPlan | null): LogicalTransferRequest | null {
+  if (request.operation !== "move") return request;
+  if (!plan?.move_plan?.plan_id || !plan.move_plan.token) return null;
+  return { ...request, move_plan: { plan_id: plan.move_plan.plan_id, token: plan.move_plan.token } };
 }

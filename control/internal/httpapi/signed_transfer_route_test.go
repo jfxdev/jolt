@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jfxdev/jolt/control/internal/config"
+	"github.com/jfxdev/jolt/control/internal/rbac"
 	"github.com/jfxdev/jolt/control/internal/security"
 	"github.com/jfxdev/jolt/control/internal/signedauth"
 	"github.com/jfxdev/jolt/control/internal/store"
@@ -25,6 +26,8 @@ type transferFake struct {
 	mu                  sync.Mutex
 	calls               []string
 	createHeaders       []http.Header
+	moving              bool
+	previewBodies       []map[string]any
 	previewHeaders      []http.Header
 	unsignedPlans       int
 	createBodies        []map[string]any
@@ -41,9 +44,16 @@ type transferFake struct {
 
 const transferCaps = `["signed_transfer_pull_v1","signed_local_copy_execution_v1","signed_job_authorization_registration_v1","signed_job_options_binding_v1","signed_job_authorization_status_v1"]`
 
+func (f *transferFake) jobType() string {
+	if f.moving {
+		return "transfer_move_batch"
+	}
+	return "transfer_pull_batch"
+}
+
 func (f *transferFake) job(id string, options signedauth.JobOptions) string {
 	encoded, _ := json.Marshal(map[string]any{
-		"job_id": id, "type": "transfer_pull_batch", "state": "waiting_validation", "mount_id": "incoming", "source_path": "exports", "destination_path": "imports/archive",
+		"job_id": id, "type": f.jobType(), "state": "waiting_validation", "mount_id": "incoming", "source_path": "exports", "destination_path": "imports/archive",
 		"overwrite": options.Overwrite, "recursive": options.Recursive, "conflict_policy": options.ConflictPolicy, "source_change_policy": options.SourceChangePolicy,
 		"verify_checksum": options.VerifyChecksum, "bandwidth_limit_bytes_per_second": options.BandwidthLimit, "max_parallel_files": options.MaxParallelFiles,
 		"max_parallel_chunks": options.MaxParallelChunks, "max_attempts": options.MaxAttempts,
@@ -68,7 +78,7 @@ func (f *transferFake) handle(t *testing.T, r *http.Request) (int, http.Header, 
 		return 200, header, `{"node_id":"destination","fingerprint":"FP","capabilities":` + f.destinationCaps + `}`
 	case r.URL.Path == "/api/v1/grants":
 		if r.URL.Host == "source.test" {
-			return 200, header, `{"items":[{"grant_id":"source-grant","peer_node_id":"destination","mount_id":"source-media","path":"exports","direction":"send","enabled":true,"permissions":{"read":true}}]}`
+			return 200, header, `{"items":[{"grant_id":"source-grant","peer_node_id":"destination","mount_id":"source-media","path":"exports","direction":"send","enabled":true,"permissions":{"read":true,"delete":true}}]}`
 		}
 		return 200, header, `{"items":[{"grant_id":"destination-grant","peer_node_id":"` + f.sourceIdentity + `","mount_id":"incoming","path":"imports","direction":"receive","enabled":true,"permissions":{"write":true},"conflict_policies":["fail","rename"]}]}`
 	case r.URL.Path == "/api/v1/mounts":
@@ -83,7 +93,13 @@ func (f *transferFake) handle(t *testing.T, r *http.Request) (int, http.Header, 
 		return 200, header, `{"files_total":99}`
 	case r.URL.Path == "/api/v1/transfers/signed-pull/batch/plan":
 		f.previewHeaders = append(f.previewHeaders, r.Header.Clone())
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.previewBodies = append(f.previewBodies, body)
 		header.Set("X-Jolt-Signed-Transfer-Plan", "v1")
+		if body["operation"] == "move" {
+			return 200, header, `{"files_total":2,"bytes_total":12,"copy_count":2,"items":[],"move_plan":{"plan_id":"plan_1","token":"one-use","expires_at":"2099-01-01T00:00:00Z"}}`
+		}
 		return 200, header, `{"files_total":2,"bytes_total":12,"copy_count":2,"sources_omitted":3,"items":[]}`
 	case r.URL.Path == "/api/v1/transfers/signed-pull/batch":
 		var body map[string]any
@@ -352,5 +368,139 @@ func TestSignedLogicalTransferPreviewFailsClosed(t *testing.T) {
 	}
 	if fake.unsignedPlans != 0 || len(fake.previewHeaders) != 0 {
 		t.Fatal("an unprotected preview was offered instead")
+	}
+}
+
+const movePayload = `{"operation":"move","source":{"node_id":"source","mount_id":"source-media","paths":["exports/one.txt","exports/folder"]},"destination":{"mount_id":"incoming","path":"imports/archive"},"conflict_policy":"fail"}`
+const confirmedMovePayload = `{"operation":"move","source":{"node_id":"source","mount_id":"source-media","paths":["exports/one.txt","exports/folder"]},"destination":{"mount_id":"incoming","path":"imports/archive"},"conflict_policy":"fail","move_plan":{"plan_id":"plan_1","token":"one-use"}}`
+
+func TestSignedMoveNeedsAPreviewedPlanAndCarriesItsConfirmation(t *testing.T) {
+	fake := &transferFake{sourceIdentity: "source", destinationCaps: transferCaps, moving: true}
+	handler, server, storage, session := transferRouteHarness(t, fake)
+	post := func(path, payload, key string) *httptest.ResponseRecorder {
+		r := authenticatedRequest(http.MethodPost, path, session, []byte(payload))
+		if key != "" {
+			r.Header.Set("Idempotency-Key", key)
+		}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	transfers := "/api/v1/nodes/destination/transfers"
+	// Creating a move without a confirmation is refused before the node is asked.
+	if w := post(transfers, movePayload, "k0"); w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "plan_required") {
+		t.Fatalf("a move without a plan: %d %s", w.Code, w.Body)
+	}
+	if len(fake.createHeaders) != 0 {
+		t.Fatal("the node was asked to create an unconfirmed move")
+	}
+	// The preview runs under the caller's policy, names the subject and returns
+	// the confirmation to present.
+	preview := post(transfers+"/plan", movePayload, "")
+	var body struct {
+		Plan struct {
+			MovePlan struct {
+				PlanID string `json:"plan_id"`
+				Token  string `json:"token"`
+			} `json:"move_plan"`
+		} `json:"plan"`
+	}
+	if preview.Code != http.StatusOK || json.Unmarshal(preview.Body.Bytes(), &body) != nil || body.Plan.MovePlan.Token != "one-use" {
+		t.Fatalf("preview: %d %s", preview.Code, preview.Body)
+	}
+	if fake.previewBodies[0]["subject_type"] != "user" || fake.previewBodies[0]["operation"] != "move" || fake.previewBodies[0]["plan_token"] != nil {
+		t.Fatalf("preview payload: %+v", fake.previewBodies[0])
+	}
+	// Creating with the confirmation hands it to the node with a move lease.
+	created := post(transfers, confirmedMovePayload, "move-key")
+	if created.Code != http.StatusAccepted {
+		t.Fatalf("create: %d %s", created.Code, created.Body)
+	}
+	jobID := strings.TrimPrefix(created.Header().Get("Location"), "/api/v1/nodes/destination/jobs/")
+	payload := fake.createBodies[0]
+	if payload["operation"] != "move" || payload["plan_id"] != "plan_1" || payload["plan_token"] != "one-use" || payload["subject_type"] != "user" {
+		t.Fatalf("create payload: %+v", payload)
+	}
+	binding, err := signedauth.VerifiedJobLeaseBinding(fake.createHeaders[0].Get(signedAuthorizationHeader), fake.keys, "destination", time.Now().UTC())
+	if err != nil || binding.Operation != "transfer_move_batch" || binding.PlanID != jobID {
+		t.Fatalf("binding=%+v err=%v", binding, err)
+	}
+	_, filter, err := signedauth.VerifyJobLease(fake.createHeaders[0].Get(signedAuthorizationHeader), fake.keys, binding, "destination", 1, time.Now().UTC())
+	if err != nil || !filter.Evaluate("nodes/source/files/mounts/source-media/exports/one.txt", "delete", "file").Allowed {
+		t.Fatalf("the move lease does not grant delete on the source: %v", err)
+	}
+	raw, err := storage.GetJobAuthorizationScope(context.Background(), "destination", jobID)
+	var scope transferScope
+	if err != nil || json.Unmarshal(raw, &scope) != nil || scope.Operation != "move" {
+		t.Fatalf("scope=%s err=%v", raw, err)
+	}
+	// Renewal reissues a move lease from that scope.
+	before := len(fake.deliveries)
+	if _, err := server.renewSignedLocalJobLease(context.Background(), "destination", jobID); err != nil || len(fake.deliveries) != before+1 {
+		t.Fatalf("renewal err=%v deliveries=%d", err, len(fake.deliveries))
+	}
+	renewed, err := signedauth.VerifiedJobLeaseBinding(fake.deliveries[len(fake.deliveries)-1], fake.keys, "destination", time.Now().UTC())
+	if err != nil || renewed.Operation != "transfer_move_batch" {
+		t.Fatalf("renewed=%+v err=%v", renewed, err)
+	}
+}
+
+func TestMoveLeaseNeedsUpdateAndDeleteOnEverySourceRoot(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})}
+	f := setupAgent(t, store.DefaultAgentLimits(), client)
+	ctx, now := context.Background(), time.Now().UTC().Truncate(time.Second)
+	operator := store.User{ID: "mover", Username: "mover", PasswordHash: "unused", Role: "operator", Enabled: true, CreatedAt: now, UpdatedAt: now}
+	if err := f.storage.CreateUser(ctx, operator); err != nil {
+		t.Fatal(err)
+	}
+	const session = "move-lease-session"
+	if err := f.storage.CreateSession(ctx, security.Digest(session), operator.ID, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	source, destination := "nodes/src/files/mounts/media", "nodes/dst/files/mounts/inbox"
+	policy := store.Policy{ID: "mover", Name: "mover", CreatedAt: now, UpdatedAt: now, Rules: []rbac.Rule{
+		{Path: "nodes/dst/transfers", Capabilities: []string{"execute"}},
+		{Path: source + "/movies/**", Capabilities: []string{"read", "list", "update", "delete"}},
+		{Path: destination + "/incoming/**", Capabilities: []string{"create", "update", "list", "read"}},
+	}}
+	if err := f.storage.CreatePolicy(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.storage.SetSubjectPolicies(ctx, "user", operator.ID, []string{policy.ID}); err != nil {
+		t.Fatal(err)
+	}
+	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	s := &Server{store: f.storage, config: config.Config{AuthorizationSigningKeyID: "key", AuthorizationSigningKey: key}}
+	var request *http.Request
+	s.auth(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { request = r })).ServeHTTP(httptest.NewRecorder(), authenticatedRequest("GET", "/", session, nil))
+	job := signedLocalJob{ID: "xfer", Type: "transfer_move_batch", MountID: "inbox", Source: "library", Destination: "incoming/archive", PeerNodeID: "src", SourceGrantID: "sg", DestinationGrantID: "dg", MaxAttempts: 3}
+	scope := transferScope{SourceNodeID: "src", SourceMountID: "media", SourceGrantRoot: "library", SourcePaths: []string{"movies/a"}, DestinationPath: "incoming/archive", Operation: "move"}
+	if _, err := s.issueSignedTransferLeaseFor(request, "dst", job, scope, 1, now); err != nil {
+		t.Fatalf("a mover with every capability was refused: %v", err)
+	}
+	// Dropping delete (or update) from the source refuses the lease.
+	for name, capabilities := range map[string][]string{"no delete": {"read", "list", "update"}, "no update": {"read", "list", "delete"}} {
+		policy.Rules[1].Capabilities = capabilities
+		if err := f.storage.UpdatePolicy(ctx, policy); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.issueSignedTransferLeaseFor(request, "dst", job, scope, 1, now); err == nil {
+			t.Fatalf("%s: a move lease was issued", name)
+		}
+	}
+	// The same actor may still copy: a copy needs only read.
+	copyJob, copyScope := job, scope
+	copyJob.Type, copyScope.Operation = "transfer_pull_batch", "copy"
+	if _, err := s.issueSignedTransferLeaseFor(request, "dst", copyJob, copyScope, 1, now); err != nil {
+		t.Fatalf("a copy was refused: %v", err)
+	}
+	// A move job must match a move scope, and the other way around.
+	if _, err := s.issueSignedTransferLeaseFor(request, "dst", job, copyScope, 1, now); err == nil {
+		t.Fatal("a move job was leased from a copy scope")
+	}
+	if _, err := s.issueSignedTransferLeaseFor(request, "dst", copyJob, scope, 1, now); err == nil {
+		t.Fatal("a copy job was leased from a move scope")
 	}
 }

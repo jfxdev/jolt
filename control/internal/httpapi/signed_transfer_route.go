@@ -42,6 +42,7 @@ type signedTransfer struct {
 	scope               transferScope
 	jobID               string
 	envelope            string
+	jobType             string
 	binding             signedauth.Binding
 	actor               store.User
 	actorType           string
@@ -77,7 +78,19 @@ func (s *Server) prepareSignedTransfer(w http.ResponseWriter, r *http.Request, r
 		writeError(w, r, http.StatusServiceUnavailable, "signed_job_unavailable", "Não foi possível preparar a transferência protegida. Verifique a versão dos nodes e as permissões atuais.")
 		return signedTransfer{}, false
 	}
+	moving := resolved.Request.Operation == "move"
+	if moving && !preview && (resolved.Request.MovePlan == nil || resolved.Request.MovePlan.ID == "" || resolved.Request.MovePlan.Token == "") {
+		writeError(w, r, http.StatusUnprocessableEntity, "plan_required", "Mover exige a prévia e a confirmação do plano. Gere a prévia e confirme com o token recebido.")
+		return signedTransfer{}, false
+	}
 	payload := resolved.nodeRequest(r.Header.Get("X-Correlation-ID"))
+	if moving {
+		// The node trusts the subject because this server authenticated it.
+		payload["subject_type"] = actorType
+		if !preview {
+			payload["plan_id"], payload["plan_token"] = resolved.Request.MovePlan.ID, resolved.Request.MovePlan.Token
+		}
+	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		s.fail(w, r, err)
@@ -105,7 +118,11 @@ func (s *Server) prepareSignedTransfer(w http.ResponseWriter, r *http.Request, r
 	scope := transferScope{
 		SourceNodeID: source.ID, SourceMountID: resolved.Request.Source.MountID, SourceGrantRoot: rootPath(resolved.SourceGrant.Path),
 		SourcePaths: resolved.Request.Source.Paths, DestinationPath: rootPath(resolved.Request.Destination.Path),
-		MayOverwrite: transferMayOverwrite(resolved.Request.ConflictPolicy),
+		MayOverwrite: transferMayOverwrite(resolved.Request.ConflictPolicy), Operation: resolved.Request.Operation,
+	}
+	jobType := "transfer_pull_batch"
+	if moving {
+		jobType = "transfer_move_batch"
 	}
 	jobID := signedTransferJobID(actorType, actor.ID, idempotency, destination.ID)
 	if preview {
@@ -116,7 +133,7 @@ func (s *Server) prepareSignedTransfer(w http.ResponseWriter, r *http.Request, r
 		jobID = "preview-" + hex.EncodeToString(random[:])
 	}
 	job := signedLocalJob{
-		ID: jobID, Type: "transfer_pull_batch", MountID: resolved.DestinationGrant.MountID, Source: scope.SourceGrantRoot, Destination: scope.DestinationPath,
+		ID: jobID, Type: jobType, MountID: resolved.DestinationGrant.MountID, Source: scope.SourceGrantRoot, Destination: scope.DestinationPath,
 		Overwrite: options.Overwrite, Recursive: options.Recursive, ConflictPolicy: options.ConflictPolicy, SourceChangePolicy: options.SourceChangePolicy,
 		VerifyChecksum: options.VerifyChecksum, BandwidthLimit: options.BandwidthLimit, MaxParallelFiles: options.MaxParallelFiles,
 		MaxParallelChunks: options.MaxParallelChunks, MaxAttempts: options.MaxAttempts,
@@ -136,7 +153,7 @@ func (s *Server) prepareSignedTransfer(w http.ResponseWriter, r *http.Request, r
 		return fail()
 	}
 	return signedTransfer{destination: destination, source: source, encoded: encoded, options: options, optionsDigest: *prepared.Digest, scope: scope, jobID: jobID,
-		envelope: envelope, binding: binding, actor: actor, actorType: actorType, credential: credential, credentialDigest: digest}, true
+		envelope: envelope, jobType: jobType, binding: binding, actor: actor, actorType: actorType, credential: credential, credentialDigest: digest}, true
 }
 
 // planSignedLogicalTransfer previews a node-to-node copy under the caller's
@@ -217,7 +234,7 @@ func (s *Server) createSignedLogicalTransfer(w http.ResponseWriter, r *http.Requ
 		Job              signedLocalJob `json:"job"`
 		ExecutionEnabled *bool          `json:"execution_enabled"`
 	}
-	if err != nil || json.Unmarshal(data, &created) != nil || created.Job.ID != jobID || created.Job.Type != "transfer_pull_batch" || created.ExecutionEnabled == nil || !*created.ExecutionEnabled {
+	if err != nil || json.Unmarshal(data, &created) != nil || created.Job.ID != jobID || created.Job.Type != transfer.jobType || created.ExecutionEnabled == nil || !*created.ExecutionEnabled {
 		fail()
 		return
 	}

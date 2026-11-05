@@ -287,29 +287,3 @@ func (s *Server) refuseUnplannedTreeOperation(w http.ResponseWriter, r *http.Req
 	writeError(w, r, http.StatusConflict, "plan_required", "Excluir ou mover uma pasta exige um plano de operação destrutiva e a sua confirmação.")
 	return true
 }
-
-// refuseUnplannedTransferMove stops a node-to-node move that would delete a
-// directory on the source, which today has no plan to confirm. A copy followed
-// by a planned delete achieves the same result. Moving files is unaffected.
-// It reports whether it answered the request.
-func (s *Server) refuseUnplannedTransferMove(w http.ResponseWriter, r *http.Request, sourceNode store.Node, mountID string, paths []string) bool {
-	for _, source := range paths {
-		var metadata struct {
-			Type string `json:"type"`
-		}
-		path := "/api/v1/mounts/" + url.PathEscape(mountID) + "/files/metadata?path=" + url.QueryEscape(source)
-		if err := s.callNodeJSON(r.Context(), sourceNode, http.MethodGet, path, nil, &metadata, r.Header.Get("X-Correlation-ID")); err != nil {
-			var apiErr *nodeAPIError
-			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
-				continue // the transfer reports a missing source itself
-			}
-			writeError(w, r, http.StatusBadGateway, "node_unavailable", "Não foi possível verificar o tipo dos itens no node de origem.")
-			return true
-		}
-		if metadata.Type == "directory" {
-			writeError(w, r, http.StatusConflict, "plan_required", "Mover uma pasta entre nodes apaga a origem e ainda não tem plano de confirmação. Copie a pasta e, depois, remova a origem com um plano.")
-			return true
-		}
-	}
-	return false
-}

@@ -121,7 +121,7 @@ Prometheus/Grafana/Alertmanager e o agendador de backups são componentes extern
 `POST …/mounts/{id}/files/copy` como jobs vinculados à autorização do chamador.
 A opção vem desativada, exige a chave de assinatura (`CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_*`)
 e cobre cópia local, além de delete e move de pastas, que passam a exigir um plano.
-Cópias entre nodes também usam autorização renovável (veja abaixo); o move entre nodes continua sem ela, e o de pasta é recusado enquanto não houver plano.
+Cópias e moves entre nodes também usam autorização renovável (veja abaixo).
 
 **Antes de ativar**
 
@@ -168,13 +168,10 @@ pasta respondem `409 plan_required`. O fluxo é: `POST …/files/destructive-pla
   `plan_move`, `confirm_delete`, `confirm_move`.
 - A varredura lê o conteúdo de todos os arquivos para calcular o digest: em pastas
   grandes, planejar e confirmar levam o tempo de uma leitura completa.
-- Mover uma **pasta** entre nodes (transferência com `operation: move`, inclusive pelo
-  diálogo de transferência da interface) responde `409 plan_required`, porque apaga a
-  origem e esse fluxo ainda não tem plano. Copie a pasta e remova a origem com um
-  plano. Mover **arquivos** entre nodes continua como antes, **sem** autorização
-  renovável nem filtro por policy.
+- Mover entre nodes (transferência com `operation: move`, pasta ou arquivo) também exige
+  plano e confirmação: veja "Copiar e mover entre nodes".
 
-**Copiar entre nodes**
+**Copiar e mover entre nodes**
 
 `POST /api/v1/nodes/{destino}/transfers` com `operation: copy` cria um job executado
 pelo node de **destino**, sob a mesma autorização renovável. O destino busca o
@@ -189,6 +186,17 @@ reavalia a policy com o lease vigente.
   `authorization_public_keys`. O ID registrado de cada node no Control Tower precisa
   ser o que o node informa; se divergirem, a criação responde `node_identity_mismatch`
   (a policy nomeia os nodes pelo ID registrado).
+- **Mover:** `operation: move` primeiro pede a prévia (`…/transfers/plan`), que calcula
+  o plano sob a policy do usuário e devolve `move_plan` com um token de uso único válido
+  por 5 minutos. Criar o move exige devolver esse `move_plan`; sem ele, `422 plan_required`.
+  O plano guarda um digest do ator, dos dois lados, da policy e de cada entrada (tamanho,
+  data, checksum e ação): se qualquer coisa mudou entre a prévia e a confirmação, a
+  resposta é `409 tree_changed` e nada é consumido. Um move **recusa** (`409
+  move_incomplete`) uma seleção com alguma entrada oculta para o usuário, porque a origem
+  é apagada depois; uma cópia só conta as omissões. O usuário precisa de `read`, `update`
+  e `delete` na origem, e a limpeza apaga item a item, com ETag, só o que o lease deixa
+  apagar; sem `delete` a origem é preservada e o job falha depois de copiar. Uma cópia
+  verificada que não pôde ser limpa deixa a origem intacta: confira os dois lados.
 - **Pull direto bloqueado:** com a opção ligada, `POST …/transfers/pull`,
   `…/pull/directory` e `…/pull/batch` respondem `409 use_logical_transfer`; as
   prévias (`…/plan`) continuam.
@@ -238,12 +246,11 @@ dos modos assinados; sem elas a operação falha fechada, não volta ao caminho 
   Uma negação tipada pode listar as capacidades que retira (`["deny","read"]` esconde o
   conteúdo mas mantém a listagem); uma negação por caminho continua sozinha.
 - Onde o node filtra por entrada (leituras, uploads, cópia local e entre nodes, delete e
-  move de pasta com plano, shares e as prévias), o Control Tower só recusa o que
+  move de pasta com plano, copia e move entre nodes, shares e as prévias), o Control Tower só recusa o que
   nenhum tipo de entrada poderia fazer e deixa o resto para o node, que responde 404
   para o escondido (`hidden`) ou 403 (`visible`).
-- Onde o node **não** filtra (delete e move direto de arquivo, mover arquivos entre
-  nodes), o Control Tower exige que todo tipo possível seja permitido. Pastas nessas
-  rotas já exigem plano ou são recusadas.
+- Onde o node **não** filtra (delete e move direto de um arquivo), o Control Tower exige
+  que todo tipo possível seja permitido. Pastas nessas rotas já exigem plano.
 - Uma **negação por caminho** dentro de uma pasta continua recusando a operação inteira
   sobre ela (`deny_rule_within_scope`); as negações tipadas não.
 - Desligar a opção não apaga as regras: uma negação tipada já gravada volta a negar
@@ -253,7 +260,6 @@ dos modos assinados; sem elas a operação falha fechada, não volta ao caminho 
 
 - Editor de regra, matriz de acesso efetivo e navegador de arquivos (cadeado, mensagens)
   da interface ainda não conhecem tipos: use a API.
-- Mover **arquivos** entre nodes não é filtrado pelo node (só pelo Control Tower).
 - Não houve validação sob carga nem entre hosts. Trate o recurso como experimental.
 
 ## Rotinas

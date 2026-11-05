@@ -8,7 +8,7 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
-import { omittedSourcesNotice, transferDestinationFolder } from "@/lib/transfer-preview";
+import { moveNotice, omittedSourcesNotice, transferDestinationFolder, withMovePlan } from "@/lib/transfer-preview";
 import type {
   FileEntry,
   LogicalTransferRequest,
@@ -191,10 +191,11 @@ export function CrossNodeTransferDialog({
   }
 
   async function execute() {
-    if (!target || !payload() || !plan) return;
+    const request = target && payload() && plan ? withMovePlan(payload()!, plan) : null;
+    if (!target || !request) return;
     setBusy(true);
     try {
-      const job = await api.createTransfer(target.node_id, payload()!);
+      const job = await api.createTransfer(target.node_id, request);
       setCreatedJobId(job.job_id);
       await refreshJobs();
       onCompleted?.();
@@ -335,7 +336,8 @@ export function CrossNodeTransferDialog({
               <Summary label="Ignorar" value={plan.skip_count || 0} />
               <Summary label="Conflitos" value={plan.conflict_count} />
             </div>}
-            {omittedSourcesNotice(plan) && <p className="text-sm text-muted-foreground" role="status">{omittedSourcesNotice(plan)}</p>}</>}
+            {omittedSourcesNotice(plan) && <p className="text-sm text-muted-foreground" role="status">{omittedSourcesNotice(plan)}</p>}
+            {moveNotice(operation, plan) && <p className="text-sm text-destructive" role="status">{moveNotice(operation, plan)}</p>}</>}
             <DialogFooter>
               <Button type="button" variant="secondary" onClick={onClose}>Cancelar</Button>
               {plan && <Button type="button" variant="secondary" onClick={() => setPlan(null)}>Revisar</Button>}

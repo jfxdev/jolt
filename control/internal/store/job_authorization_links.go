@@ -102,7 +102,7 @@ func (s *Store) CreateJobAuthorizationLink(ctx context.Context, link JobAuthoriz
 		return ErrConflict
 	}
 	switch link.Binding.Operation {
-	case "delete", "copy_local", "move_local", "transfer_pull_batch":
+	case "delete", "copy_local", "move_local", "transfer_pull_batch", "transfer_move_batch":
 	default:
 		return ErrConflict
 	}
@@ -173,7 +173,7 @@ func readJobAuthorizationLink(row scanner) (JobAuthorizationLink, error) {
 		return JobAuthorizationLink{}, ErrConflict
 	}
 	switch link.Binding.Operation {
-	case "delete", "copy_local", "move_local", "transfer_pull_batch":
+	case "delete", "copy_local", "move_local", "transfer_pull_batch", "transfer_move_batch":
 	default:
 		return JobAuthorizationLink{}, ErrConflict
 	}
@@ -399,7 +399,7 @@ func (s *Store) FinishJobAuthorizationLink(ctx context.Context, nodeID, jobID st
 // the link is stored under: the source for local operations, the destination
 // for a node-to-node pull, which the destination executes.
 func linkBindingOwnedByNode(binding signedauth.Binding, nodeID string) bool {
-	if binding.Operation == "transfer_pull_batch" {
+	if binding.Operation == "transfer_pull_batch" || binding.Operation == "transfer_move_batch" {
 		return binding.DestinationNodeID == nodeID
 	}
 	return binding.SourceNodeID == nodeID

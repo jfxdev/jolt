@@ -3498,6 +3498,12 @@ type logicalTransferRequest struct {
 	BandwidthLimit    int64  `json:"bandwidth_limit_bytes_per_second"`
 	MaxParallelFiles  int    `json:"max_parallel_files"`
 	MaxParallelChunks int    `json:"max_parallel_chunks"`
+	// MovePlan is the one-use confirmation a move must present when it is
+	// created, returned when the move was previewed.
+	MovePlan *struct {
+		ID    string `json:"plan_id"`
+		Token string `json:"token"`
+	} `json:"move_plan,omitempty"`
 }
 
 type transferTargetsRequest struct {
@@ -3708,7 +3714,7 @@ func (s *Server) planLogicalTransfer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if s.config.SignedLocalJobs && resolved.Request.Operation == "copy" {
+	if s.config.SignedLocalJobs {
 		s.planSignedLogicalTransfer(w, r, resolved)
 		return
 	}
@@ -3732,7 +3738,7 @@ func (s *Server) createLogicalTransfer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if s.config.SignedLocalJobs && resolved.Request.Operation == "copy" {
+	if s.config.SignedLocalJobs {
 		s.createSignedLogicalTransfer(w, r, resolved)
 		return
 	}
@@ -3785,7 +3791,7 @@ func (s *Server) resolveLogicalTransferRequest(w http.ResponseWriter, r *http.Re
 		writeError(w, r, http.StatusBadRequest, "path_outside_grant", "A pasta de destino precisa ser relativa ao mount autorizado.")
 		return resolvedLogicalTransfer{}, false
 	}
-	if s.config.TypedPolicies && s.config.SignedLocalJobs && operation == "copy" {
+	if s.config.TypedPolicies && s.config.SignedLocalJobs {
 		r = markNodeFiltered(r) // the destination node plans and runs it under a lease
 	}
 	request.Operation = operation
@@ -3829,9 +3835,6 @@ func (s *Server) resolveLogicalTransferRequest(w http.ResponseWriter, r *http.Re
 	destinationNode, err := s.store.GetNode(r.Context(), destinationNodeID)
 	if err != nil || destinationNode.State == "untrusted" {
 		writeError(w, r, http.StatusNotFound, "node_unavailable", "O node de destino não está disponível.")
-		return resolvedLogicalTransfer{}, false
-	}
-	if s.config.SignedLocalJobs && operation == "move" && s.refuseUnplannedTransferMove(w, r, sourceNode, request.Source.MountID, paths) {
 		return resolvedLogicalTransfer{}, false
 	}
 	sourceMetadata, sourceIdentityErr := s.nodeMetadata(r.Context(), sourceNode)

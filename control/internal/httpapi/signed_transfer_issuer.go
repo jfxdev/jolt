@@ -22,7 +22,12 @@ type transferScope struct {
 	SourcePaths     []string `json:"source_paths"`
 	DestinationPath string   `json:"destination_path"`
 	MayOverwrite    bool     `json:"may_overwrite"`
+	// Operation is "copy" (the default, for scopes saved before moves existed)
+	// or "move", which also needs update and delete on the source.
+	Operation string `json:"operation,omitempty"`
 }
+
+func (scope transferScope) moves() bool { return scope.Operation == "move" }
 
 func rootPath(value string) string {
 	if value == "" {
@@ -69,7 +74,11 @@ func (s *Server) issueSignedTransferLeaseFor(r *http.Request, destinationNodeID 
 		!validPathIdentifier(job.MountID) || !validPathIdentifier(scope.SourceNodeID) || !validPathIdentifier(scope.SourceMountID) || len(scope.SourcePaths) == 0 || scope.SourceNodeID == destinationNodeID {
 		return "", errSignedReadUnavailable
 	}
-	if job.Type != "transfer_pull_batch" || job.PeerNodeID != scope.SourceNodeID || rootPath(job.Source) != rootPath(scope.SourceGrantRoot) ||
+	jobType := "transfer_pull_batch"
+	if scope.moves() {
+		jobType = "transfer_move_batch"
+	}
+	if scope.Operation != "" && scope.Operation != "copy" && !scope.moves() || job.Type != jobType || job.PeerNodeID != scope.SourceNodeID || rootPath(job.Source) != rootPath(scope.SourceGrantRoot) ||
 		rootPath(job.Destination) != rootPath(scope.DestinationPath) || job.SourceGrantID == "" || job.DestinationGrantID == "" {
 		return "", errSignedReadUnavailable
 	}
@@ -89,6 +98,10 @@ func (s *Server) issueSignedTransferLeaseFor(r *http.Request, destinationNodeID 
 	var required []authorizationRequirement
 	for _, root := range scope.SourcePaths {
 		required = append(required, authorizationRequirement{Path: fileScope(sourceBase, root), Capability: "read"})
+		if scope.moves() {
+			// A move deletes what it copied, so the actor needs both on the source.
+			required = append(required, authorizationRequirement{Path: fileScope(sourceBase, root), Capability: "update"}, authorizationRequirement{Path: fileScope(sourceBase, root), Capability: "delete"})
+		}
 	}
 	destination := fileScope(destinationBase, scope.DestinationPath)
 	required = append(required, authorizationRequirement{Path: destination, Capability: "create"})
@@ -109,7 +122,7 @@ func (s *Server) issueSignedTransferLeaseFor(r *http.Request, destinationNodeID 
 		return "", err
 	}
 	binding := signedauth.Binding{
-		ActorID: subject.actor.ID, CredentialID: subject.credential, Operation: "transfer_pull_batch",
+		ActorID: subject.actor.ID, CredentialID: subject.credential, Operation: jobType,
 		SourceNodeID: scope.SourceNodeID, SourceGrantID: job.SourceGrantID, SourceMountID: scope.SourceMountID, SourceRoot: rootPath(scope.SourceGrantRoot),
 		DestinationNodeID: destinationNodeID, DestinationGrantID: job.DestinationGrantID, DestinationMountID: job.MountID, DestinationRoot: rootPath(scope.DestinationPath),
 		PlanID: job.ID, JobOptionsDigest: job.optionsDigest(),

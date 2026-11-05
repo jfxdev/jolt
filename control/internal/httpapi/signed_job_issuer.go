@@ -175,7 +175,7 @@ func (s *Server) signLease(r *http.Request, subject leaseSubject, binding signed
 
 // issueSignedJobLease builds the lease of any signed job the node runs.
 func (s *Server) issueSignedJobLease(r *http.Request, nodeID string, job signedLocalJob, revision uint64, now time.Time) (string, error) {
-	if job.Type == "transfer_pull_batch" {
+	if job.Type == "transfer_pull_batch" || job.Type == "transfer_move_batch" {
 		return s.issueSignedTransferLease(r, nodeID, job, revision, now)
 	}
 	return s.issueSignedLocalJobLease(r, nodeID, job, revision, now)
