@@ -120,6 +120,10 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 	mux.HandleFunc("GET /api/v1/jobs/summary", s.jobSummary)
 	mux.HandleFunc("GET /api/v1/jobs/events", s.streamJobEvents)
 	mux.HandleFunc("GET /api/v1/jobs/{jobID}", s.getJob)
+	if _, ok := s.store.(signedJobCreationStore); ok && s.jobs != nil {
+		mux.HandleFunc("POST /api/v1/jobs/signed-local-copy/prepare", s.prepareSignedLocalCopy)
+		mux.HandleFunc("POST /api/v1/jobs/signed-local-copy", s.createSignedLocalCopy)
+	}
 	if _, ok := s.store.(signedJobAuthorizationRegistrar); ok {
 		mux.HandleFunc("POST /api/v1/jobs/{jobID}/authorization", s.registerJobAuthorization)
 	}
@@ -369,6 +373,9 @@ func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 		}
 		if _, ok := s.store.(signedJobAuthorizationReporter); ok {
 			capabilities = append(capabilities, "signed_job_authorization_status_v1")
+		}
+		if _, ok := s.store.(signedJobCreationStore); ok && s.jobs != nil {
+			capabilities = append(capabilities, "signed_local_copy_creation_v1")
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1859,6 +1866,23 @@ components:
       type: http
       scheme: bearer
   schemas:
+    SignedLocalCopyRequest:
+      type: object
+      additionalProperties: false
+      required: [mount_id, source_path, destination_path]
+      properties:
+        mount_id: {type: string}
+        source_path: {type: string}
+        destination_path: {type: string}
+        overwrite: {type: boolean}
+        recursive: {type: boolean}
+        conflict_policy: {type: string}
+        source_change_policy: {type: string}
+        verify_checksum: {type: boolean}
+        bandwidth_limit_bytes_per_second: {type: integer, format: int64, minimum: 0}
+        max_parallel_files: {type: integer, minimum: 0, maximum: 32}
+        max_parallel_chunks: {type: integer, minimum: 0, maximum: 16}
+        max_attempts: {type: integer}
     FileConfiguration:
       type: object
       readOnly: true
@@ -2413,6 +2437,37 @@ paths:
     get:
       responses:
         "200": {description: Persistent job history}
+  /api/v1/jobs/signed-local-copy/prepare:
+    post:
+      summary: Prepare immutable options for a signed local copy
+      description: Requires the operational bearer token. Computes normalized options and their digest without creating a job or authorizing execution.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SignedLocalCopyRequest'}
+      responses:
+        "200": {description: Normalized options, digest and execution_enabled false}
+        "400": {description: Invalid request or noncanonical paths}
+        "503": {description: Signed job creation unavailable}
+  /api/v1/jobs/signed-local-copy:
+    post:
+      summary: Create a signed local copy awaiting validation
+      description: Requires the operational bearer token and a job-bound signed envelope matching the normalized request. The created job remains blocked and execution is not enabled.
+      parameters:
+        - {in: header, name: X-Jolt-Access-Authorization, required: true, schema: {type: string}}
+        - {in: header, name: Idempotency-Key, required: true, schema: {type: string, maxLength: 128}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SignedLocalCopyRequest'}
+      responses:
+        "200": {description: Existing job returned for an identical request}
+        "202": {description: Job created in waiting_validation with execution_enabled false}
+        "400": {description: Invalid body, scope, signature or idempotency key}
+        "409": {description: Idempotency key or job identifier conflict}
+        "503": {description: Signed job creation unavailable}
   /api/v1/jobs/summary:
     get:
       summary: Counts all durable jobs by state, independent of history pagination

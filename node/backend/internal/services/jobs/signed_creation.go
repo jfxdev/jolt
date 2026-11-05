@@ -15,6 +15,33 @@ type signedJobCreator interface {
 	CreateJobAwaitingAuthorization(context.Context, entities.Job, string, string, string, string) (entities.Job, bool, error)
 }
 
+// PrepareSignedLocalCopy returns normalized immutable options without creating
+// a job. The caller must authorize the operation before requesting creation.
+func (s *Service) PrepareSignedLocalCopy(ctx context.Context, request CreateRequest) (signedauth.JobOptions, string, error) {
+	_, options, err := s.prepareSignedLocalCopy(ctx, request)
+	if err != nil {
+		return signedauth.JobOptions{}, "", err
+	}
+	return options, signedauth.JobOptionsDigest(options), nil
+}
+
+func (s *Service) prepareSignedLocalCopy(ctx context.Context, request CreateRequest) (CreateRequest, signedauth.JobOptions, error) {
+	if request.Type != "copy_local" || request.PeerNodeID != "" || request.SourceGrantID != "" || request.DestinationGrantID != "" {
+		return CreateRequest{}, signedauth.JobOptions{}, ErrInvalid
+	}
+	probe := signedauth.Binding{ActorID: "actor", CredentialID: "credential", Operation: "copy_local", SourceNodeID: "node", SourceMountID: request.MountID, SourceRoot: request.SourcePath, DestinationNodeID: "node", DestinationMountID: request.MountID, DestinationRoot: request.Destination, PlanID: "prepare"}
+	if _, err := signedauth.JobLeaseBinding(probe, 1); err != nil {
+		return CreateRequest{}, signedauth.JobOptions{}, ErrInvalid
+	}
+	normalized, err := s.normalizeCreateRequest(ctx, request)
+	if err != nil {
+		return CreateRequest{}, signedauth.JobOptions{}, err
+	}
+	job := s.newJob(normalized, "queued")
+	options := signedauth.JobOptions{Overwrite: job.Overwrite, Recursive: job.Recursive, ConflictPolicy: job.ConflictPolicy, SourceChangePolicy: job.SourceChangePolicy, VerifyChecksum: job.VerifyChecksum, BandwidthLimit: job.BandwidthLimit, MaxParallelFiles: job.MaxParallelFiles, MaxParallelChunks: job.MaxParallelChunks, MaxAttempts: job.MaxAttempts}
+	return normalized, options, nil
+}
+
 // CreateAwaitingSignedAuthorization validates a signed, job-bound context and
 // atomically persists the job in waiting_validation. It is internal until the
 // creation protocol, lease renewal and execution enforcement are integrated.
@@ -23,20 +50,19 @@ func (s *Service) CreateAwaitingSignedAuthorization(ctx context.Context, request
 	invalid := func() (entities.Job, bool, error) { return entities.Job{}, false, ErrInvalid }
 	creator, ok := s.store.(signedJobCreator)
 	now := s.now().UTC()
-	if !ok || request.Type != "copy_local" || request.PeerNodeID != "" || request.SourceGrantID != "" || request.DestinationGrantID != "" || idempotencyKey == "" || now.IsZero() {
+	if !ok || idempotencyKey == "" || now.IsZero() {
 		return invalid()
 	}
 	binding, err := signedauth.VerifiedJobLeaseBinding(envelope, keys, nodeID, now)
 	if err != nil || binding.Operation != request.Type || binding.SourceNodeID != nodeID || binding.DestinationNodeID != nodeID || binding.SourceMountID != request.MountID || binding.DestinationMountID != request.MountID || binding.SourceRoot != request.SourcePath || binding.DestinationRoot != request.Destination || binding.JobOptionsDigest == "" {
 		return invalid()
 	}
-	request, err = s.normalizeCreateRequest(ctx, request)
+	request, options, err := s.prepareSignedLocalCopy(ctx, request)
 	if err != nil {
 		return entities.Job{}, false, err
 	}
 	job := s.newJob(request, "queued")
 	job.ID = binding.PlanID
-	options := signedauth.JobOptions{Overwrite: job.Overwrite, Recursive: job.Recursive, ConflictPolicy: job.ConflictPolicy, SourceChangePolicy: job.SourceChangePolicy, VerifyChecksum: job.VerifyChecksum, BandwidthLimit: job.BandwidthLimit, MaxParallelFiles: job.MaxParallelFiles, MaxParallelChunks: job.MaxParallelChunks, MaxAttempts: job.MaxAttempts}
 	if binding.JobOptionsDigest != signedauth.JobOptionsDigest(options) {
 		return invalid()
 	}

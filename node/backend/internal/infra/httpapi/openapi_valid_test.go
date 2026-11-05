@@ -32,6 +32,8 @@ func TestOpenAPIDocumentsEveryFileRoute(t *testing.T) {
 		"/api/v1/mounts/{mountID}/files/copy",
 		"/api/v1/mounts/{mountID}/files/move",
 		"/api/v1/jobs/{jobID}/authorization",
+		"/api/v1/jobs/signed-local-copy/prepare",
+		"/api/v1/jobs/signed-local-copy",
 	}
 	for _, route := range routes {
 		if !strings.Contains(openAPISpec, "\n  "+route+":") {

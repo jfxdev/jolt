@@ -20,6 +20,15 @@ func TestCreateAwaitingSignedAuthorization(t *testing.T) {
 	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
 	keys := map[string]ed25519.PublicKey{"key": key.Public().(ed25519.PublicKey)}
 	options := signedauth.JobOptions{ConflictPolicy: "fail", SourceChangePolicy: "fail", MaxParallelFiles: 2, MaxParallelChunks: 1, MaxAttempts: 3}
+	prepared, digest, err := service.PrepareSignedLocalCopy(ctx, request)
+	if err != nil || prepared != options || digest != signedauth.JobOptionsDigest(options) {
+		t.Fatalf("prepared=%+v digest=%q err=%v", prepared, digest, err)
+	}
+	invalidPath := request
+	invalidPath.SourcePath = "../escape"
+	if _, _, err := service.PrepareSignedLocalCopy(ctx, invalidPath); err == nil {
+		t.Fatal("noncanonical path prepared")
+	}
 	binding := signedauth.Binding{ActorID: "actor", CredentialID: "credential", Operation: request.Type, SourceNodeID: "node", SourceMountID: mountID, SourceRoot: request.SourcePath, DestinationNodeID: "node", DestinationMountID: mountID, DestinationRoot: request.Destination, PlanID: "job", JobOptionsDigest: signedauth.JobOptionsDigest(options)}
 	sign := func(b signedauth.Binding, issued time.Time) string {
 		t.Helper()
