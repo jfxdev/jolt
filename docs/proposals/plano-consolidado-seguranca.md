@@ -1,8 +1,8 @@
 # Plano consolidado — Segurança de agentes e restrições de arquivos
 
-**Andamento em 5 de novembro de 2026:** implementação em andamento no branch `codex/agent-safety-file-restrictions`, com integração opcional de leituras e uploads retomáveis assinados. Este documento acompanha o plano aprovado e prevalece sobre as descrições históricas de [`agent-safety.md`](agent-safety.md) e [`file-type-restrictions.md`](file-type-restrictions.md). Código existente, inclusive com testes locais, não significa entrega validada de ponta a ponta ou publicada.
+**Andamento em 5 de novembro de 2026:** implementação em andamento no branch `codex/agent-safety-file-restrictions`, com integração opcional de leituras, uploads retomáveis e cópias locais assinados. Nesta rodada, a cópia local protegida passou a executar sob autorização renovada a cada 10 segundos (`CONTROL_TOWER_SIGNED_LOCAL_JOBS`, desativada por padrão), validada com processos reais de node e Control Tower; delete, move e transferências entre nodes seguem pendentes. Este documento acompanha o plano aprovado e prevalece sobre as descrições históricas de [`agent-safety.md`](agent-safety.md) e [`file-type-restrictions.md`](file-type-restrictions.md). Código existente, inclusive com testes locais, não significa entrega validada de ponta a ponta ou publicada.
 
-**Regra de ativação:** a API do Control Tower ainda recusa policies com `file_types` ou `visibility`. O node aplica contextos assinados nas rotas locais de leitura integradas; o proxy pode enviá-los quando `CONTROL_TOWER_SIGNED_LOCAL_READS=true`, após o provisionamento de chaves. O padrão é desativado e essa integração parcial **não representa proteção integral por policy**. Não habilitar a gravação dessas policies até proteger todos os caminhos afetados e validar a compatibilidade entre componentes.
+**Regra de ativação:** a API do Control Tower ainda recusa policies com `file_types` ou `visibility`. O node aplica contextos assinados nas rotas locais de leitura integradas; o proxy pode enviá-los quando `CONTROL_TOWER_SIGNED_LOCAL_READS=true`, após o provisionamento de chaves. O padrão é desativado e essa integração parcial **não representa proteção integral por policy**. O mesmo vale para as cópias locais protegidas: elas aplicam o contexto assinado, mas delete, move e transferências ainda não. Não habilitar a gravação dessas policies até proteger todos os caminhos afetados e validar a compatibilidade entre componentes.
 
 ## Checkpoint de implementação
 
@@ -12,9 +12,9 @@
 | 2. Perfil de agente | Limites, interrupção e teto opcional de capabilities por credencial implementados em partes | Validar limites e revogação em jornadas e carga |
 | 3. Auditoria e canary | Auditoria, exportação, cadeia opcional, canaries e métricas implementados em partes | Concluir aceite integrado, privacidade e alertas |
 | 4. Regras por tipo | Persistência, avaliadores e leituras locais assinadas integradas opcionalmente ao proxy | Completar todas as operações antes de habilitar policies |
-| 5. Shares, transferências e uploads | Uploads e shares assinados opcionais, reautorização e `exclude` por grant | Integrar consultas auxiliares e autorizações renováveis de transfers e de jobs de delete/move |
+| 5. Shares, transferências e uploads | Uploads, shares e cópias locais assinados opcionais (cópia com autorização renovada), reautorização e `exclude` por grant | Integrar consultas auxiliares e autorizações renováveis de transfers e de jobs de delete/move |
 | 6. Segredos e apresentação | Varredura, limites de busca e `display_name` implementados em partes | Validar todos os fluxos e componentes desktop/mobile |
-| 7. Lixeira, confirmação, aprovação e JIT | JIT implementado em partes; lixeira, planos e aprovações pendentes | Implementar fluxos destrutivos e revalidar jobs |
+| 7. Lixeira, confirmação, aprovação e JIT | JIT implementado em partes; planos destrutivos só na camada de estado do node; lixeira e aprovações pendentes | Implementar fluxos destrutivos e revalidar jobs |
 | 8. Identidade e MCP | MCP STDIO e autenticação JWT/JWT-SVID para agentes implementados | Integrar automação e validar jornadas completas e revogação em todos os fluxos |
 
 O objetivo continua sendo concluir as oito entregas neste branch em uma única rodada de implementação. Os commits existentes são etapas parciais, não marcos de entrega ou publicação.
@@ -25,6 +25,8 @@ Referências para retomada:
 - `0883a8d`–`c678ddc`: envelope e chaves, construção de contexto, uploads filtrados internos e compatibilidade de leitura/listagem.
 - `f8676a9`–`30dad9a`: aplicação de contextos assinados nas leituras locais do node e recusa nas demais rotas.
 - `3ad94bb`–`9da246d`: emissor interno no Control Tower, correção de privacidade em varreduras e testes adicionais de credenciais.
+- `71032dd`–`8e3e1dc`: intenções de cópia assinadas, renovação interna, cópias retomáveis, manifesto e checksum filtrados.
+- `4629a5c`–`59fb83a`: planejamento filtrado, claim seguro, executor protegido sob guard, capacidade de execução, renovador e rota de cópia no Control Tower, correção da sondagem de escrita do mount e documentação.
 
 ## Contratos aprovados
 
@@ -115,7 +117,7 @@ Referências para retomada:
 
 - Integrar e avaliar `file_types`/`visibility` nas policies, mantendo precedência, especificidade e expansão de regras legadas; atualizar diagnóstico, editor, matriz e navegador.
 - Propagar contexto de autorização versionado e verificável do Control Tower ao node para **todas** as operações relevantes; validar escopo, tamanho, integridade, versões e capacidades, sem ignorar nem truncar filtros inválidos.
-- Integrar os filtros às verificações auxiliares, cópia, move, delete, diretórios, uploads e retomadas. Validar as leituras locais já integradas em conjunto com o Control Tower e a aplicação durante varredura e publicação, inclusive falhas e mudanças externas.
+- Integrar os filtros às verificações auxiliares, move, delete, diretórios e transferências; cópia local, uploads e retomadas já aplicam o filtro. Validar as leituras locais já integradas em conjunto com o Control Tower e a aplicação durante varredura e publicação, inclusive falhas e mudanças externas.
 - Preservar a recusa de operações sobre árvores com negações por caminho enquanto o novo contexto não as representar integralmente. Só habilitar as policies após cobrir shares e transferências da entrega 5.
 - Atualizar OpenAPI, tipos do frontend e testes de contrato; executar casos dourados e testes contra adulteração, nodes antigos e contornos por caminho, rename e extensão.
 
@@ -137,8 +139,8 @@ Referências para retomada:
 **Falta**
 
 - Completar a aplicação de regras por tipo às verificações auxiliares e aos fluxos de criação e diagnóstico dos shares, mantendo a recusa conservadora onde ainda houver divergência.
-- Integrar emissão e validação das autorizações assinadas a transfers e jobs, vinculando ator, nodes, grants, raízes, operações e validade. As chaves já podem ser provisionadas; falta usá-las nesses fluxos e validar sua rotação ponta a ponta.
-- Persistir o contexto necessário no estado cifrado, renovar antes de iniciar/retomar e durante jobs longos e aguardar quando não puder validar. Aplicar no manifesto, conteúdo, destino, sobrescrita e limpeza da origem, inclusive continuidade automática.
+- Integrar emissão e validação das autorizações assinadas a transfers e aos jobs de delete/move, vinculando ator, nodes, grants, raízes, operações e validade. Cópia local já usa esse caminho; falta validar a rotação das chaves ponta a ponta.
+- Para transfers e jobs de delete/move: persistir o contexto no estado cifrado, renovar antes de iniciar/retomar e durante jobs longos, e aguardar quando não puder validar, aplicando no manifesto, conteúdo, destino, sobrescrita e limpeza da origem. Cópia local já faz isso; falta a limpeza da origem (move) e a continuidade automática entre nodes.
 - Antes de ativar sessões com identidade persistida, validar o fluxo completo de atualização, recuperação e rollback com backup compatível, e assegurar que sessões antigas só recebam acesso após autorização explícita verificável. A versão 2 do cabeçalho do node é separada do marcador de versão mínima do Control Tower; binários muito antigos que não verificarem sua versão não são protegidos automaticamente.
 - Integrar consultas auxiliares e exercitar interrupção, troca de permissão, rejeição, inspeção e retomada sem substituir destinos existentes indevidamente.
 
@@ -168,7 +170,7 @@ Referências para retomada:
 - Lixeira opcional por mount gravável, retenção padrão de 30 dias, movimentação no mesmo filesystem, metadados e intenções no estado cifrado, recuperação após falhas e restauração com revalidação e recusa de conflitos.
 - Planos para delete/move de árvores e confirmação de uso único por cinco minutos, vinculada ao sujeito, caminhos e identidade do plano; detectar alterações e exigir novo plano.
 - `needs_approval` e solicitação de pequenas operações JSON por agentes, sem escrita direta. Aprovação humana na UI com permissões atuais e corpo guardado/revalidado; expiração em cinco minutos, execução idempotente e webhook somente para notificação.
-- Validar JIT contra todas as rotas, expiração e interação com a autorização renovável de jobs.
+- Validar JIT contra todas as rotas, expiração e interação com a autorização renovável de jobs, hoje só de cópia local.
 
 ## 8. Identidade de workload e MCP — parcial
 

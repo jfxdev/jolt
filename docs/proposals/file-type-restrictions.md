@@ -2,7 +2,7 @@
 
 > **Documento irmão:** [`agent-safety.md`](agent-safety.md) (controles de uso, auditoria e resposta para agentes; a camada A daqui é o marco A0 de lá) · **Status:** implementação gradual · **Origem:** uso do Jolt no homelab (agentes de IA somente leitura, compartilhamento de mídia) · **Código lido:** `control/internal/rbac/rbac.go`, `control/internal/httpapi/server.go`, `control/internal/store/store.go`, `node/backend/internal/services/filesystem/*`
 
-> **Andamento em 2 de novembro de 2026:** há proteção por nome, persistência de seletores, avaliadores compartilhados e leituras locais com contextos assinados que podem ser enviados pelo proxy mediante configuração explícita. Shares, transfers, jobs e uploads não estão integralmente protegidos. As regras `file_types` e `visibility` continuam recusadas pela API do Control Tower. O [plano consolidado](plano-consolidado-seguranca.md) registra evidências e pendências; as seções abaixo são históricas quando divergirem dele.
+> **Andamento em 5 de novembro de 2026:** há proteção por nome, persistência de seletores, avaliadores compartilhados e leituras locais com contextos assinados que podem ser enviados pelo proxy mediante configuração explícita. Shares, uploads e cópias locais protegidas aplicam o contexto quando habilitados explicitamente; delete, move e transferências entre nodes não estão protegidos. As regras `file_types` e `visibility` continuam recusadas pela API do Control Tower. O [plano consolidado](plano-consolidado-seguranca.md) registra evidências e pendências; as seções abaixo são históricas quando divergirem dele.
 
 ## 1. Resumo
 

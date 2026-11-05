@@ -115,6 +115,54 @@ O Jolt expõe logs estruturados no stdout dos containers, probes HTTP e métrica
 Prometheus. Não há tracing distribuído, API de logs, notificações nativas ou HA.
 Prometheus/Grafana/Alertmanager e o agendador de backups são componentes externos.
 
+## Cópias locais protegidas
+
+`CONTROL_TOWER_SIGNED_LOCAL_JOBS=true` faz o Control Tower criar as cópias de
+`POST …/mounts/{id}/files/copy` como jobs vinculados à autorização do chamador.
+A opção vem desativada, exige a chave de assinatura (`CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_*`)
+e só vale para cópia local; delete, move e transferências entre nodes continuam
+sem autorização renovável.
+
+**Antes de ativar**
+
+- Atualize o node para uma versão que anuncie `signed_local_copy_execution_v1`
+  e configure as chaves públicas em `authorization_public_keys`. Sem a
+  capacidade, a criação responde `signed_job_unavailable` (503) e nada é criado.
+- Confira o relógio do Control Tower e dos nodes: o lease dura até 30 segundos.
+- Planeje o rollback antes: criar a primeira cópia protegida eleva a versão mínima
+  de segurança gravada no banco, e binários antigos não a verificam. Fixe as imagens
+  por digest e só volte a um backup anterior à primeira cópia protegida.
+
+**Como funciona**
+
+- O Control Tower renova a autorização de cada job ativo a cada 10 segundos,
+  revalidando credencial, grupos e policies. Se um desses falhar, nenhum lease novo
+  é emitido e o node interrompe a cópia em até 30 segundos, mantendo o progresso.
+- O job interrompido fica em `waiting_validation` com fase `waiting_authorization`
+  e retoma sozinho quando chega uma autorização mais nova. Jobs interrompidos por
+  reinício do node ou pausados por um operador pedem retomada explícita.
+- Entradas que o filtro oculta não são copiadas. O job termina como
+  `completed_with_warnings` e informa apenas quantas foram omitidas.
+- A política de conflito `ask` é recusada nessas cópias. Um job `failed` não é mais
+  renovado: crie outra cópia em vez de tentar de novo.
+
+**O que observar**
+
+- Auditoria: `bind_job_authorization`, `confirm_job_authorization`,
+  `finish_job_authorization` e `resolve_expired_job_authorization`.
+- Logs do Control Tower: `renew signed job authorization` com `node_id` e `job_id`
+  indica uma renovação que falhou; várias seguidas antecedem a interrupção do job.
+- Eventos do job no node: `job.sources_omitted` e `job.waiting_authorization`.
+- Jobs presos em `waiting_authorization` por muito tempo: credencial revogada,
+  node fora do ar ou policy removida. Cancele-os se não forem mais necessários.
+
+**Reverter**
+
+Desligar a opção e reiniciar o Control Tower interrompe as renovações: as cópias
+em andamento páram em até 30 segundos e ficam aguardando. Elas não são retomadas
+por outro caminho; cancele-as. Cópias criadas depois voltam a ser comuns, sem
+filtro por policy. Este recurso ainda não foi validado sob carga nem entre hosts.
+
 ## Rotinas
 
 **Diária**
