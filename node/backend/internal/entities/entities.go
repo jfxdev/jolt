@@ -38,6 +38,7 @@ type Job struct {
 	RequiresSignedAuth     bool       `json:"-" yaml:"requires_signed_authorization,omitempty"`
 	SignedAuthActorID      string     `json:"-" yaml:"signed_authorization_actor_id,omitempty"`
 	SignedAuthCredentialID string     `json:"-" yaml:"signed_authorization_credential_id,omitempty"`
+	SourcesOmitted         int        `json:"-" yaml:"sources_omitted,omitempty"`
 	ID                     string     `json:"job_id" yaml:"job_id"`
 	Type                   string     `json:"type" yaml:"type"`
 	State                  string     `json:"state" yaml:"state"`

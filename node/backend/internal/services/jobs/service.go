@@ -1277,6 +1277,10 @@ func (s *Service) executeOperation(ctx context.Context, job entities.Job) (int64
 }
 
 func (s *Service) executeCopy(ctx context.Context, job entities.Job) (int64, error) {
+	ops, err := s.copyOperations(ctx, job)
+	if err != nil {
+		return 0, err
+	}
 	items, err := s.store.ListJobItems(ctx, job.ID)
 	if err != nil {
 		return 0, err
@@ -1287,7 +1291,7 @@ func (s *Service) executeCopy(ctx context.Context, job entities.Job) (int64, err
 			return 0, err
 		}
 		s.recordEvent(ctx, job, "job.planning", "")
-		plan, err := s.PlanCopy(ctx, job.MountID, job.SourcePath, job.Destination, job.ConflictPolicy, job.VerifyChecksum)
+		plan, omitted, err := ops.plan(ctx, job)
 		if err != nil {
 			return 0, err
 		}
@@ -1297,12 +1301,15 @@ func (s *Service) executeCopy(ctx context.Context, job entities.Job) (int64, err
 		if err := s.store.ReplaceJobItems(ctx, job.ID, plan.Items); err != nil {
 			return 0, err
 		}
-		job.BytesTotal, job.FilesTotal = plan.BytesTotal, plan.FilesTotal
+		job.BytesTotal, job.FilesTotal, job.SourcesOmitted = plan.BytesTotal, plan.FilesTotal, omitted
 		job.Phase, job.UpdatedAt = "transfer", s.now()
 		if err := s.store.UpdateJob(ctx, job); err != nil {
 			return 0, err
 		}
 		s.recordEvent(ctx, job, "job.planned", "")
+		if omitted > 0 {
+			s.recordEvent(ctx, job, "job.sources_omitted", fmt.Sprintf("%d source entries were not accessible", omitted))
+		}
 		items = plan.Items
 	}
 	if job.MaxParallelFiles > 1 && parallelLocalCopyEligible(items) {
@@ -1340,7 +1347,7 @@ func (s *Service) executeCopy(ctx context.Context, job entities.Job) (int64, err
 		item.Attempt++
 		item.UpdatedAt, item.Error = s.now(), ""
 		if item.State == "failed" {
-			action, destination, checksum, planErr := s.planAction(ctx, job.MountID, item, job.ConflictPolicy)
+			action, destination, checksum, planErr := ops.replan(ctx, job.MountID, item, job.ConflictPolicy)
 			if planErr != nil {
 				return bytesCompleted, planErr
 			}
@@ -1374,14 +1381,14 @@ func (s *Service) executeCopy(ctx context.Context, job entities.Job) (int64, err
 		case "merge":
 			item.State = "completed"
 		case "create":
-			if err := s.files.CreateDirectory(ctx, job.MountID, item.DestinationPath); err != nil {
+			if err := ops.createDirectory(ctx, job.MountID, item.DestinationPath); err != nil {
 				item.State, item.Error = "failed", err.Error()
 				_ = s.store.UpdateJobItem(context.Background(), item)
 				return bytesCompleted, err
 			}
 			item.State = "completed"
 		case "copy", "overwrite", "rename":
-			current, metadataErr := s.files.Metadata(ctx, job.MountID, item.SourcePath)
+			current, metadataErr := ops.metadata(ctx, job.MountID, item.SourcePath)
 			if metadataErr != nil {
 				item.State, item.Error, item.UpdatedAt = "failed", metadataErr.Error(), s.now()
 				_ = s.store.UpdateJobItem(context.Background(), item)
@@ -1393,7 +1400,7 @@ func (s *Service) executeCopy(ctx context.Context, job entities.Job) (int64, err
 				if job.SourceChangePolicy == "retry" {
 					item.Size, item.ModifiedAt, item.State = current.Size, current.ModifiedAt, "pending"
 					if job.VerifyChecksum {
-						item.Checksum, metadataErr = s.files.Checksum(ctx, job.MountID, item.SourcePath)
+						item.Checksum, metadataErr = ops.checksum(ctx, job.MountID, item.SourcePath)
 						if metadataErr != nil {
 							return bytesCompleted, metadataErr
 						}
@@ -1415,7 +1422,7 @@ func (s *Service) executeCopy(ctx context.Context, job entities.Job) (int64, err
 				item.Size, item.ModifiedAt = current.Size, current.ModifiedAt
 			}
 			if job.VerifyChecksum && item.Checksum == "" {
-				item.Checksum, metadataErr = s.files.Checksum(ctx, job.MountID, item.SourcePath)
+				item.Checksum, metadataErr = ops.checksum(ctx, job.MountID, item.SourcePath)
 				if metadataErr != nil {
 					return bytesCompleted, metadataErr
 				}
@@ -1436,18 +1443,15 @@ func (s *Service) executeCopy(ctx context.Context, job entities.Job) (int64, err
 			}
 			var written int64
 			var copiedChecksum string
-			written, copiedChecksum, copyErr := s.files.CopyFileResumableParallel(ctx, job.MountID,
-				item.SourcePath, item.DestinationPath, fmt.Sprintf("%s-%d", job.ID, item.Ordinal),
-				item.Action == "overwrite", item.BytesCompleted, s.chunkSize, job.MaxParallelChunks, item.Checksum,
-				job.SourceChangePolicy == "copy_anyway", progress, s.BandwidthLimiter(job))
+			written, copiedChecksum, copyErr := ops.copyFile(ctx, job, item, progress)
 			if copyErr != nil {
 				if errors.Is(copyErr, filesystem.ErrSourceChanged) && job.SourceChangePolicy == "retry" {
-					refreshed, refreshErr := s.files.Metadata(ctx, job.MountID, item.SourcePath)
+					refreshed, refreshErr := ops.metadata(ctx, job.MountID, item.SourcePath)
 					if refreshErr != nil {
 						return bytesCompleted, refreshErr
 					}
 					item.Size, item.ModifiedAt, item.State = refreshed.Size, refreshed.ModifiedAt, "pending"
-					item.Checksum, refreshErr = s.files.Checksum(ctx, job.MountID, item.SourcePath)
+					item.Checksum, refreshErr = ops.checksum(ctx, job.MountID, item.SourcePath)
 					if refreshErr != nil {
 						return bytesCompleted, refreshErr
 					}
@@ -1488,8 +1492,8 @@ func (s *Service) executeCopy(ctx context.Context, job entities.Job) (int64, err
 		s.updateDirectoryProgress(job.ID, bytesCompleted, job.BytesTotal, filesCompleted, filesFailed, s.now())
 	}
 	s.updateDirectoryProgress(job.ID, bytesCompleted, job.BytesTotal, filesCompleted, filesFailed, s.now())
-	if warningItems > 0 {
-		return bytesCompleted, fmt.Errorf("%w: %d item(s) could not be copied", ErrWarnings, warningItems)
+	if err := copyWarning(warningItems, job.SourcesOmitted); err != nil {
+		return bytesCompleted, err
 	}
 	return bytesCompleted, nil
 }
@@ -1516,6 +1520,10 @@ func parallelLocalCopyEligible(items []entities.JobItem) bool {
 }
 
 func (s *Service) executeParallelLocalCopy(ctx context.Context, job entities.Job, items []entities.JobItem) (int64, error) {
+	ops, err := s.copyOperations(ctx, job)
+	if err != nil {
+		return 0, err
+	}
 	var stateMu sync.Mutex
 	var bytesCompleted int64
 	var filesCompleted, filesFailed int
@@ -1538,7 +1546,7 @@ func (s *Service) executeParallelLocalCopy(ctx context.Context, job entities.Job
 			continue
 		}
 		if item.Action == "create" {
-			if err := s.files.CreateDirectory(ctx, job.MountID, item.DestinationPath); err != nil {
+			if err := ops.createDirectory(ctx, job.MountID, item.DestinationPath); err != nil {
 				item.State, item.Error = "failed", err.Error()
 				_ = s.store.UpdateJobItem(context.Background(), item)
 				return bytesCompleted, err
@@ -1564,7 +1572,7 @@ func (s *Service) executeParallelLocalCopy(ctx context.Context, job entities.Job
 	for range parallelism {
 		go func() {
 			for item := range queue {
-				current, metadataErr := s.files.Metadata(workContext, job.MountID, item.SourcePath)
+				current, metadataErr := ops.metadata(workContext, job.MountID, item.SourcePath)
 				if metadataErr != nil {
 					item.State, item.Error, item.UpdatedAt = "failed", metadataErr.Error(), s.now()
 					_ = s.store.UpdateJobItem(context.Background(), item)
@@ -1577,7 +1585,7 @@ func (s *Service) executeParallelLocalCopy(ctx context.Context, job entities.Job
 					if job.SourceChangePolicy == "retry" {
 						item.Size, item.ModifiedAt, item.State = current.Size, current.ModifiedAt, "pending"
 						if job.VerifyChecksum {
-							item.Checksum, metadataErr = s.files.Checksum(workContext, job.MountID, item.SourcePath)
+							item.Checksum, metadataErr = ops.checksum(workContext, job.MountID, item.SourcePath)
 						}
 						_ = s.store.UpdateJobItem(context.Background(), item)
 						if metadataErr != nil {
@@ -1599,7 +1607,7 @@ func (s *Service) executeParallelLocalCopy(ctx context.Context, job entities.Job
 					item.Size, item.ModifiedAt = current.Size, current.ModifiedAt
 				}
 				if job.VerifyChecksum && item.Checksum == "" {
-					item.Checksum, metadataErr = s.files.Checksum(workContext, job.MountID, item.SourcePath)
+					item.Checksum, metadataErr = ops.checksum(workContext, job.MountID, item.SourcePath)
 					if metadataErr != nil {
 						results <- metadataErr
 						continue
@@ -1610,24 +1618,21 @@ func (s *Service) executeParallelLocalCopy(ctx context.Context, job entities.Job
 					results <- err
 					continue
 				}
-				written, checksum, copyErr := s.files.CopyFileResumableParallel(workContext, job.MountID,
-					item.SourcePath, item.DestinationPath, fmt.Sprintf("%s-%d", job.ID, item.Ordinal),
-					item.Action == "overwrite", item.BytesCompleted, s.chunkSize, job.MaxParallelChunks, item.Checksum,
-					job.SourceChangePolicy == "copy_anyway", func(completed, _ int64) error {
-						stateMu.Lock()
-						bytesCompleted += completed - item.BytesCompleted
-						item.BytesCompleted, item.UpdatedAt = completed, s.now()
-						currentBytes, currentCompleted, currentFailed := bytesCompleted, filesCompleted, filesFailed
-						// Keep snapshots ordered through persistence; a delayed worker
-						// must not overwrite a newer aggregate with older counters.
-						if err := s.store.UpdateJobItem(context.Background(), item); err != nil {
-							stateMu.Unlock()
-							return err
-						}
-						s.updateDirectoryProgress(job.ID, currentBytes, job.BytesTotal, currentCompleted, currentFailed, s.now())
+				written, checksum, copyErr := ops.copyFile(workContext, job, item, func(completed, _ int64) error {
+					stateMu.Lock()
+					bytesCompleted += completed - item.BytesCompleted
+					item.BytesCompleted, item.UpdatedAt = completed, s.now()
+					currentBytes, currentCompleted, currentFailed := bytesCompleted, filesCompleted, filesFailed
+					// Keep snapshots ordered through persistence; a delayed worker
+					// must not overwrite a newer aggregate with older counters.
+					if err := s.store.UpdateJobItem(context.Background(), item); err != nil {
 						stateMu.Unlock()
-						return nil
-					}, s.BandwidthLimiter(job))
+						return err
+					}
+					s.updateDirectoryProgress(job.ID, currentBytes, job.BytesTotal, currentCompleted, currentFailed, s.now())
+					stateMu.Unlock()
+					return nil
+				})
 				if copyErr != nil {
 					item.UpdatedAt = s.now()
 					if errors.Is(copyErr, context.Canceled) {
@@ -1671,8 +1676,8 @@ func (s *Service) executeParallelLocalCopy(ctx context.Context, job entities.Job
 	if firstErr != nil {
 		return completed, firstErr
 	}
-	if failed > 0 {
-		return completed, fmt.Errorf("%w: %d item(s) could not be copied", ErrWarnings, failed)
+	if err := copyWarning(failed, job.SourcesOmitted); err != nil {
+		return completed, err
 	}
 	return completed, nil
 }
