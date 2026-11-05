@@ -263,6 +263,10 @@ CREATE TABLE IF NOT EXISTS job_authorization_links (
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
  PRIMARY KEY(node_id,job_id), FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS job_authorization_finished (
+ node_id TEXT NOT NULL, job_id TEXT NOT NULL, finished_at TEXT NOT NULL,
+ PRIMARY KEY(node_id,job_id), FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS signed_copy_intents (
  node_id TEXT NOT NULL, job_id TEXT NOT NULL, actor_type TEXT NOT NULL, actor_id TEXT NOT NULL,
  credential_id TEXT NOT NULL, credential_digest TEXT NOT NULL, idempotency_key TEXT NOT NULL,

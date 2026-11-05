@@ -340,3 +340,57 @@ func (s *Store) ResolveExpiredJobAuthorization(ctx context.Context, nodeID, jobI
 	}
 	return tx.Commit()
 }
+
+// ListActiveJobAuthorizationLinks returns links whose node job has not been
+// seen finishing, least recently updated first, so a renewal loop serves every
+// job in turn. It reads private state and must not be exposed.
+func (s *Store) ListActiveJobAuthorizationLinks(ctx context.Context, limit int) ([]JobAuthorizationLink, error) {
+	if limit <= 0 || limit > 1000 {
+		return nil, ErrConflict
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT l.node_id,l.job_id,l.actor_type,l.actor_id,l.credential_id,l.credential_digest,l.binding,l.confirmed_revision,l.confirmed_digest,l.confirmed_expiry_ns,l.pending_revision,l.pending_envelope,l.pending_expiry_ns,l.created_at,l.updated_at FROM job_authorization_links l WHERE NOT EXISTS(SELECT 1 FROM job_authorization_finished f WHERE f.node_id=l.node_id AND f.job_id=l.job_id) ORDER BY l.updated_at ASC, l.job_id ASC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var links []JobAuthorizationLink
+	for rows.Next() {
+		link, err := readJobAuthorizationLink(rows)
+		if err != nil {
+			// One inconsistent link must not stop renewal of the others.
+			continue
+		}
+		links = append(links, link)
+	}
+	return links, rows.Err()
+}
+
+// FinishJobAuthorizationLink records that the node job reached a final state,
+// so no further lease is issued for it. It is idempotent.
+func (s *Store) FinishJobAuthorizationLink(ctx context.Context, nodeID, jobID string, now time.Time) error {
+	if !signedauth.ValidKeyID(nodeID) || !signedauth.ValidKeyID(jobID) || now.IsZero() {
+		return ErrConflict
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	link, err := readJobAuthorizationLink(tx.QueryRowContext(ctx, jobLinkSelect, nodeID, jobID))
+	if err != nil {
+		return err
+	}
+	stamp := now.UTC().Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO job_authorization_finished(node_id,job_id,finished_at) VALUES(?,?,?)`, nodeID, jobID, stamp)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected == 1 {
+		if err := appendAuditTx(ctx, tx, auditRecord{actorID: link.ActorID, actorType: link.ActorType, action: "finish_job_authorization", resource: "nodes/" + nodeID + "/jobs/" + jobID, result: "allowed", createdAt: stamp}); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
