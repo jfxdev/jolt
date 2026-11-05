@@ -120,8 +120,8 @@ Prometheus/Grafana/Alertmanager e o agendador de backups são componentes extern
 `CONTROL_TOWER_SIGNED_LOCAL_JOBS=true` faz o Control Tower criar as cópias de
 `POST …/mounts/{id}/files/copy` como jobs vinculados à autorização do chamador.
 A opção vem desativada, exige a chave de assinatura (`CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_*`)
-e só vale para cópia local; delete, move e transferências entre nodes continuam
-sem autorização renovável.
+e cobre cópia local, além de delete e move de pastas, que passam a exigir um plano.
+Transferências entre nodes continuam sem autorização renovável.
 
 **Antes de ativar**
 
@@ -145,6 +145,31 @@ sem autorização renovável.
   `completed_with_warnings` e informa apenas quantas foram omitidas.
 - A política de conflito `ask` é recusada nessas cópias. Um job `failed` não é mais
   renovado: crie outra cópia em vez de tentar de novo.
+
+**Apagar ou mover uma pasta**
+
+Com a opção ligada, `DELETE …/files?recursive=true` e `POST …/files/move` de uma
+pasta respondem `409 plan_required`. O fluxo é: `POST …/files/destructive-plans`
+(o node conta arquivos, pastas e bytes e devolve um token de uso único válido por
+5 minutos) e depois `POST …/destructive-plans/{planID}/confirm` com uma
+`Idempotency-Key`. Arquivos e a remoção de pasta vazia mantêm a rota direta.
+
+- A confirmação cria um job que aguarda a primeira autorização e, antes de alterar
+  qualquer coisa, varre a pasta de novo. Se algo mudou desde o plano (inclusive um
+  arquivo editado ou recriado, pois a identidade inclui datas), o job falha com
+  `tree_changed` e nada é tocado: gere um novo plano.
+- Uma remoção interrompida no meio, por cancelamento ou perda da autorização, **não
+  é retomada nem desfeita**: a pasta parcial já não confere com o plano. Confira o
+  que restou e planeje de novo.
+- Mover para um destino existente exige `overwrite`; o plano fixa o conteúdo do
+  destino e a confirmação falha se ele mudar.
+- Se o usuário perdeu a permissão entre o plano e a confirmação, a confirmação
+  responde 403 e o job é cancelado. Ações na auditoria: `plan_delete`,
+  `plan_move`, `confirm_delete`, `confirm_move`.
+- A varredura lê o conteúdo de todos os arquivos para calcular o digest: em pastas
+  grandes, planejar e confirmar levam o tempo de uma leitura completa.
+- Os moves feitos pelas transferências (o diálogo de transferência da interface e
+  `transfer_move_*`) ainda não usam o plano.
 
 **O que observar**
 
