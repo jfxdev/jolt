@@ -97,6 +97,7 @@ const (
 	signedJobSynchronized signedJobReconciliation = iota
 	signedJobPendingDelivery
 	signedJobConfirmed
+	signedJobExpiredResolved
 )
 
 // reconcileSignedJobAuthorization never sends or renews a lease. A caller
@@ -109,6 +110,12 @@ func (s *Server) reconcileSignedJobAuthorization(r *http.Request, node store.Nod
 	link, err := s.store.GetJobAuthorizationLink(r.Context(), node.ID, jobID)
 	if err != nil {
 		return 0, errSignedJobRegistrationUnavailable
+	}
+	if link.PendingRevision != 0 && !link.PendingExpiry.After(time.Now().UTC()) {
+		if err := s.store.ResolveExpiredJobAuthorization(r.Context(), node.ID, jobID, status.Revision, status.Digest, status.Expiry, time.Now().UTC()); err != nil {
+			return 0, errSignedJobRegistrationUnavailable
+		}
+		return signedJobExpiredResolved, nil
 	}
 	if link.PendingRevision != 0 && status.Revision == link.PendingRevision && status.Digest == security.Digest(link.PendingEnvelope) && status.Expiry.Equal(link.PendingExpiry) {
 		if err := s.store.ConfirmJobAuthorization(r.Context(), node.ID, jobID, status.Revision, status.Digest, status.Expiry, time.Now().UTC()); err != nil {

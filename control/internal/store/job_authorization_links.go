@@ -288,3 +288,51 @@ func (s *Store) ConfirmJobAuthorization(ctx context.Context, nodeID, jobID strin
 	}
 	return tx.Commit()
 }
+
+// ResolveExpiredJobAuthorization reconciles an expired pending envelope with
+// an authenticated node status. It does not authorize a job or issue a lease.
+// Callers must prevent new deliveries of expired envelopes, and re-evaluate
+// policies and grants before staging or delivering any subsequent envelope.
+func (s *Store) ResolveExpiredJobAuthorization(ctx context.Context, nodeID, jobID string, revision uint64, digest string, expiry, now time.Time) error {
+	if now.IsZero() || revision > math.MaxInt64 || (revision == 0 && (digest != "" || !expiry.IsZero())) || (revision > 0 && (!validCredentialDigest(digest) || expiry.IsZero())) {
+		return ErrConflict
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	link, err := readJobAuthorizationLink(tx.QueryRowContext(ctx, jobLinkSelect, nodeID, jobID))
+	if err != nil {
+		return err
+	}
+	if _, err := currentLinkedCredentialTx(ctx, tx, link, now); err != nil {
+		return err
+	}
+	if link.PendingRevision == 0 || link.PendingExpiry.After(now) {
+		return ErrConflict
+	}
+	confirmedRevision, confirmedDigest, confirmedExpiryNS := link.ConfirmedRevision, link.ConfirmedDigest, int64(0)
+	if !link.ConfirmedExpiry.IsZero() {
+		confirmedExpiryNS = link.ConfirmedExpiry.UnixNano()
+	}
+	switch {
+	case revision == link.PendingRevision && digest == security.Digest(link.PendingEnvelope) && expiry.Equal(link.PendingExpiry):
+		confirmedRevision, confirmedDigest, confirmedExpiryNS = revision, digest, expiry.UnixNano()
+	case revision == link.ConfirmedRevision && digest == link.ConfirmedDigest && expiry.Equal(link.ConfirmedExpiry):
+	default:
+		return ErrConflict
+	}
+	stamp := now.UTC().Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(ctx, `UPDATE job_authorization_links SET confirmed_revision=?,confirmed_digest=?,confirmed_expiry_ns=?,pending_revision=0,pending_envelope='',pending_expiry_ns=0,updated_at=? WHERE node_id=? AND job_id=? AND confirmed_revision=? AND pending_revision=?`, int64(confirmedRevision), confirmedDigest, confirmedExpiryNS, stamp, nodeID, jobID, int64(link.ConfirmedRevision), int64(link.PendingRevision))
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		return ErrConflict
+	}
+	if err := appendAuditTx(ctx, tx, auditRecord{actorID: link.ActorID, actorType: link.ActorType, action: "resolve_expired_job_authorization", resource: "nodes/" + nodeID + "/jobs/" + jobID, result: "allowed", createdAt: stamp}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}

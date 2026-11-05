@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,6 +54,74 @@ func signedLinkEnvelope(t *testing.T, link JobAuthorizationLink, key ed25519.Pri
 		t.Fatal(err)
 	}
 	return token
+}
+
+func TestResolveExpiredJobAuthorization(t *testing.T) {
+	for _, delivered := range []bool{false, true} {
+		t.Run(fmt.Sprintf("delivered_%t", delivered), func(t *testing.T) {
+			s, _, link, key, now := newJobLinkFixture(t)
+			ctx := context.Background()
+			if err := s.CreateJobAuthorizationLink(ctx, link, now); err != nil {
+				t.Fatal(err)
+			}
+			keys := map[string]ed25519.PublicKey{"key": key.Public().(ed25519.PublicKey)}
+			first := signedLinkEnvelope(t, link, key, 1, now, 30*time.Second)
+			if _, err := s.StageJobAuthorization(ctx, link.NodeID, link.JobID, 1, first, keys, now); err != nil {
+				t.Fatal(err)
+			}
+			revision, digest, expiry := uint64(0), "", time.Time{}
+			if delivered {
+				revision, digest, expiry = 1, security.Digest(first), now.Add(30*time.Second)
+			}
+			if err := s.ResolveExpiredJobAuthorization(ctx, link.NodeID, link.JobID, revision, digest, expiry, now.Add(29*time.Second)); !errors.Is(err, ErrConflict) {
+				t.Fatalf("unexpired pending resolved: %v", err)
+			}
+			if err := s.ResolveExpiredJobAuthorization(ctx, link.NodeID, link.JobID, 1, security.Digest("wrong"), now.Add(30*time.Second), now.Add(31*time.Second)); !errors.Is(err, ErrConflict) {
+				t.Fatalf("wrong digest accepted: %v", err)
+			}
+			if err := s.ResolveExpiredJobAuthorization(ctx, link.NodeID, link.JobID, revision, digest, expiry, now.Add(31*time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			stored, err := s.GetJobAuthorizationLink(ctx, link.NodeID, link.JobID)
+			if err != nil || stored.PendingRevision != 0 || stored.ConfirmedRevision != revision || stored.ConfirmedDigest != digest || !stored.ConfirmedExpiry.Equal(expiry) {
+				t.Fatalf("reconciled=%+v err=%v", stored, err)
+			}
+			next := signedLinkEnvelope(t, link, key, revision+1, now.Add(31*time.Second), 30*time.Second)
+			if _, err := s.StageJobAuthorization(ctx, link.NodeID, link.JobID, revision+1, next, keys, now.Add(31*time.Second)); err != nil {
+				t.Fatalf("new revision: %v", err)
+			}
+		})
+	}
+}
+
+func TestResolveExpiredJobAuthorizationFailsClosed(t *testing.T) {
+	for _, failure := range []string{"revoked", "audit"} {
+		t.Run(failure, func(t *testing.T) {
+			s, _, link, key, now := newJobLinkFixture(t)
+			ctx := context.Background()
+			if err := s.CreateJobAuthorizationLink(ctx, link, now); err != nil {
+				t.Fatal(err)
+			}
+			envelope := signedLinkEnvelope(t, link, key, 1, now, 30*time.Second)
+			if _, err := s.StageJobAuthorization(ctx, link.NodeID, link.JobID, 1, envelope, map[string]ed25519.PublicKey{"key": key.Public().(ed25519.PublicKey)}, now); err != nil {
+				t.Fatal(err)
+			}
+			if failure == "revoked" {
+				if err := s.DeleteSession(ctx, link.CredentialDigest); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := s.db.ExecContext(ctx, `DROP TABLE audit_events`); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.ResolveExpiredJobAuthorization(ctx, link.NodeID, link.JobID, 1, security.Digest(envelope), now.Add(30*time.Second), now.Add(31*time.Second)); err == nil {
+				t.Fatal("insecure reconciliation succeeded")
+			}
+			stored, err := s.GetJobAuthorizationLink(ctx, link.NodeID, link.JobID)
+			if err != nil || stored.PendingRevision != 1 || stored.PendingEnvelope != envelope || stored.ConfirmedRevision != 0 {
+				t.Fatalf("state changed: %+v %v", stored, err)
+			}
+		})
+	}
 }
 
 func TestJobAuthorizationLinkPersistsAndReconcilesRetries(t *testing.T) {

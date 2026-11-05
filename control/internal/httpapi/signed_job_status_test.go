@@ -203,3 +203,61 @@ func TestReconcileSignedJobAuthorization(t *testing.T) {
 		t.Fatal("revoked credential confirmed")
 	}
 }
+
+func TestReconcileExpiredSignedJobAuthorization(t *testing.T) {
+	for _, delivered := range []bool{false, true} {
+		t.Run(fmt.Sprintf("delivered_%t", delivered), func(t *testing.T) {
+			statusBody := `{"revision":0,"expires_at":null,"envelope_digest":"","execution_enabled":false}`
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				header := make(http.Header)
+				body := `{"node_id":"n1","capabilities":["signed_job_authorization_status_v1"]}`
+				if strings.HasSuffix(r.URL.Path, "/authorization") {
+					header.Set("X-Jolt-Job-Authorization-Status", "v1")
+					body = statusBody
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader(body))}, nil
+			})}
+			f := setupAgent(t, store.DefaultAgentLimits(), client)
+			s := &Server{store: f.storage, client: client, config: config.Config{EncryptionKey: make([]byte, 32)}}
+			ctx, issued := t.Context(), time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+			node, err := f.storage.GetNode(ctx, "n1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			credential := "session-" + security.Digest("jolt-signed-session:"+f.adminSession)
+			binding := signedauth.Binding{ActorID: "admin", CredentialID: credential, Operation: "copy_local", SourceNodeID: "n1", SourceMountID: "m", SourceRoot: "source", DestinationNodeID: "n1", DestinationMountID: "m", DestinationRoot: "destination", PlanID: "job"}
+			link := store.JobAuthorizationLink{NodeID: node.ID, JobID: "job", ActorType: "user", ActorID: "admin", CredentialID: credential, CredentialDigest: security.Digest(f.adminSession), Binding: binding}
+			if err := f.storage.CreateJobAuthorizationLink(ctx, link, issued); err != nil {
+				t.Fatal(err)
+			}
+			key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+			bound, err := signedauth.JobLeaseBinding(binding, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			claims := signedauth.Claims{Version: 1, KeyID: "key", Binding: bound, IssuedAt: issued.Unix(), ExpiresAt: issued.Add(30 * time.Second).Unix(), Context: json.RawMessage(`{"version":1,"rules":[{"policy_id":"p","path":"nodes/n1/files/mounts/m/**","capabilities":["read","create"]}]}`)}
+			envelope, err := signedauth.Sign(claims, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.storage.StageJobAuthorization(ctx, node.ID, "job", 1, envelope, map[string]ed25519.PublicKey{"key": key.Public().(ed25519.PublicKey)}, issued); err != nil {
+				t.Fatal(err)
+			}
+			if delivered {
+				statusBody = fmt.Sprintf(`{"revision":1,"expires_at":%q,"envelope_digest":%q,"execution_enabled":false}`, issued.Add(30*time.Second).Format(time.RFC3339), security.Digest(envelope))
+			}
+			state, err := s.reconcileSignedJobAuthorization(httptest.NewRequest(http.MethodGet, "/", nil), node, "job")
+			if err != nil || state != signedJobExpiredResolved {
+				t.Fatalf("state=%v err=%v", state, err)
+			}
+			stored, err := f.storage.GetJobAuthorizationLink(ctx, node.ID, "job")
+			wantRevision := uint64(0)
+			if delivered {
+				wantRevision = 1
+			}
+			if err != nil || stored.PendingRevision != 0 || stored.ConfirmedRevision != wantRevision {
+				t.Fatalf("stored=%+v err=%v", stored, err)
+			}
+		})
+	}
+}
