@@ -124,6 +124,10 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 		mux.HandleFunc("POST /api/v1/jobs/signed-local-copy/prepare", s.prepareSignedLocalCopy)
 		mux.HandleFunc("POST /api/v1/jobs/signed-local-copy", s.createSignedLocalCopy)
 	}
+	if _, ok := s.store.(jobs.DestructivePlanStore); ok && s.jobs != nil {
+		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/destructive-plans", s.createDestructivePlan)
+		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/destructive-plans/{planID}/accept", s.acceptDestructivePlan)
+	}
 	if _, ok := s.store.(signedJobAuthorizationRegistrar); ok {
 		mux.HandleFunc("POST /api/v1/jobs/{jobID}/authorization", s.registerJobAuthorization)
 	}
@@ -379,6 +383,9 @@ func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 		}
 		if s.signedExecutionEnabled() {
 			capabilities = append(capabilities, "signed_local_copy_execution_v1")
+			if _, ok := s.store.(jobs.DestructivePlanStore); ok {
+				capabilities = append(capabilities, "destructive_plans_v1")
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1750,6 +1757,12 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, code = http.StatusConflict, "invalid_job_state"
 	case errors.Is(err, jobs.ErrInvalid):
 		status, code = http.StatusBadRequest, "invalid_job_request"
+	case errors.Is(err, jobs.ErrTreeChanged):
+		status, code = http.StatusConflict, "tree_changed"
+	case errors.Is(err, jobs.ErrPlanRejected):
+		status, code = http.StatusForbidden, "plan_rejected"
+	case errors.Is(err, contracts.ErrIdempotencyConflict):
+		status, code = http.StatusConflict, "idempotency_conflict"
 	case errors.Is(err, jobs.ErrWaitingPeer):
 		status, code = http.StatusConflict, "peer_unavailable"
 	case errors.Is(err, grants.ErrNotFound):
@@ -2151,6 +2164,56 @@ paths:
       responses:
         "200": {description: Completed move job}
         "409": {description: The destination exists and overwrite was not requested}
+  /api/v1/mounts/{mountID}/files/destructive-plans:
+    post:
+      summary: Inspects a directory tree and records a five-minute destructive plan
+      description: Requires the operational bearer token. The subject is the actor the Control Tower authenticated. The response carries the one-use confirmation token once; only its hash is stored. Available when the node runs signed jobs.
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subject_type, subject_id, operation, source_path]
+              properties:
+                subject_type: {type: string, enum: [user, service_account]}
+                subject_id: {type: string}
+                operation: {type: string, enum: [delete, move]}
+                source_path: {type: string}
+                destination_path: {type: string}
+                overwrite: {type: boolean}
+      responses:
+        "201": {description: Plan with counts, expiry and confirmation token}
+        "400": {description: Invalid request, a file instead of a directory, or a path outside the mount}
+        "409": {description: Protected entries in the tree, or the move destination exists without overwrite}
+        "503": {description: Destructive plans unavailable on this node}
+  /api/v1/mounts/{mountID}/files/destructive-plans/{planID}/accept:
+    post:
+      summary: Confirms a destructive plan and creates its job
+      description: Requires the operational bearer token, the plan token and an Idempotency-Key. The job waits for a signed authorization and revalidates the tree before changing anything.
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: path, name: planID, required: true, schema: {type: string}}
+        - {in: header, name: Idempotency-Key, required: true, schema: {type: string, maxLength: 256}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subject_type, subject_id, token]
+              properties:
+                subject_type: {type: string, enum: [user, service_account]}
+                subject_id: {type: string}
+                token: {type: string}
+      responses:
+        "200": {description: The same job, for a repeated request}
+        "202": {description: Job created, waiting for authorization}
+        "403": {description: Unknown, expired or mismatched plan or token}
+        "409": {description: The tree changed after the plan, or the key was reused}
+        "503": {description: Destructive plans unavailable on this node}
   /api/v1/mounts/{mountID}/files/archive:
     get:
       summary: Streams a ZIP of a directory, or of the selected entries inside it
