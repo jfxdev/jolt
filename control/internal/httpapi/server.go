@@ -220,6 +220,10 @@ func newServerHandler(cfg config.Config, storage *store.Store, logger *slog.Logg
 	mux.Handle("POST /api/v1/control-tower/connections/{requestID}/reject", s.auth(http.HandlerFunc(s.rejectConnection)))
 	mux.Handle("POST /api/v1/control-tower/connections/{requestID}/revoke", s.auth(http.HandlerFunc(s.revokeConnection)))
 	mux.Handle("GET /api/v1/control-tower/nodes/{nodeID}/trust", s.auth(http.HandlerFunc(s.nodeTrust)))
+	if cfg.SignedLocalJobs {
+		mux.Handle("POST /api/v1/nodes/{nodeID}/mounts/{mountID}/files/destructive-plans", s.auth(http.HandlerFunc(s.createDestructivePlanRoute)))
+		mux.Handle("POST /api/v1/nodes/{nodeID}/mounts/{mountID}/files/destructive-plans/{planID}/confirm", s.auth(http.HandlerFunc(s.confirmDestructivePlanRoute)))
+	}
 	mux.Handle("POST /api/v1/nodes/{nodeID}/transfers/targets", s.auth(http.HandlerFunc(s.transferTargets)))
 	mux.Handle("POST /api/v1/nodes/{nodeID}/transfers/plan", s.auth(http.HandlerFunc(s.planLogicalTransfer)))
 	mux.Handle("POST /api/v1/nodes/{nodeID}/transfers", s.auth(http.HandlerFunc(s.createLogicalTransfer)))
@@ -3139,6 +3143,9 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if refuseRestrictedAgentArchive(w, r, resource) {
+		return
+	}
+	if s.config.SignedLocalJobs && r.Context().Value(agentKey) == nil && s.refuseUnplannedTreeOperation(w, r, node, resource, targets) {
 		return
 	}
 	if mountID, ok := signedLocalCopyMount(resource); ok && s.config.SignedLocalJobs && r.Method == http.MethodPost && r.Context().Value(agentKey) == nil {

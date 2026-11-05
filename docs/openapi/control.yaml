@@ -726,6 +726,70 @@ paths:
         '200': {$ref: '#/components/responses/JSONObject'}
         '400': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/mounts/{mountID}/files/destructive-plans:
+    post:
+      tags: [Node proxy]
+      summary: Plan the deletion or move of a directory tree
+      description: |
+        Available when the Control Tower runs signed local jobs. With that mode on,
+        deleting recursively or moving a directory through the direct routes answers
+        409 plan_required; use this plan and its confirmation instead. The node
+        inspects the tree (files, directories, bytes and an identity digest) and
+        records a five-minute plan for the current actor. The response carries the
+        one-use confirmation token once. Permissions are the same as for the direct
+        operation, including the refusal when a deny rule sits inside the tree.
+      parameters:
+        - {$ref: '#/components/parameters/NodeID'}
+        - {$ref: '#/components/parameters/MountID'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operation, source_path]
+              properties:
+                operation: {type: string, enum: [delete, move]}
+                source_path: {type: string}
+                destination_path: {type: string}
+                overwrite: {type: boolean, description: Only for move; replaces an existing destination directory, whose contents are pinned by the plan}
+      responses:
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/mounts/{mountID}/files/destructive-plans/{planID}/confirm:
+    post:
+      tags: [Node proxy]
+      summary: Confirm a destructive plan and start its job
+      description: |
+        Consumes the plan's token and creates a job bound to the caller's current
+        authorization, renewed while it runs. Before changing anything the node
+        inspects the tree again; if it no longer matches the plan the job fails
+        with tree_changed and nothing is touched, and a new plan is needed. A
+        removal interrupted midway is not resumed and cannot be undone. Repeating
+        the same Idempotency-Key returns the same job; the plan token is never
+        returned. If the caller lost permission since the plan, 403 and the job is
+        canceled.
+      parameters:
+        - {$ref: '#/components/parameters/NodeID'}
+        - {$ref: '#/components/parameters/MountID'}
+        - {name: planID, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: {type: string}
+      responses:
+        '202': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
   /api/v1/nodes/{nodeID}/transfers/plan:
     post:
       tags: [Transfers]
