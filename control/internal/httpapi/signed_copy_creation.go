@@ -67,12 +67,14 @@ func (s *Server) prepareSignedCopy(r *http.Request, node store.Node, input store
 	if err := s.callNodeJSON(r.Context(), node, http.MethodGet, "/api/v1/node", nil, &info, r.Header.Get("X-Correlation-ID")); err != nil || info.NodeID != node.ID || !supportsSignedJobRegistration(info.Capabilities) {
 		return signedauth.JobOptions{}, errSignedJobRegistrationUnavailable
 	}
-	creation, status := false, false
+	creation, status, execution := false, false, false
 	for _, capability := range info.Capabilities {
 		creation = creation || capability == "signed_local_copy_creation_v1"
 		status = status || capability == "signed_job_authorization_status_v1"
+		execution = execution || capability == "signed_local_copy_execution_v1"
 	}
-	if !creation || !status {
+	// A node that cannot run signed copies would only park the job.
+	if !creation || !status || !execution {
 		return signedauth.JobOptions{}, errSignedJobRegistrationUnavailable
 	}
 	response, err := s.signedCopyNodeRequest(r, node, "/api/v1/jobs/signed-local-copy/prepare", body, "", "")
@@ -94,7 +96,7 @@ func (s *Server) prepareSignedCopy(r *http.Request, node store.Node, input store
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&result) != nil || decoder.Decode(new(any)) != io.EOF || result.Digest == nil || result.ExecutionEnabled == nil || *result.ExecutionEnabled {
+	if decoder.Decode(&result) != nil || decoder.Decode(new(any)) != io.EOF || result.Digest == nil || result.ExecutionEnabled == nil || !*result.ExecutionEnabled {
 		return signedauth.JobOptions{}, errSignedJobRegistrationUnavailable
 	}
 	var fields map[string]json.RawMessage
@@ -107,8 +109,9 @@ func (s *Server) prepareSignedCopy(r *http.Request, node store.Node, input store
 	return options, nil
 }
 
-// createSignedLocalCopy is internal until renewable execution and routing are
-// integrated. The intent is committed before the node sees the creation call.
+// createSignedLocalCopy creates a signed local copy on a node that executes
+// them. The intent is committed before the node sees the creation call; the
+// first lease is delivered by the caller or the renewal loop.
 func (s *Server) createSignedLocalCopy(r *http.Request, nodeID, idempotency string, input store.SignedCopyRequest) (string, error) {
 	fail := func() (string, error) { return "", errSignedJobRegistrationUnavailable }
 	if !validPathIdentifier(nodeID) || !signedauth.ValidKeyID(idempotency) || len(s.config.AuthorizationSigningKey) != ed25519.PrivateKeySize {
@@ -206,7 +209,7 @@ func (s *Server) createSignedLocalCopy(r *http.Request, nodeID, idempotency stri
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&result) != nil || decoder.Decode(new(any)) != io.EOF || result.ExecutionEnabled == nil || *result.ExecutionEnabled {
+	if decoder.Decode(&result) != nil || decoder.Decode(new(any)) != io.EOF || result.ExecutionEnabled == nil || !*result.ExecutionEnabled {
 		return fail()
 	}
 	var nodeJob signedLocalJob

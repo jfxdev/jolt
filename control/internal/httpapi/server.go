@@ -62,6 +62,14 @@ type Server struct {
 // material cannot be loaded: a node registered as https:// would otherwise
 // fail every call with an opaque handshake error.
 func New(cfg config.Config, storage *store.Store, logger *slog.Logger) (http.Handler, error) {
+	handler, _, err := NewWithBackground(cfg, storage, logger)
+	return handler, err
+}
+
+// NewWithBackground also returns the background work the handler needs, to be
+// run until its context ends. It is a no-op unless signed local jobs are
+// enabled, in which case it keeps the running jobs' authorizations renewed.
+func NewWithBackground(cfg config.Config, storage *store.Store, logger *slog.Logger) (http.Handler, func(context.Context), error) {
 	transport := &http.Transport{
 		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		ForceAttemptHTTP2:     true,
@@ -72,10 +80,11 @@ func New(cfg config.Config, storage *store.Store, logger *slog.Logger) (http.Han
 	}
 	tlsConfig, err := nodeTLSConfig(cfg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	transport.TLSClientConfig = tlsConfig
-	return newHandler(cfg, storage, logger, &http.Client{Transport: transport}), nil
+	server, handler := newServerHandler(cfg, storage, logger, &http.Client{Transport: transport})
+	return handler, server.background, nil
 }
 
 // nodeTLSConfig trusts an extra CA bundle for node endpoints, so a homelab or
@@ -112,6 +121,11 @@ func nodeTLSConfig(cfg config.Config) (*tls.Config, error) {
 }
 
 func newHandler(cfg config.Config, storage *store.Store, logger *slog.Logger, client *http.Client) http.Handler {
+	_, handler := newServerHandler(cfg, storage, logger, client)
+	return handler
+}
+
+func newServerHandler(cfg config.Config, storage *store.Store, logger *slog.Logger, client *http.Client) (*Server, http.Handler) {
 	if client == nil {
 		client = &http.Client{Transport: &http.Transport{
 			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
@@ -222,7 +236,16 @@ func newHandler(cfg config.Config, storage *store.Store, logger *slog.Logger, cl
 	mux.HandleFunc("GET /api/v1/public/shares/{token}/archive", s.publicShareArchive)
 	mux.Handle("/api/v1/nodes/{nodeID}/{resource...}", s.auth(http.HandlerFunc(s.proxyNode)))
 	mux.HandleFunc("/", s.static)
-	return s.recover(s.correlation(s.securityHeaders(s.instrument(s.csrf(mux)))))
+	return s, s.recover(s.correlation(s.securityHeaders(s.instrument(s.csrf(mux)))))
+}
+
+// background runs the work that outlives requests until ctx ends.
+func (s *Server) background(ctx context.Context) {
+	if s.config.SignedLocalJobs {
+		s.runSignedJobRenewal(ctx)
+		return
+	}
+	<-ctx.Done()
 }
 
 func (s *Server) auth(next http.Handler) http.Handler {
@@ -3116,6 +3139,10 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if refuseRestrictedAgentArchive(w, r, resource) {
+		return
+	}
+	if mountID, ok := signedLocalCopyMount(resource); ok && s.config.SignedLocalJobs && r.Method == http.MethodPost && r.Context().Value(agentKey) == nil {
+		s.createSignedLocalCopyFromRequest(w, r, node, mountID)
 		return
 	}
 	agentScan := r.Context().Value(agentKey) != nil && (r.Method == http.MethodGet || r.Method == http.MethodHead) &&

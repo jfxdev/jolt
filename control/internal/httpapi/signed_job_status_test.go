@@ -103,7 +103,7 @@ func TestSignedJobStatusValidatesNodeAndResponse(t *testing.T) {
 	if result, err := s.signedJobStatus(request, node, "job"); err != nil || result.Revision != 1 || !result.Expiry.Equal(expiry) || result.Digest != digest {
 		t.Fatalf("expired status %+v %v", result, err)
 	}
-	for _, failure := range []string{"wrong node", "missing capability", "missing header", "duplicate header", "missing revision", "missing expiry", "missing digest", "missing execution", "execution enabled", "zero with digest", "zero with expiry", "invalid digest", "null expiry", "extra field", "duplicate field", "oversized", "rejected"} {
+	for _, failure := range []string{"wrong node", "missing capability", "missing header", "duplicate header", "missing revision", "missing expiry", "missing digest", "missing execution", "zero with digest", "zero with expiry", "invalid digest", "null expiry", "extra field", "duplicate field", "oversized", "rejected"} {
 		mode = failure
 		before := statusRequests
 		if _, err := s.signedJobStatus(request, node, "job"); err == nil {

@@ -153,11 +153,12 @@ func main() {
 	})
 	go sweepRunner.Start(sweepCtx)
 
-	handler, err := httpapi.New(cfg, storage, logger)
+	handler, background, err := httpapi.NewWithBackground(cfg, storage, logger)
 	if err != nil {
 		logger.Error("build control tower handler", "error", err)
 		os.Exit(1)
 	}
+	go background(sweepCtx)
 	server := &http.Server{
 		Addr:              cfg.Address,
 		Handler:           handler,

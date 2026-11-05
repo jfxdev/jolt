@@ -113,7 +113,12 @@ func TestRegisterSignedLocalJobLeaseRequiresNodeConfirmation(t *testing.T) {
 	if expiry, err := s.registerSignedLocalJobLease(request, node, job.ID, 1); err != nil || !expiry.After(time.Now()) || posts != 1 {
 		t.Fatalf("register expiry=%v posts=%d err=%v", expiry, posts, err)
 	}
-	for _, failure := range []string{"wrong node", "missing capability", "wrong job", "missing confirmation", "duplicate confirmation", "wrong revision", "wrong expiry", "execution enabled", "missing execution flag", "node rejected", "duplicate field", "oversized"} {
+	// A node that runs signed jobs reports execution enabled; that is expected.
+	mode = "execution enabled"
+	if _, err := s.registerSignedLocalJobLease(request, node, job.ID, 1); err != nil {
+		t.Fatalf("node reporting enabled execution rejected: %v", err)
+	}
+	for _, failure := range []string{"wrong node", "missing capability", "wrong job", "missing confirmation", "duplicate confirmation", "wrong revision", "wrong expiry", "missing execution flag", "node rejected", "duplicate field", "oversized"} {
 		mode = failure
 		before := posts
 		if _, err := s.registerSignedLocalJobLease(request, node, job.ID, 1); err == nil {

@@ -25,6 +25,7 @@ type Config struct {
 	AuthorizationSigningKeyID string
 	AuthorizationSigningKey   ed25519.PrivateKey `json:"-"`
 	SignedLocalReads          bool
+	SignedLocalJobs           bool
 	SignedUploads             bool
 	AuditRetentionDays        int
 	AuditHashChain            bool
@@ -84,6 +85,15 @@ func Load() (Config, error) {
 	}
 	if cfg.SignedLocalReads && len(cfg.AuthorizationSigningKey) != ed25519.PrivateKeySize {
 		return Config{}, errors.New("CONTROL_TOWER_SIGNED_LOCAL_READS requires an authorization signing key")
+	}
+	if raw := strings.TrimSpace(os.Getenv("CONTROL_TOWER_SIGNED_LOCAL_JOBS")); raw != "" {
+		cfg.SignedLocalJobs, err = strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, errors.New("CONTROL_TOWER_SIGNED_LOCAL_JOBS must be a boolean")
+		}
+	}
+	if cfg.SignedLocalJobs && len(cfg.AuthorizationSigningKey) != ed25519.PrivateKeySize {
+		return Config{}, errors.New("CONTROL_TOWER_SIGNED_LOCAL_JOBS requires an authorization signing key")
 	}
 	if raw := strings.TrimSpace(os.Getenv("CONTROL_TOWER_SIGNED_UPLOADS")); raw != "" {
 		cfg.SignedUploads, err = strconv.ParseBool(raw)

@@ -19,7 +19,7 @@ import (
 )
 
 func TestCreateSignedLocalCopyPersistsBeforeDelivery(t *testing.T) {
-	for _, mode := range []string{"success", "expired intent", "lost response", "bad digest", "bad preparation", "invalid options", "missing capability", "missing status capability", "capability lost", "bad creation confirmation", "execution enabled", "wrong receipt", "duplicate response", "changed input", "revoked"} {
+	for _, mode := range []string{"success", "expired intent", "lost response", "bad digest", "bad preparation", "invalid options", "missing capability", "missing status capability", "missing execution capability", "capability lost", "bad creation confirmation", "execution disabled", "wrong receipt", "duplicate response", "changed input", "revoked"} {
 		t.Run(mode, func(t *testing.T) {
 			key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
 			keys := map[string]ed25519.PublicKey{"key": key.Public().(ed25519.PublicKey)}
@@ -39,12 +39,15 @@ func TestCreateSignedLocalCopyPersistsBeforeDelivery(t *testing.T) {
 				switch r.URL.Path {
 				case "/api/v1/node":
 					infoCalls++
-					caps := `["signed_job_authorization_registration_v1","signed_job_options_binding_v1","signed_local_copy_creation_v1","signed_job_authorization_status_v1"]`
+					caps := `["signed_job_authorization_registration_v1","signed_job_options_binding_v1","signed_local_copy_creation_v1","signed_job_authorization_status_v1","signed_local_copy_execution_v1"]`
 					if mode == "missing capability" || mode == "capability lost" && infoCalls > 1 {
-						caps = `["signed_job_authorization_registration_v1","signed_job_options_binding_v1","signed_job_authorization_status_v1"]`
+						caps = `["signed_job_authorization_registration_v1","signed_job_options_binding_v1","signed_job_authorization_status_v1","signed_local_copy_execution_v1"]`
 					}
 					if mode == "missing status capability" {
-						caps = `["signed_job_authorization_registration_v1","signed_job_options_binding_v1","signed_local_copy_creation_v1"]`
+						caps = `["signed_job_authorization_registration_v1","signed_job_options_binding_v1","signed_local_copy_creation_v1","signed_local_copy_execution_v1"]`
+					}
+					if mode == "missing execution capability" {
+						caps = `["signed_job_authorization_registration_v1","signed_job_options_binding_v1","signed_local_copy_creation_v1","signed_job_authorization_status_v1"]`
 					}
 					body = fmt.Sprintf(`{"node_id":"n1","capabilities":%s}`, caps)
 				case "/api/v1/jobs/signed-local-copy/prepare":
@@ -61,9 +64,9 @@ func TestCreateSignedLocalCopyPersistsBeforeDelivery(t *testing.T) {
 					if mode == "bad digest" {
 						digest = security.Digest("other")
 					}
-					body = fmt.Sprintf(`{"options":%s,"options_digest":%q,"execution_enabled":false}`, encoded, digest)
+					body = fmt.Sprintf(`{"options":%s,"options_digest":%q,"execution_enabled":true}`, encoded, digest)
 					if mode == "bad preparation" {
-						body = `{"options":{},"options_digest":"invalid","execution_enabled":false}`
+						body = `{"options":{},"options_digest":"invalid","execution_enabled":true}`
 					}
 				case "/api/v1/jobs/signed-local-copy":
 					posts++
@@ -98,7 +101,7 @@ func TestCreateSignedLocalCopyPersistsBeforeDelivery(t *testing.T) {
 						nodeJob.Destination = "other"
 					}
 					jobJSON, _ := json.Marshal(nodeJob)
-					execution := mode == "execution enabled"
+					execution := mode != "execution disabled"
 					body = fmt.Sprintf(`{"job":%s,"execution_enabled":%t}`, jobJSON, execution)
 					if mode == "duplicate response" {
 						body = fmt.Sprintf(`{"job":%s,"execution_enabled":false,"execution_enabled":true}`, jobJSON)
@@ -169,7 +172,7 @@ func TestCreateSignedLocalCopyPersistsBeforeDelivery(t *testing.T) {
 				if _, err := s.createSignedLocalCopy(request, "n1", "request", input); err == nil || posts != 1 {
 					t.Fatalf("revoked request delivered: posts=%d err=%v", posts, err)
 				}
-			case "bad creation confirmation", "execution enabled", "wrong receipt", "duplicate response":
+			case "bad creation confirmation", "execution disabled", "wrong receipt", "duplicate response":
 				if err == nil || posts != 1 {
 					t.Fatalf("invalid confirmation accepted: posts=%d err=%v", posts, err)
 				}

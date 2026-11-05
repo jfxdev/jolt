@@ -102,7 +102,7 @@ func (s *Server) sendSignedJobLease(r *http.Request, node store.Node, jobID stri
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&result) != nil || decoder.Decode(new(any)) != io.EOF || result.Revision != revision || result.ExecutionEnabled == nil || *result.ExecutionEnabled || !result.ExpiresAt.Equal(expiry) || !result.ExpiresAt.After(time.Now().UTC()) || r.Context().Err() != nil {
+	if decoder.Decode(&result) != nil || decoder.Decode(new(any)) != io.EOF || result.Revision != revision || result.ExecutionEnabled == nil || !result.ExpiresAt.Equal(expiry) || !result.ExpiresAt.After(time.Now().UTC()) || r.Context().Err() != nil {
 		return time.Time{}, errSignedJobRegistrationUnavailable
 	}
 	return result.ExpiresAt, nil

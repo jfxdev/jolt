@@ -74,7 +74,7 @@ func (s *Server) signedJobStatus(r *http.Request, node store.Node, jobID string)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&result) != nil || decoder.Decode(new(any)) != io.EOF || result.Revision == nil || len(result.ExpiresAt) == 0 || result.Digest == nil || result.ExecutionEnabled == nil || *result.ExecutionEnabled || r.Context().Err() != nil {
+	if decoder.Decode(&result) != nil || decoder.Decode(new(any)) != io.EOF || result.Revision == nil || len(result.ExpiresAt) == 0 || result.Digest == nil || result.ExecutionEnabled == nil || r.Context().Err() != nil {
 		return fail()
 	}
 	status := signedJobAuthorizationStatus{Revision: *result.Revision, Digest: *result.Digest}
