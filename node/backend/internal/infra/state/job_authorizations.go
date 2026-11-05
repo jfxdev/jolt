@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
+	"github.com/jfxdev/jolt/backend/internal/filetypes"
 	"github.com/jfxdev/jolt/backend/internal/signedauth"
 )
 
@@ -97,7 +98,9 @@ func (s *Store) RenewJobAuthorization(ctx context.Context, jobID, nodeID, envelo
 		}
 		authorization = JobAuthorization{JobID: job.ID, Binding: expected, Revision: revision, Envelope: envelope, ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC()}
 		job.SignedAuthBound = true
-		job.State, job.Phase, job.Error, job.NextAttemptAt = "waiting_validation", "waiting_validation", "job execution requires authorization renewal and validation", nil
+		if job.State != "paused" {
+			job.State, job.Phase, job.Error, job.NextAttemptAt = "waiting_validation", "waiting_validation", "job execution requires authorization renewal and validation", nil
+		}
 		job.UpdatedAt = now.UTC()
 		if err := tx.put("job_authorizations", job.ID, "", order(now), authorization); err != nil {
 			return err
@@ -118,4 +121,44 @@ func (s *Store) GetJobAuthorization(ctx context.Context, jobID string) (authoriz
 		return err
 	})
 	return authorization, err
+}
+
+// ValidateJobAuthorization returns a verified snapshot of the current lease.
+// Consumers must apply its filter, recheck trust and grants, enforce expiry,
+// and interrupt work if a newer revision supersedes this snapshot.
+func (s *Store) ValidateJobAuthorization(ctx context.Context, jobID, nodeID string, keys map[string]ed25519.PublicKey, now time.Time) (authorization JobAuthorization, filter *filetypes.Filter, err error) {
+	if !signedauth.ValidKeyID(jobID) || !signedauth.ValidKeyID(nodeID) || now.IsZero() {
+		return JobAuthorization{}, nil, ErrInUse
+	}
+	err = s.view(ctx, func() error {
+		job, err := get[entities.Job](s, "jobs", jobID)
+		if err != nil {
+			return err
+		}
+		switch job.State {
+		case "queued", "running", "waiting_validation":
+		default:
+			return ErrInUse
+		}
+		current, err := get[JobAuthorization](s, "job_authorizations", jobID)
+		if err != nil || !job.SignedAuthBound || current.JobID != job.ID || !jobAuthorizationMatches(job, current.Binding, nodeID) {
+			return ErrInUse
+		}
+		if job.DestructivePlanID != "" {
+			plan, err := get[DestructivePlan](s, "destructive_plans", job.DestructivePlanID)
+			if err != nil || plan.ConsumedJobID != job.ID || plan.SubjectID != current.Binding.ActorID {
+				return ErrInUse
+			}
+		}
+		claims, checked, err := signedauth.VerifyJobLease(current.Envelope, keys, current.Binding, nodeID, current.Revision, now)
+		if err != nil || claims.ExpiresAt != current.ExpiresAt.Unix() {
+			return ErrInUse
+		}
+		authorization, filter = current, checked
+		return nil
+	})
+	if err != nil {
+		return JobAuthorization{}, nil, err
+	}
+	return authorization, filter, nil
 }

@@ -125,6 +125,19 @@ func TestJobAuthorizationRevisionAndDurability(t *testing.T) {
 	if _, _, err := signedauth.VerifyJobLease(auth.Envelope, keys, auth.Binding, "node", auth.Revision, now); err != nil {
 		t.Fatalf("recovered signature: %v", err)
 	}
+	verified, filter, err := s.ValidateJobAuthorization(ctx, job.ID, "node", keys, now)
+	if err != nil || verified.Revision != 2 || filter == nil || !filter.Evaluate("nodes/node/files/mounts/mount/private-source", "read", "file").Allowed || filter.Evaluate("nodes/node/files/mounts/mount/private-source", "delete", "file").Allowed {
+		t.Fatalf("invalid verified authorization or filter: revision=%d err=%v", verified.Revision, err)
+	}
+	for _, tc := range []struct {
+		node string
+		keys map[string]ed25519.PublicKey
+		now  time.Time
+	}{{"other", keys, now}, {"node", map[string]ed25519.PublicKey{}, now}, {"node", keys, now.Add(30 * time.Second)}} {
+		if _, _, err := s.ValidateJobAuthorization(ctx, job.ID, tc.node, tc.keys, tc.now); !errors.Is(err, ErrInUse) {
+			t.Fatalf("invalid stored authorization accepted: %v", err)
+		}
+	}
 	encoded, err := json.Marshal(auth)
 	if err != nil || strings.Contains(string(encoded), "private-") || strings.Contains(string(encoded), second) {
 		t.Fatalf("auth exposed by JSON: %s %v", encoded, err)
@@ -143,6 +156,13 @@ func TestJobAuthorizationRevisionAndDurability(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+	stored.State = "canceled"
+	if err := s.UpdateJob(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ValidateJobAuthorization(ctx, job.ID, "node", keys, now); !errors.Is(err, ErrInUse) {
+		t.Fatalf("canceled job authorization accepted: %v", err)
 	}
 }
 
@@ -376,5 +396,37 @@ func TestJobAuthorizationVersionUpgradeRecoversAfterFault(t *testing.T) {
 				t.Fatalf("retry: %v", err)
 			}
 		})
+	}
+}
+
+func TestJobRenewalPreservesPause(t *testing.T) {
+	s, _ := openTest(t)
+	ctx, now := context.Background(), time.Now().UTC().Truncate(time.Second)
+	job, binding := testAuthorizedJob(now)
+	if _, _, err := s.CreateJob(ctx, job, ""); err != nil {
+		t.Fatal(err)
+	}
+	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	keys := map[string]ed25519.PublicKey{"key": key.Public().(ed25519.PublicKey)}
+	if _, err := s.RenewJobAuthorization(ctx, job.ID, "node", testJobLease(t, key, binding, 1, now), binding, keys, now); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := s.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.State, stored.Phase = "paused", "paused"
+	if err := s.UpdateJob(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RenewJobAuthorization(ctx, job.ID, "node", testJobLease(t, key, binding, 2, now), binding, keys, now); err != nil {
+		t.Fatal(err)
+	}
+	stored, err = s.GetJob(ctx, job.ID)
+	if err != nil || stored.State != "paused" || stored.Phase != "paused" {
+		t.Fatalf("renewal changed pause: %+v %v", stored, err)
+	}
+	if _, _, err := s.ValidateJobAuthorization(ctx, job.ID, "node", keys, now); !errors.Is(err, ErrInUse) {
+		t.Fatalf("paused job authorized for execution: %v", err)
 	}
 }
