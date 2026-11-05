@@ -3,6 +3,8 @@ package state
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -48,6 +50,9 @@ func TestJobAuthorizationRevisionAndDurability(t *testing.T) {
 	}
 	if _, _, err := s.CreateJob(ctx, job, ""); err != nil {
 		t.Fatal(err)
+	}
+	if revision, expiry, digest, err := s.JobAuthorizationStatus(ctx, job.ID); err != nil || revision != 0 || !expiry.IsZero() || digest != "" {
+		t.Fatalf("initial authorization status: %d %v %q %v", revision, expiry, digest, err)
 	}
 	if err := s.UpdateJob(ctx, forged); !errors.Is(err, ErrInUse) {
 		t.Fatalf("generic update forged an authorization binding: %v", err)
@@ -114,6 +119,10 @@ func TestJobAuthorizationRevisionAndDurability(t *testing.T) {
 	if err != nil || auth.Revision != 2 || auth.Binding != binding || auth.Envelope != second {
 		t.Fatalf("recovered auth=%+v err=%v", auth, err)
 	}
+	sum := sha256.Sum256([]byte(second))
+	if revision, expiry, digest, err := s.JobAuthorizationStatus(ctx, job.ID); err != nil || revision != 2 || !expiry.Equal(now.Add(30*time.Second)) || digest != base64.RawURLEncoding.EncodeToString(sum[:]) {
+		t.Fatalf("recovered authorization status: %d %v %q %v", revision, expiry, digest, err)
+	}
 	stored, err = s.GetJob(ctx, job.ID)
 	if err != nil || !stored.SignedAuthBound || stored.State != "waiting_validation" {
 		t.Fatalf("recovered job=%+v err=%v", stored, err)
@@ -163,6 +172,43 @@ func TestJobAuthorizationRevisionAndDurability(t *testing.T) {
 	}
 	if _, _, err := s.ValidateJobAuthorization(ctx, job.ID, "node", keys, now); !errors.Is(err, ErrInUse) {
 		t.Fatalf("canceled job authorization accepted: %v", err)
+	}
+}
+
+func TestJobAuthorizationStatusRejectsInconsistentState(t *testing.T) {
+	s, _ := openTest(t)
+	defer s.Close()
+	ctx, now := context.Background(), time.Now().UTC()
+	job, _ := testAuthorizedJob(now)
+	if _, _, err := s.CreateJob(ctx, job, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.update(ctx, func(tx *transaction) error {
+		return tx.put("job_authorizations", job.ID, "", order(now), JobAuthorization{JobID: job.ID, Revision: 1, Envelope: "invalid", ExpiresAt: now.Add(-time.Minute)})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := s.JobAuthorizationStatus(ctx, job.ID); !errors.Is(err, ErrInUse) {
+		t.Fatalf("unbound authorization accepted: %v", err)
+	}
+}
+
+func TestJobAuthorizationStatusRetainsExpiredRevision(t *testing.T) {
+	s, _ := openTest(t)
+	defer s.Close()
+	ctx, issued := context.Background(), time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+	job, binding := testAuthorizedJob(issued)
+	if _, _, err := s.CreateJob(ctx, job, ""); err != nil {
+		t.Fatal(err)
+	}
+	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	envelope := testJobLease(t, key, binding, 1, issued)
+	if _, err := s.RenewJobAuthorization(ctx, job.ID, "node", envelope, binding, map[string]ed25519.PublicKey{"key": key.Public().(ed25519.PublicKey)}, issued); err != nil {
+		t.Fatal(err)
+	}
+	revision, expiry, digest, err := s.JobAuthorizationStatus(ctx, job.ID)
+	if err != nil || revision != 1 || !expiry.Equal(issued.Add(30*time.Second)) || digest == "" || !expiry.Before(time.Now()) {
+		t.Fatalf("expired status: %d %v %q %v", revision, expiry, digest, err)
 	}
 }
 

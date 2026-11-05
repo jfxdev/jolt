@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -64,6 +66,25 @@ func TestJobAuthorizationEndpointVerifiesAndPersistsWithoutExecuting(t *testing.
 	}
 	path := "/api/v1/jobs/job/authorization"
 	first := sign(binding, 1, now)
+	status := func(path, token string) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest("GET", path, nil)
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	if w := status(path, ""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("status without bearer: %d %s", w.Code, w.Body)
+	}
+	if w := status("/api/v1/jobs/other/authorization", "secret"); w.Code != http.StatusNotFound {
+		t.Fatalf("status unknown job: %d %s", w.Code, w.Body)
+	}
+	if w := status(path, "secret"); w.Code != http.StatusOK || w.Header().Get("X-Jolt-Job-Authorization-Status") != "v1" || w.Header().Get("Cache-Control") != "no-store" || !strings.Contains(w.Body.String(), `"revision":0`) || !strings.Contains(w.Body.String(), `"expires_at":null`) || !strings.Contains(w.Body.String(), `"envelope_digest":""`) {
+		t.Fatalf("initial status: %d %s", w.Code, w.Body)
+	}
 	unauthorized := httptest.NewRequest("POST", path, nil)
 	unauthorized.Header.Set(signedAuthorizationHeader, first)
 	w := httptest.NewRecorder()
@@ -101,6 +122,15 @@ func TestJobAuthorizationEndpointVerifiesAndPersistsWithoutExecuting(t *testing.
 	if w.Code != http.StatusOK || w.Header().Get("X-Jolt-Job-Authorization-Applied") != "v1" || !strings.Contains(w.Body.String(), `"revision":1`) || !strings.Contains(w.Body.String(), `"execution_enabled":false`) || strings.Contains(w.Body.String(), first) || strings.Contains(w.Body.String(), "private-actor") {
 		t.Fatalf("register: %d %s", w.Code, w.Body)
 	}
+	checkStatus := func(revision string, envelope string) {
+		t.Helper()
+		w := status(path, "secret")
+		digest := sha256.Sum256([]byte(envelope))
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"revision":`+revision) || !strings.Contains(w.Body.String(), base64.RawURLEncoding.EncodeToString(digest[:])) || !strings.Contains(w.Body.String(), `"execution_enabled":false`) || strings.Contains(w.Body.String(), envelope) || strings.Contains(w.Body.String(), "private-actor") {
+			t.Fatalf("stored status: %d %s", w.Code, w.Body)
+		}
+	}
+	checkStatus("1", first)
 	stored, err := storage.GetJob(ctx, job.ID)
 	if err != nil || stored.State != "waiting_validation" || !stored.SignedAuthBound {
 		t.Fatalf("job=%+v err=%v", stored, err)
@@ -115,6 +145,7 @@ func TestJobAuthorizationEndpointVerifiesAndPersistsWithoutExecuting(t *testing.
 	if w := call(path, second); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"revision":2`) {
 		t.Fatalf("renew: %d %s", w.Code, w.Body)
 	}
+	checkStatus("2", second)
 	if w := call(path, first); w.Code != http.StatusForbidden {
 		t.Fatalf("old revision: %d %s", w.Code, w.Body)
 	}
@@ -127,7 +158,7 @@ func TestJobAuthorizationEndpointVerifiesAndPersistsWithoutExecuting(t *testing.
 	r.Header.Set("Authorization", "Bearer secret")
 	info := httptest.NewRecorder()
 	h.ServeHTTP(info, r)
-	if info.Code != http.StatusOK || !strings.Contains(info.Body.String(), "signed_job_authorization_registration_v1") {
+	if info.Code != http.StatusOK || !strings.Contains(info.Body.String(), "signed_job_authorization_registration_v1") || !strings.Contains(info.Body.String(), "signed_job_authorization_status_v1") {
 		t.Fatalf("capability: %d %s", info.Code, info.Body)
 	}
 	if strings.Contains(logs.String(), first) || strings.Contains(logs.String(), second) || strings.Contains(logs.String(), "private-actor") {

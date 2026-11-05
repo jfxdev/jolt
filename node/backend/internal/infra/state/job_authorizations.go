@@ -3,6 +3,8 @@ package state
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"math"
 	"time"
@@ -20,6 +22,28 @@ type JobAuthorization struct {
 	Revision  uint64             `yaml:"revision" json:"-"`
 	Envelope  string             `yaml:"envelope" json:"-"`
 	ExpiresAt time.Time          `yaml:"expires_at" json:"-"`
+}
+
+// JobAuthorizationStatus exposes only the stored revision and envelope digest.
+// Expired leases remain visible for reconciliation, but grant no authorization.
+func (s *Store) JobAuthorizationStatus(ctx context.Context, jobID string) (revision uint64, expiry time.Time, digest string, err error) {
+	err = s.view(ctx, func() error {
+		job, err := get[entities.Job](s, "jobs", jobID)
+		if err != nil {
+			return err
+		}
+		current, err := get[JobAuthorization](s, "job_authorizations", jobID)
+		if errors.Is(err, ErrNotFound) && !job.SignedAuthBound {
+			return nil
+		}
+		if err != nil || !job.SignedAuthBound || current.JobID != job.ID || current.Revision == 0 || current.ExpiresAt.IsZero() || current.Envelope == "" {
+			return ErrInUse
+		}
+		sum := sha256.Sum256([]byte(current.Envelope))
+		revision, expiry, digest = current.Revision, current.ExpiresAt, base64.RawURLEncoding.EncodeToString(sum[:])
+		return nil
+	})
+	return
 }
 
 // RegisterSignedJobAuthorization derives a candidate binding from a verified

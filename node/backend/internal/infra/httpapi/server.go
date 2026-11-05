@@ -123,6 +123,9 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 	if _, ok := s.store.(signedJobAuthorizationRegistrar); ok {
 		mux.HandleFunc("POST /api/v1/jobs/{jobID}/authorization", s.registerJobAuthorization)
 	}
+	if _, ok := s.store.(signedJobAuthorizationReporter); ok {
+		mux.HandleFunc("GET /api/v1/jobs/{jobID}/authorization", s.jobAuthorizationStatus)
+	}
 	mux.HandleFunc("GET /api/v1/jobs/{jobID}/items", s.listJobItems)
 	mux.HandleFunc("POST /api/v1/jobs/{jobID}/items/{ordinal}/override", s.overrideJobItem)
 	mux.HandleFunc("POST /api/v1/jobs/{jobID}/pause", s.pauseJob)
@@ -363,6 +366,9 @@ func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 		}
 		if _, ok := s.store.(signedJobAuthorizationRegistrar); ok {
 			capabilities = append(capabilities, "signed_job_authorization_registration_v1")
+		}
+		if _, ok := s.store.(signedJobAuthorizationReporter); ok {
+			capabilities = append(capabilities, "signed_job_authorization_status_v1")
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -2438,6 +2444,27 @@ paths:
       responses:
         "200": {description: Durable job state and progress}
   /api/v1/jobs/{jobID}/authorization:
+    get:
+      summary: Retrieve the stored job authorization revision and digest
+      description: Requires the operational bearer token. The digest identifies the stored envelope without disclosing it; expired authorizations remain visible for reconciliation and do not enable execution.
+      parameters:
+        - {in: path, name: jobID, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: Revision zero and null expiry indicate that no authorization was stored
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revision, expires_at, envelope_digest, execution_enabled]
+                properties:
+                  revision: {type: integer, minimum: 0}
+                  expires_at: {type: [string, "null"], format: date-time}
+                  envelope_digest: {type: string, description: Unpadded base64url SHA-256 digest, or empty when revision is zero}
+                  execution_enabled: {type: boolean, const: false}
+        "401": {description: Invalid operational bearer token}
+        "404": {description: Job not found}
+        "503": {description: Durable state unavailable or inconsistent}
     post:
       summary: Register a signed job authorization without enabling execution
       description: Requires the operational bearer token and a signed, job-bound envelope. The node verifies the job scope and next revision, stores the context encrypted, and keeps the job awaiting validation. This capability does not enable job execution or periodic renewal.
