@@ -3751,6 +3751,9 @@ func (s *Server) resolveLogicalTransferRequest(w http.ResponseWriter, r *http.Re
 		writeError(w, r, http.StatusNotFound, "node_unavailable", "O node de destino não está disponível.")
 		return resolvedLogicalTransfer{}, false
 	}
+	if s.config.SignedLocalJobs && operation == "move" && s.refuseUnplannedTransferMove(w, r, sourceNode, request.Source.MountID, paths) {
+		return resolvedLogicalTransfer{}, false
+	}
 	sourceMetadata, sourceIdentityErr := s.nodeMetadata(r.Context(), sourceNode)
 	destinationMetadata, destinationIdentityErr := s.nodeMetadata(r.Context(), destinationNode)
 	if sourceIdentityErr != nil || destinationIdentityErr != nil {

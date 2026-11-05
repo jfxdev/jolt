@@ -99,8 +99,8 @@ renewal, keeping its checkpoints; a newer lease resumes it. Entries the filter
 hides are skipped and reported only as a count. The `ask` conflict policy is
 not supported for these copies. Deleting or moving a directory needs a plan the
 operator confirms: the node counts what would change and, when the job runs,
-checks the tree is unchanged before touching it; node-to-node transfers are not
-covered yet. `CONTROL_TOWER_SIGNED_UPLOADS=true` separately
+checks the tree is unchanged before touching it. Node-to-node transfers are not
+covered yet, and moving a directory between nodes is refused until it has a plan. `CONTROL_TOWER_SIGNED_UPLOADS=true` separately
 enables signed resumable upload creation, chunks, completion and abort. The
 node requires fresh signed contexts for bound sessions and enforces filtering
 before publication. An explicit resume or discard reauthorizes an old unbound

@@ -45,8 +45,10 @@ func destructiveRouteHarnessConfigured(t *testing.T, enabled bool, nodeHandler f
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.SaveNode(ctx, store.Node{ID: "n1", Name: "node", Endpoint: "http://node.invalid", TokenEncrypted: encrypted, State: "online", CreatedAt: now, UpdatedAt: now}); err != nil {
-		t.Fatal(err)
+	for _, id := range []string{"n1", "n2"} {
+		if err := storage.SaveNode(ctx, store.Node{ID: id, Name: "node " + id, Endpoint: "http://" + id + ".invalid", TokenEncrypted: encrypted, State: "online", CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var calls []string
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -153,5 +155,36 @@ func TestPassThroughProxyNeverReachesDestructivePlans(t *testing.T) {
 		if len(*calls) != 0 {
 			t.Fatalf("enabled=%v the node was reached through the proxy: %v", enabled, *calls)
 		}
+	}
+}
+
+func TestNodeToNodeDirectoryMoveNeedsAPlanThatDoesNotExistYet(t *testing.T) {
+	for name, test := range map[string]struct {
+		kind         string
+		wantConflict bool
+	}{"directory": {"directory", true}, "file": {"file", false}} {
+		t.Run(name, func(t *testing.T) {
+			handler, session, calls := destructiveRouteHarness(t, func(r *http.Request) (int, string) {
+				if strings.HasSuffix(r.URL.Path, "/files/metadata") {
+					return http.StatusOK, `{"name":"item","path":"item","type":"` + test.kind + `"}`
+				}
+				return http.StatusServiceUnavailable, `{"error":{"code":"unavailable","message":"stop here"}}`
+			})
+			for _, path := range []string{"/api/v1/nodes/n1/transfers", "/api/v1/nodes/n1/transfers/plan"} {
+				r := authenticatedRequest(http.MethodPost, path, session, []byte(`{"source":{"node_id":"n2","mount_id":"files","paths":["item"]},"destination":{"mount_id":"files","path":""},"operation":"move"}`))
+				r.Header.Set("Idempotency-Key", "k")
+				w := httptest.NewRecorder()
+				handler.ServeHTTP(w, r)
+				conflict := w.Code == http.StatusConflict && strings.Contains(w.Body.String(), "plan_required")
+				if conflict != test.wantConflict {
+					t.Fatalf("%s %s: %d %s", test.kind, path, w.Code, w.Body)
+				}
+			}
+			for _, call := range *calls {
+				if strings.Contains(call, "/transfers/pull") {
+					t.Fatalf("a refused move reached the node: %v", *calls)
+				}
+			}
+		})
 	}
 }

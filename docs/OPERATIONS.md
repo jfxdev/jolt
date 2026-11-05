@@ -121,7 +121,7 @@ Prometheus/Grafana/Alertmanager e o agendador de backups são componentes extern
 `POST …/mounts/{id}/files/copy` como jobs vinculados à autorização do chamador.
 A opção vem desativada, exige a chave de assinatura (`CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_*`)
 e cobre cópia local, além de delete e move de pastas, que passam a exigir um plano.
-Transferências entre nodes continuam sem autorização renovável.
+Transferências entre nodes continuam sem autorização renovável, e o move de pasta entre nodes é recusado enquanto não houver plano.
 
 **Antes de ativar**
 
@@ -168,8 +168,11 @@ pasta respondem `409 plan_required`. O fluxo é: `POST …/files/destructive-pla
   `plan_move`, `confirm_delete`, `confirm_move`.
 - A varredura lê o conteúdo de todos os arquivos para calcular o digest: em pastas
   grandes, planejar e confirmar levam o tempo de uma leitura completa.
-- Os moves feitos pelas transferências (o diálogo de transferência da interface e
-  `transfer_move_*`) ainda não usam o plano.
+- Mover uma **pasta** entre nodes (transferência com `operation: move`, inclusive pelo
+  diálogo de transferência da interface) responde `409 plan_required`, porque apaga a
+  origem e esse fluxo ainda não tem plano. Copie a pasta e remova a origem com um
+  plano. Mover arquivos e copiar pastas continuam como antes, e continuam **sem**
+  autorização renovável nem filtro por policy.
 
 **O que observar**
 

@@ -169,7 +169,7 @@ Referências para retomada:
 **Falta**
 
 - Lixeira opcional por mount gravável, retenção padrão de 30 dias, movimentação no mesmo filesystem, metadados e intenções no estado cifrado, recuperação após falhas e restauração com revalidação e recusa de conflitos.
-- Move entre nodes e as operações `transfer_move_*`, que não usam o plano; UI para mover pastas com plano (o diálogo de transferência segue o fluxo antigo); aprovação humana de um plano criado por outra credencial.
+- Plano para o move de pasta entre nodes (`transfer_move_*`), hoje recusado com `409 plan_required` quando `CONTROL_TOWER_SIGNED_LOCAL_JOBS` está ativo; UI de move com plano; aprovação humana de um plano criado por outra credencial.
 - `needs_approval` e solicitação de pequenas operações JSON por agentes, sem escrita direta. Aprovação humana na UI com permissões atuais e corpo guardado/revalidado; expiração em cinco minutos, execução idempotente e webhook somente para notificação.
 - Validar JIT contra todas as rotas, expiração e interação com a autorização renovável de jobs, hoje só de cópia local.
 
