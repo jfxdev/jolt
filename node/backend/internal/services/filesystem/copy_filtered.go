@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/entities"
 )
 
@@ -24,10 +23,9 @@ func (s *Service) InspectCopyDestinationFiltered(ctx context.Context, mountID, r
 	if err := ctx.Err(); err != nil {
 		return entities.FileEntry{}, false, err
 	}
-	mount, err := s.store.GetMount(ctx, mountID)
-	if errors.Is(err, contracts.ErrNotFound) {
-		return entities.FileEntry{}, false, ErrNotFound
-	}
+	// GetMount probes the live mount; the persisted record of a mount defined in
+	// node.yaml does not carry the writable flag.
+	mount, err := s.GetMount(ctx, mountID)
 	if err != nil {
 		return entities.FileEntry{}, false, err
 	}

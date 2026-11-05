@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/jfxdev/jolt/backend/internal/filetypes"
+	db "github.com/jfxdev/jolt/backend/internal/infra/state"
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
 )
 
@@ -161,5 +162,27 @@ func TestPlanCopyFilteredReportsTypeMismatchAsConflict(t *testing.T) {
 	}
 	if got, err := os.ReadFile(filepath.Join(mount.LocalPath, "destination/dir")); err != nil || string(got) != "not a directory" {
 		t.Fatalf("planning changed destination: %q %v", got, err)
+	}
+}
+
+// A mount defined in node.yaml is persisted without a writable flag; planning
+// must probe the live mount instead of trusting the stored record.
+func TestPlanCopyFilteredProbesMountWritability(t *testing.T) {
+	service, files, mountID := testService(t)
+	mount, err := files.GetMount(context.Background(), mountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := mount
+	stored.Writable = false
+	if err := service.store.(*db.Store).UpsertMount(context.Background(), stored); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mount.LocalPath, "source.txt"), []byte("source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, _, err := service.PlanCopyFiltered(context.Background(), mountID, "source.txt", "copy.txt", "fail", copyPlanFilter(t), false)
+	if err != nil || plan.CopyCount != 1 {
+		t.Fatalf("plan=%+v err=%v", plan, err)
 	}
 }
