@@ -1,0 +1,100 @@
+package rbac
+
+import (
+	"github.com/jfxdev/jolt/control/internal/filetypes"
+)
+
+// EntryMode says how much the caller knows about the entry a path names and who
+// will enforce typed rules for it.
+type EntryMode int
+
+const (
+	// EveryEntry is for operations the node does not filter per entry. The path
+	// may name a file or a directory, so the operation is allowed only when it
+	// would be allowed for both, and it is denied when either is denied.
+	EveryEntry EntryMode = iota
+	// NodeFiltered is for operations the node enforces with the signed policy
+	// context, entry by entry. The Control Tower only refuses what could never
+	// be allowed: it allows when some kind of entry may be and denies only when
+	// every kind is denied, leaving the real type to the node.
+	NodeFiltered
+)
+
+// ruleMatches reports whether a rule's path pattern covers the path.
+func ruleMatches(rule Rule, path string) bool {
+	matches, _ := match(rule.Path, path)
+	return matches
+}
+
+// HasTypedRules reports whether any rule covering the path carries a file type
+// selector or a visibility, i.e. whether the path-only evaluator is not enough.
+func HasTypedRules(policies []Policy, path string) bool {
+	path = NormalizePath(path)
+	for _, policy := range policies {
+		for _, rule := range policy.Rules {
+			if (rule.FileTypes != nil || rule.Visibility != "") && ruleMatches(rule, path) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// EvaluateTyped decides path and capability with typed rules, using the same
+// evaluator the node applies to a signed context so both sides agree. Without a
+// typed rule covering the path it is exactly Evaluate. Anything it cannot
+// evaluate (an invalid path or rule, too many rules) fails closed to the
+// conservative path-only evaluator, which denies a typed deny outright and
+// ignores a typed allow.
+func EvaluateTyped(policies []Policy, path, capability string, mode EntryMode) Decision {
+	path = NormalizePath(path)
+	if !HasTypedRules(policies, path) {
+		return Evaluate(policies, path, capability)
+	}
+	conservative := Evaluate(policies, path, capability)
+	context := filetypes.Context{Version: 1, Rules: []filetypes.Rule{}}
+	for _, policy := range policies {
+		for _, rule := range policy.Rules {
+			if !ruleMatches(rule, path) {
+				continue
+			}
+			if !ValidPath(rule.Path) {
+				return conservative
+			}
+			context.Rules = append(context.Rules, filetypes.Rule{
+				PolicyID: policy.ID, Path: NormalizePath(rule.Path), Capabilities: append([]string(nil), rule.Capabilities...),
+				FileTypes: rule.FileTypes, Visibility: rule.Visibility,
+			})
+		}
+	}
+	filter, err := context.Compile()
+	if err != nil || !ValidResourcePath(path) {
+		return conservative
+	}
+	file, directory := filter.Evaluate(path, capability, "file"), filter.Evaluate(path, capability, "directory")
+	decision := Decision{Path: path, Capability: capability, PolicyIDs: matchingPolicyIDs(policies, path)}
+	if mode == NodeFiltered {
+		decision.Allowed = file.Allowed || directory.Allowed
+		decision.Denied = file.Denied && directory.Denied
+	} else {
+		decision.Allowed = file.Allowed && directory.Allowed
+		decision.Denied = file.Denied || directory.Denied
+	}
+	if decision.Denied {
+		decision.Allowed = false
+	}
+	return decision
+}
+
+// matchingPolicyIDs lists the policies with a rule covering the path, for audit.
+func matchingPolicyIDs(policies []Policy, path string) []string {
+	ids := map[string]struct{}{}
+	for _, policy := range policies {
+		for _, rule := range policy.Rules {
+			if ruleMatches(rule, path) {
+				ids[policy.ID] = struct{}{}
+			}
+		}
+	}
+	return sortedKeys(ids)
+}
