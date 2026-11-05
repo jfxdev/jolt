@@ -21,7 +21,7 @@ var (
 	ErrLastAdmin = errors.New("at least one enabled administrator is required")
 )
 
-const supportedSecurityVersion = 6
+const supportedSecurityVersion = 7
 
 type User struct {
 	ID           string    `json:"user_id"`
@@ -262,6 +262,15 @@ CREATE TABLE IF NOT EXISTS job_authorization_links (
  pending_envelope TEXT NOT NULL DEFAULT '', pending_expiry_ns INTEGER NOT NULL DEFAULT 0,
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
  PRIMARY KEY(node_id,job_id), FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS signed_copy_intents (
+ node_id TEXT NOT NULL, job_id TEXT NOT NULL, actor_type TEXT NOT NULL, actor_id TEXT NOT NULL,
+ credential_id TEXT NOT NULL, credential_digest TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+ binding TEXT NOT NULL, request_body TEXT NOT NULL, options TEXT NOT NULL,
+ envelope TEXT NOT NULL, expiry_ns INTEGER NOT NULL, accepted INTEGER NOT NULL DEFAULT 0,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ PRIMARY KEY(node_id,job_id), UNIQUE(node_id,actor_type,actor_id,idempotency_key),
+ FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS policies (
  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL,
