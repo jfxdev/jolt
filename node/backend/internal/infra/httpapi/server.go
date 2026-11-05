@@ -377,6 +377,9 @@ func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 		if _, ok := s.store.(signedJobCreationStore); ok && s.jobs != nil {
 			capabilities = append(capabilities, "signed_local_copy_creation_v1")
 		}
+		if s.signedExecutionEnabled() {
+			capabilities = append(capabilities, "signed_local_copy_execution_v1")
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"configuration": map[string]any{"source": "yaml", "apply_mode": "restart", "mounts_mutable": false, "grants_mutable": false},
@@ -2447,13 +2450,13 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/SignedLocalCopyRequest'}
       responses:
-        "200": {description: Normalized options, digest and execution_enabled false}
+        "200": {description: Normalized options, digest and whether signed execution is enabled}
         "400": {description: Invalid request or noncanonical paths}
         "503": {description: Signed job creation unavailable}
   /api/v1/jobs/signed-local-copy:
     post:
       summary: Create a signed local copy awaiting validation
-      description: Requires the operational bearer token and a job-bound signed envelope matching the normalized request. The created job remains blocked and execution is not enabled.
+      description: Requires the operational bearer token and a job-bound signed envelope matching the normalized request. The job is queued once its first authorization is registered and runs only while that authorization is renewed.
       parameters:
         - {in: header, name: X-Jolt-Access-Authorization, required: true, schema: {type: string}}
         - {in: header, name: Idempotency-Key, required: true, schema: {type: string, maxLength: 128}}
@@ -2464,7 +2467,7 @@ paths:
             schema: {$ref: '#/components/schemas/SignedLocalCopyRequest'}
       responses:
         "200": {description: Existing job returned for an identical request}
-        "202": {description: Job created in waiting_validation with execution_enabled false}
+        "202": {description: Job created in waiting_validation awaiting its first authorization}
         "400": {description: Invalid body, scope, signature or idempotency key}
         "409": {description: Idempotency key or job identifier conflict}
         "503": {description: Signed job creation unavailable}
@@ -2516,13 +2519,13 @@ paths:
                   revision: {type: integer, minimum: 0}
                   expires_at: {type: [string, "null"], format: date-time}
                   envelope_digest: {type: string, description: Unpadded base64url SHA-256 digest, or empty when revision is zero}
-                  execution_enabled: {type: boolean, const: false}
+                  execution_enabled: {type: boolean, description: True when this node runs jobs bound to signed authorizations}
         "401": {description: Invalid operational bearer token}
         "404": {description: Job not found}
         "503": {description: Durable state unavailable or inconsistent}
     post:
-      summary: Register a signed job authorization without enabling execution
-      description: Requires the operational bearer token and a signed, job-bound envelope. The node verifies the job scope and next revision, stores the context encrypted, and keeps the job awaiting validation. This capability does not enable job execution or periodic renewal.
+      summary: Register or renew a signed job authorization
+      description: Requires the operational bearer token and a signed, job-bound envelope. The node verifies the job scope and next revision and stores the context encrypted. A local copy waiting for authorization is queued; a running one keeps running while its lease is renewed.
       parameters:
         - {in: path, name: jobID, required: true, schema: {type: string}}
         - {in: header, name: X-Jolt-Access-Authorization, required: true, schema: {type: string}}
@@ -2537,7 +2540,7 @@ paths:
                 properties:
                   revision: {type: integer, minimum: 1}
                   expires_at: {type: string, format: date-time}
-                  execution_enabled: {type: boolean, const: false}
+                  execution_enabled: {type: boolean, description: True when this node runs jobs bound to signed authorizations}
         "400": {description: Missing or ambiguous signed envelope}
         "401": {description: Invalid operational bearer token}
         "403": {description: Invalid, expired, replayed or mismatched authorization}
@@ -2887,3 +2890,7 @@ paths:
       responses:
         "409": {description: configuration_managed_by_file - edit node.yaml and restart}
 `
+
+func (s *Server) signedExecutionEnabled() bool {
+	return s.jobs != nil && s.jobs.SignedExecutionEnabled()
+}

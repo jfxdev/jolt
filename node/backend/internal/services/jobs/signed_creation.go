@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
 	"github.com/jfxdev/jolt/backend/internal/signedauth"
@@ -37,6 +38,11 @@ func (s *Service) prepareSignedLocalCopy(ctx context.Context, request CreateRequ
 	if err != nil {
 		return CreateRequest{}, signedauth.JobOptions{}, err
 	}
+	// A conflict decision needs an operator to edit plan items, which secured
+	// jobs do not allow; refuse it up front instead of stalling the job.
+	if normalized.ConflictPolicy == "ask" {
+		return CreateRequest{}, signedauth.JobOptions{}, fmt.Errorf("%w: conflict_policy ask is not supported for signed jobs", ErrInvalid)
+	}
 	job := s.newJob(normalized, "queued")
 	options := signedauth.JobOptions{Overwrite: job.Overwrite, Recursive: job.Recursive, ConflictPolicy: job.ConflictPolicy, SourceChangePolicy: job.SourceChangePolicy, VerifyChecksum: job.VerifyChecksum, BandwidthLimit: job.BandwidthLimit, MaxParallelFiles: job.MaxParallelFiles, MaxParallelChunks: job.MaxParallelChunks, MaxAttempts: job.MaxAttempts}
 	return normalized, options, nil
@@ -44,7 +50,7 @@ func (s *Service) prepareSignedLocalCopy(ctx context.Context, request CreateRequ
 
 // CreateAwaitingSignedAuthorization validates a signed, job-bound context and
 // atomically persists the job in waiting_validation. It is internal until the
-// creation protocol, lease renewal and execution enforcement are integrated.
+// creation protocol and renewal are routed in production.
 // Destructive operations require their own plan and are deliberately excluded.
 func (s *Service) CreateAwaitingSignedAuthorization(ctx context.Context, request CreateRequest, nodeID, envelope, idempotencyKey string, keys map[string]ed25519.PublicKey) (entities.Job, bool, error) {
 	invalid := func() (entities.Job, bool, error) { return entities.Job{}, false, ErrInvalid }

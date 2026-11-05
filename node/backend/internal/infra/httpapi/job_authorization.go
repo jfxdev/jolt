@@ -44,7 +44,7 @@ func (s *Server) jobAuthorizationStatus(w http.ResponseWriter, r *http.Request) 
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Jolt-Job-Authorization-Status", "v1")
-	writeJSON(w, http.StatusOK, map[string]any{"revision": revision, "expires_at": expiresAt, "envelope_digest": digest, "execution_enabled": false})
+	writeJSON(w, http.StatusOK, map[string]any{"revision": revision, "expires_at": expiresAt, "envelope_digest": digest, "execution_enabled": s.signedExecutionEnabled()})
 }
 
 // registerJobAuthorization records a signed lease but does not authorize job
@@ -74,5 +74,5 @@ func (s *Server) registerJobAuthorization(w http.ResponseWriter, r *http.Request
 		return
 	}
 	w.Header().Set("X-Jolt-Job-Authorization-Applied", "v1")
-	writeJSON(w, http.StatusOK, map[string]any{"revision": revision, "expires_at": expiry, "execution_enabled": false})
+	writeJSON(w, http.StatusOK, map[string]any{"revision": revision, "expires_at": expiry, "execution_enabled": s.signedExecutionEnabled()})
 }

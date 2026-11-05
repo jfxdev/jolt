@@ -33,6 +33,10 @@ func (s *Service) ConfigureSignedExecution(store SignedExecutionStore, nodeID st
 	s.signed, s.signedNodeID, s.signedKeys = store, nodeID, snapshot
 }
 
+// SignedExecutionEnabled reports whether jobs bound to signed authorizations
+// run on this node.
+func (s *Service) SignedExecutionEnabled() bool { return s.signed != nil }
+
 // claimNext returns the next runnable job: an ordinary one, or else a signed
 // local copy whose lease verifies.
 func (s *Service) claimNext() (entities.Job, error) {

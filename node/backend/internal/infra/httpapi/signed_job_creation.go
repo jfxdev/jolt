@@ -71,7 +71,7 @@ func (s *Server) prepareSignedLocalCopy(w http.ResponseWriter, r *http.Request) 
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Jolt-Signed-Job-Preparation", "v1")
-	writeJSON(w, http.StatusOK, map[string]any{"options": options, "options_digest": digest, "execution_enabled": false})
+	writeJSON(w, http.StatusOK, map[string]any{"options": options, "options_digest": digest, "execution_enabled": s.signedExecutionEnabled()})
 }
 
 func (s *Server) createSignedLocalCopy(w http.ResponseWriter, r *http.Request) {
@@ -103,5 +103,5 @@ func (s *Server) createSignedLocalCopy(w http.ResponseWriter, r *http.Request) {
 	if repeated {
 		status = http.StatusOK
 	}
-	writeJSON(w, status, map[string]any{"job": job, "execution_enabled": false})
+	writeJSON(w, status, map[string]any{"job": job, "execution_enabled": s.signedExecutionEnabled()})
 }
