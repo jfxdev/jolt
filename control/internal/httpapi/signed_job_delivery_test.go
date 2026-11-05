@@ -19,11 +19,11 @@ import (
 )
 
 func TestDeliverPendingSignedJobLease(t *testing.T) {
-	for _, mode := range []string{"success", "lost response", "changed context", "revoked", "changed job", "missing registration capability", "wrong confirmation", "staged", "staged revoked", "staged changed job", "staged missing registration capability"} {
+	for _, mode := range []string{"success", "lost response", "changed context", "revoked", "changed job", "missing registration capability", "wrong confirmation", "staged", "staged revoked", "staged changed job", "staged missing registration capability", "bound", "bound running", "bound revoked", "bound existing authorization", "bound missing registration capability"} {
 		t.Run(mode, func(t *testing.T) {
 			key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
 			keys := map[string]ed25519.PublicKey{"key": key.Public().(ed25519.PublicKey)}
-			job := signedLocalJob{ID: "job", Type: "copy_local", MountID: "m", Source: "source", Destination: "destination"}
+			job := signedLocalJob{ID: "job", Type: "copy_local", State: "waiting_validation", MountID: "m", Source: "source", Destination: "destination"}
 			var pending string
 			var expiry time.Time
 			remoteRevision, posts := 0, 0
@@ -36,7 +36,7 @@ func TestDeliverPendingSignedJobLease(t *testing.T) {
 				switch r.URL.Path {
 				case "/api/v1/node":
 					caps := `["signed_job_authorization_status_v1","signed_job_authorization_registration_v1"]`
-					if mode == "missing registration capability" || mode == "staged missing registration capability" {
+					if mode == "missing registration capability" || mode == "staged missing registration capability" || mode == "bound missing registration capability" {
 						caps = `["signed_job_authorization_status_v1"]`
 					}
 					body = fmt.Sprintf(`{"node_id":"n1","capabilities":%s}`, caps)
@@ -44,6 +44,9 @@ func TestDeliverPendingSignedJobLease(t *testing.T) {
 					current := job
 					if mode == "changed job" || mode == "staged changed job" {
 						current.Source = "other"
+					}
+					if mode == "bound running" {
+						current.State = "running"
 					}
 					encoded, _ := json.Marshal(current)
 					body = string(encoded)
@@ -108,7 +111,27 @@ func TestDeliverPendingSignedJobLease(t *testing.T) {
 				}
 			}
 			link := store.JobAuthorizationLink{NodeID: node.ID, JobID: job.ID, ActorType: "user", ActorID: "admin", CredentialID: binding.CredentialID, CredentialDigest: security.Digest(f.adminSession), Binding: binding}
-			if err := f.storage.CreateJobAuthorizationLink(ctx, link, now); err != nil {
+			if strings.HasPrefix(mode, "bound") {
+				if mode == "bound existing authorization" {
+					remoteRevision = 1
+				}
+				if mode == "bound revoked" {
+					if err := f.storage.DeleteSession(ctx, link.CredentialDigest); err != nil {
+						t.Fatal(err)
+					}
+				}
+				bindErr := s.bindSignedLocalJob(request, node.ID, job.ID)
+				stored, getErr := f.storage.GetJobAuthorizationLink(ctx, node.ID, job.ID)
+				if mode != "bound" {
+					if bindErr == nil || getErr == nil || posts != 0 {
+						t.Fatalf("unsafe binding: link=%+v posts=%d bindErr=%v getErr=%v", stored, posts, bindErr, getErr)
+					}
+					return
+				}
+				if bindErr != nil || getErr != nil || stored.Binding != binding || stored.CredentialDigest != link.CredentialDigest || posts != 0 {
+					t.Fatalf("binding: link=%+v posts=%d bindErr=%v getErr=%v", stored, posts, bindErr, getErr)
+				}
+			} else if err := f.storage.CreateJobAuthorizationLink(ctx, link, now); err != nil {
 				t.Fatal(err)
 			}
 			if mode == "staged revoked" {
@@ -116,13 +139,13 @@ func TestDeliverPendingSignedJobLease(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if strings.HasPrefix(mode, "staged") {
+			if strings.HasPrefix(mode, "staged") || mode == "bound" {
 				revision, stageErr := s.stageSignedLocalJobLease(request, node.ID, job.ID)
 				stored, getErr := f.storage.GetJobAuthorizationLink(ctx, node.ID, job.ID)
 				if getErr != nil {
 					t.Fatal(getErr)
 				}
-				if mode != "staged" {
+				if mode != "staged" && mode != "bound" {
 					if stageErr == nil || stored.PendingRevision != 0 || posts != 0 {
 						t.Fatalf("unsafe staging: revision=%d pending=%d posts=%d err=%v", revision, stored.PendingRevision, posts, stageErr)
 					}
@@ -145,11 +168,11 @@ func TestDeliverPendingSignedJobLease(t *testing.T) {
 			}
 			state, err := s.deliverPendingSignedJobLease(request, node.ID, job.ID)
 			switch mode {
-			case "success", "staged":
+			case "success", "staged", "bound":
 				if err != nil || state != signedJobConfirmed || posts != 1 {
 					t.Fatalf("state=%v posts=%d err=%v", state, posts, err)
 				}
-				if mode == "staged" {
+				if mode == "staged" || mode == "bound" {
 					revision, err := s.stageSignedLocalJobLease(request, node.ID, job.ID)
 					stored, getErr := f.storage.GetJobAuthorizationLink(ctx, node.ID, job.ID)
 					if err != nil || getErr != nil || revision != 2 || stored.PendingRevision != 2 || posts != 1 {

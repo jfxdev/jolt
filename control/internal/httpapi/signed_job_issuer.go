@@ -16,6 +16,7 @@ import (
 type signedLocalJob struct {
 	ID          string `json:"job_id"`
 	Type        string `json:"type"`
+	State       string `json:"state"`
 	MountID     string `json:"mount_id"`
 	Source      string `json:"source_path"`
 	Destination string `json:"destination_path"`
