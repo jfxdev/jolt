@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"github.com/jfxdev/jolt/backend/internal/entities"
@@ -104,7 +105,7 @@ func (s *Store) CreateJobAwaitingAuthorization(ctx context.Context, j entities.J
 			return err
 		}
 		j.RequiresSignedAuth, j.SignedAuthActorID, j.SignedAuthCredentialID = true, actorID, credentialID
-		j.State, j.Phase, j.Error, j.NextAttemptAt = "waiting_validation", "waiting_validation", "job execution requires authorization and validation", nil
+		j.State, j.Phase, j.Error, j.NextAttemptAt = "waiting_validation", "waiting_authorization", "job execution requires authorization and validation", nil
 		if err := tx.put("jobs", j.ID, j.PeerNodeID, order(j.CreatedAt), j); err != nil {
 			return err
 		}
@@ -166,8 +167,16 @@ func (s *Store) UpdateJobWithEvent(ctx context.Context, j entities.Job, event en
 	})
 }
 
-// Until renewable execution is integrated, a secured job may only remain
-// waiting, be paused, or be canceled. Generic resume and retry cannot start it.
+// executableSecuredJob reports whether a secured job may run: only a local copy
+// bound to a renewable signed authorization. Destructive plans stay blocked
+// until their execution revalidates the plan identity.
+func executableSecuredJob(job entities.Job) bool {
+	return job.SignedAuthBound && job.DestructivePlanID == "" && job.Type == "copy_local"
+}
+
+// validSecuredJobUpdate keeps secured jobs from being started by a generic
+// update. Only ClaimNextSecuredJob moves a job to running, after verifying its
+// lease; once running, the claimed executor may take it to any state.
 func validSecuredJobUpdate(old, next entities.Job) bool {
 	if old.DestructivePlanID != next.DestructivePlanID || old.SignedAuthBound != next.SignedAuthBound || old.RequiresSignedAuth != next.RequiresSignedAuth || old.SignedAuthActorID != next.SignedAuthActorID || old.SignedAuthCredentialID != next.SignedAuthCredentialID {
 		return false
@@ -181,7 +190,58 @@ func validSecuredJobUpdate(old, next entities.Job) bool {
 	if old.State == "canceled" && next.State != "canceled" {
 		return false
 	}
+	if executableSecuredJob(old) {
+		switch old.State {
+		case "running", "pause_requested", "cancel_requested":
+			return true
+		case "completed", "completed_with_warnings":
+			return next.State == old.State
+		}
+		return next.State == "waiting_validation" || next.State == "paused" || next.State == "canceled" || next.State == "queued"
+	}
 	return next.State == "waiting_validation" || next.State == "paused" || next.State == "canceled"
+}
+
+// ClaimNextSecuredJob starts the oldest queued local copy whose persisted lease
+// still verifies for this node. Queued jobs without a valid lease are returned
+// to waiting_validation so that a later renewal resumes them.
+func (s *Store) ClaimNextSecuredJob(ctx context.Context, nodeID string, keys map[string]ed25519.PublicKey, now time.Time) (job entities.Job, err error) {
+	if !signedauth.ValidKeyID(nodeID) || now.IsZero() {
+		return entities.Job{}, ErrInUse
+	}
+	err = s.update(ctx, func(tx *transaction) error {
+		ids := append([]string(nil), s.ordered[indexSelection{"jobs", "state", "queued"}]...)
+		for _, id := range ids {
+			j, e := get[entities.Job](s, "jobs", id)
+			if e != nil {
+				return e
+			}
+			if j.State != "queued" || !executableSecuredJob(j) || (j.NextAttemptAt != nil && j.NextAttemptAt.After(now)) {
+				continue
+			}
+			if _, _, e := s.verifiedJobLease(j, nodeID, keys, now); e != nil {
+				j.State, j.Phase, j.UpdatedAt = "waiting_validation", "waiting_authorization", now
+				j.Error = "job authorization expired; waiting for renewal"
+				if e := tx.put("jobs", id, j.PeerNodeID, order(j.CreatedAt), j); e != nil {
+					return e
+				}
+				continue
+			}
+			j.State, j.Phase, j.UpdatedAt, j.NextAttemptAt = "running", "validation", now, nil
+			j.Attempt++
+			if j.StartedAt == nil {
+				j.StartedAt = &now
+			}
+			job = j
+			return tx.put("jobs", id, j.PeerNodeID, order(j.CreatedAt), j)
+		}
+		// Keep the parked jobs: returning an error here would roll them back.
+		return nil
+	})
+	if err == nil && job.ID == "" {
+		err = ErrNotFound
+	}
+	return
 }
 func (s *Store) GetJob(ctx context.Context, id string) (v entities.Job, err error) {
 	err = s.view(ctx, func() error { v, err = get[entities.Job](s, "jobs", id); return err })

@@ -146,7 +146,7 @@ func TestSignedLocalCopyOperationalCreation(t *testing.T) {
 		t.Fatalf("other actor reused request: %d %s", w.Code, w.Body)
 	}
 	stored, err := storage.GetJob(context.Background(), "job")
-	if err != nil || stored.State != "waiting_validation" || !stored.RequiresSignedAuth || !stored.SignedAuthBound || stored.SignedAuthActorID != binding.ActorID {
+	if err != nil || stored.State != "queued" || !stored.RequiresSignedAuth || !stored.SignedAuthBound || stored.SignedAuthActorID != binding.ActorID {
 		t.Fatalf("stored=%+v err=%v", stored, err)
 	}
 	if _, err := storage.ClaimNextJob(context.Background(), now); !errors.Is(err, contracts.ErrNotFound) {

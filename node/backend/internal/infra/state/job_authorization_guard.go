@@ -4,23 +4,23 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"errors"
 	"time"
 
+	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/filetypes"
 	"github.com/jfxdev/jolt/backend/internal/signedauth"
 )
 
 var (
-	ErrJobAuthorizationUnavailable = errors.New("job authorization is unavailable or expired")
-	ErrJobAuthorizationChanged     = errors.New("job authorization context changed")
+	ErrJobAuthorizationUnavailable = contracts.ErrJobAuthorizationUnavailable
+	ErrJobAuthorizationChanged     = contracts.ErrJobAuthorizationChanged
 )
 
 // GuardJobAuthorization returns a cancellation-aware context and a verified
 // filter. It watches persisted renewals and cancels on expiry, revocation,
-// inconsistent state or a changed policy context. This primitive does not
-// start jobs: consumers must apply the filter to every operation and preserve
-// checkpoints when the context is canceled.
+// inconsistent state or a changed policy context. Consumers must apply the
+// filter to every operation and preserve checkpoints when the context is
+// canceled.
 func (s *Store) GuardJobAuthorization(parent context.Context, jobID, nodeID string, keys map[string]ed25519.PublicKey) (context.Context, *filetypes.Filter, context.CancelFunc, error) {
 	return s.guardJobAuthorization(parent, jobID, nodeID, keys, 250*time.Millisecond)
 }

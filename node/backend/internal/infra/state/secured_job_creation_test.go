@@ -103,7 +103,7 @@ func TestCreateJobAwaitingAuthorization(t *testing.T) {
 	}
 	defer s.Close()
 	stored, err := s.GetJob(ctx, job.ID)
-	if err != nil || !stored.RequiresSignedAuth || !stored.SignedAuthBound || stored.State != "waiting_validation" || stored.SignedAuthActorID != binding.ActorID || stored.SignedAuthCredentialID != binding.CredentialID {
+	if err != nil || !stored.RequiresSignedAuth || !stored.SignedAuthBound || stored.State != "queued" || stored.SignedAuthActorID != binding.ActorID || stored.SignedAuthCredentialID != binding.CredentialID {
 		t.Fatalf("recovered=%+v err=%v", stored, err)
 	}
 	encoded, err := json.Marshal(stored)

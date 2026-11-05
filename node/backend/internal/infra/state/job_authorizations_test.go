@@ -65,13 +65,13 @@ func TestJobAuthorizationRevisionAndDurability(t *testing.T) {
 		t.Fatalf("initial auth=%+v version=%d err=%v", auth, s.envelopeVersion, err)
 	}
 	stored, err := s.GetJob(ctx, job.ID)
-	if err != nil || !stored.SignedAuthBound || stored.State != "waiting_validation" {
+	if err != nil || !stored.SignedAuthBound || stored.State != "queued" {
 		t.Fatalf("job=%+v err=%v", stored, err)
 	}
 	if _, err := s.ClaimNextJob(ctx, now); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unvalidated job claimed: %v", err)
 	}
-	for _, mutate := range []func(*entities.Job){func(j *entities.Job) { j.State = "queued" }, func(j *entities.Job) { j.SignedAuthBound = false }, func(j *entities.Job) { j.SourcePath = "other" }, func(j *entities.Job) { j.ConflictPolicy = "overwrite" }, func(j *entities.Job) { j.SourceChangePolicy = "skip" }, func(j *entities.Job) { j.VerifyChecksum = true }} {
+	for _, mutate := range []func(*entities.Job){func(j *entities.Job) { j.State = "running" }, func(j *entities.Job) { j.SignedAuthBound = false }, func(j *entities.Job) { j.SourcePath = "other" }, func(j *entities.Job) { j.ConflictPolicy = "overwrite" }, func(j *entities.Job) { j.SourceChangePolicy = "skip" }, func(j *entities.Job) { j.VerifyChecksum = true }} {
 		changed := stored
 		mutate(&changed)
 		if err := s.UpdateJob(ctx, changed); !errors.Is(err, ErrInUse) {
@@ -124,7 +124,7 @@ func TestJobAuthorizationRevisionAndDurability(t *testing.T) {
 		t.Fatalf("recovered authorization status: %d %v %q %v", revision, expiry, digest, err)
 	}
 	stored, err = s.GetJob(ctx, job.ID)
-	if err != nil || !stored.SignedAuthBound || stored.State != "waiting_validation" {
+	if err != nil || !stored.SignedAuthBound || stored.State != "queued" {
 		t.Fatalf("recovered job=%+v err=%v", stored, err)
 	}
 	jobJSON, err := json.Marshal(stored)
@@ -384,7 +384,7 @@ func TestJobAuthorizationRenewalRecoversAtomically(t *testing.T) {
 				t.Fatalf("retry revision=%d err=%v", latest.Revision, err)
 			}
 			stored, err := s.GetJob(ctx, job.ID)
-			if err != nil || !stored.SignedAuthBound || stored.State != "waiting_validation" {
+			if err != nil || !stored.SignedAuthBound || stored.State != "queued" {
 				t.Fatalf("inconsistent job=%+v err=%v", stored, err)
 			}
 		})

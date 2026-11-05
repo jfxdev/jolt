@@ -87,8 +87,8 @@ func jobAuthorizationMatches(job entities.Job, expected signedauth.Binding, node
 // RenewJobAuthorization verifies and records the next revision atomically.
 // The caller must supply a server-derived binding and configured public keys.
 // This is internal groundwork: signature validation here does not establish
-// permissions. Accepted jobs stay in waiting_validation until policy checks,
-// execution, grant checks and renewal delivery are fully integrated.
+// permissions. Local copies waiting for authorization are queued again; other
+// accepted jobs stay in waiting_validation.
 func (s *Store) RenewJobAuthorization(ctx context.Context, jobID, nodeID, envelope string, expected signedauth.Binding, keys map[string]ed25519.PublicKey, now time.Time) (authorization JobAuthorization, err error) {
 	if !signedauth.ValidKeyID(jobID) || !signedauth.ValidKeyID(nodeID) || now.IsZero() || len(envelope) == 0 {
 		return JobAuthorization{}, ErrInUse
@@ -142,7 +142,15 @@ func (s *Store) RenewJobAuthorization(ctx context.Context, jobID, nodeID, envelo
 		}
 		authorization = JobAuthorization{JobID: job.ID, Binding: expected, Revision: revision, Envelope: envelope, ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC()}
 		job.SignedAuthBound = true
-		if job.State != "paused" {
+		// A local copy that stopped for lack of authorization resumes by
+		// itself once a newer lease is recorded. Jobs interrupted by a restart
+		// or by an operator still need an explicit resume.
+		autoResume := job.Type == "copy_local" && job.DestructivePlanID == "" && (job.State == "queued" || job.State == "waiting_validation" && job.Phase == "waiting_authorization")
+		switch {
+		case job.State == "paused":
+		case autoResume:
+			job.State, job.Phase, job.Error = "queued", "validation", ""
+		default:
 			job.State, job.Phase, job.Error, job.NextAttemptAt = "waiting_validation", "waiting_validation", "job execution requires authorization renewal and validation", nil
 		}
 		job.UpdatedAt = now.UTC()
@@ -184,25 +192,31 @@ func (s *Store) ValidateJobAuthorization(ctx context.Context, jobID, nodeID stri
 		default:
 			return ErrInUse
 		}
-		current, err := get[JobAuthorization](s, "job_authorizations", jobID)
-		if err != nil || !job.SignedAuthBound || current.JobID != job.ID || !jobAuthorizationMatches(job, current.Binding, nodeID) {
-			return ErrInUse
-		}
-		if job.DestructivePlanID != "" {
-			plan, err := get[DestructivePlan](s, "destructive_plans", job.DestructivePlanID)
-			if err != nil || plan.ConsumedJobID != job.ID || plan.SubjectID != current.Binding.ActorID {
-				return ErrInUse
-			}
-		}
-		claims, checked, err := signedauth.VerifyJobLease(current.Envelope, keys, current.Binding, nodeID, current.Revision, now)
-		if err != nil || claims.ExpiresAt != current.ExpiresAt.Unix() {
-			return ErrInUse
-		}
-		authorization, filter = current, checked
-		return nil
+		authorization, filter, err = s.verifiedJobLease(job, nodeID, keys, now)
+		return err
 	})
 	if err != nil {
 		return JobAuthorization{}, nil, err
 	}
 	return authorization, filter, nil
+}
+
+// verifiedJobLease verifies the persisted lease of a job against its server
+// derived binding. The caller holds the store lock and checks the job state.
+func (s *Store) verifiedJobLease(job entities.Job, nodeID string, keys map[string]ed25519.PublicKey, now time.Time) (JobAuthorization, *filetypes.Filter, error) {
+	current, err := get[JobAuthorization](s, "job_authorizations", job.ID)
+	if err != nil || !job.SignedAuthBound || current.JobID != job.ID || !jobAuthorizationMatches(job, current.Binding, nodeID) {
+		return JobAuthorization{}, nil, ErrInUse
+	}
+	if job.DestructivePlanID != "" {
+		plan, err := get[DestructivePlan](s, "destructive_plans", job.DestructivePlanID)
+		if err != nil || plan.ConsumedJobID != job.ID || plan.SubjectID != current.Binding.ActorID {
+			return JobAuthorization{}, nil, ErrInUse
+		}
+	}
+	claims, checked, err := signedauth.VerifyJobLease(current.Envelope, keys, current.Binding, nodeID, current.Revision, now)
+	if err != nil || claims.ExpiresAt != current.ExpiresAt.Unix() {
+		return JobAuthorization{}, nil, ErrInUse
+	}
+	return current, checked, nil
 }

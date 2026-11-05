@@ -132,7 +132,7 @@ func TestJobAuthorizationEndpointVerifiesAndPersistsWithoutExecuting(t *testing.
 	}
 	checkStatus("1", first)
 	stored, err := storage.GetJob(ctx, job.ID)
-	if err != nil || stored.State != "waiting_validation" || !stored.SignedAuthBound {
+	if err != nil || stored.State != "queued" || !stored.SignedAuthBound {
 		t.Fatalf("job=%+v err=%v", stored, err)
 	}
 	if _, err := storage.ClaimNextJob(ctx, now); err == nil {
