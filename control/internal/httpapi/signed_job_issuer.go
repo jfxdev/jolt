@@ -94,10 +94,9 @@ func (s *Server) issueSignedLocalJobLease(r *http.Request, nodeID string, job si
 		required = []authorizationRequirement{{Path: source, Capability: "delete"}}
 	case "move_local":
 		binding.DestinationNodeID, binding.DestinationMountID, binding.DestinationRoot = nodeID, job.MountID, job.Destination
-		required = []authorizationRequirement{{Path: source, Capability: "read"}, {Path: source, Capability: "update"}, {Path: destination, Capability: "create"}}
-		if job.Overwrite {
-			required = append(required, authorizationRequirement{Path: destination, Capability: "update"})
-		}
+		// The current envelope binds paths but not the overwrite flag. Require
+		// both destination capabilities until the options are bound as well.
+		required = []authorizationRequirement{{Path: source, Capability: "read"}, {Path: source, Capability: "update"}, {Path: destination, Capability: "create"}, {Path: destination, Capability: "update"}}
 	case "copy_local":
 		binding.DestinationNodeID, binding.DestinationMountID, binding.DestinationRoot = nodeID, job.MountID, job.Destination
 		// Persisted item decisions can rename or overwrite. Until they can be

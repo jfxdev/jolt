@@ -151,12 +151,19 @@ func TestSignedJobLeaseRespectsOverwriteAndTreeDenials(t *testing.T) {
 	var request *http.Request
 	s.auth(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { request = r })).ServeHTTP(httptest.NewRecorder(), authenticatedRequest("GET", "/", session, nil))
 	job := signedLocalJob{ID: "job", Type: "move_local", MountID: "m", Source: "source", Destination: "destination/file"}
-	if _, err := s.issueSignedLocalJobLease(request, "n1", job, 1, now); err != nil {
-		t.Fatalf("allowed move: %v", err)
+	if _, err := s.issueSignedLocalJobLease(request, "n1", job, 1, now); err == nil {
+		t.Fatal("move without destination update accepted before options are bound")
 	}
 	job.Overwrite = true
 	if _, err := s.issueSignedLocalJobLease(request, "n1", job, 1, now); err == nil {
 		t.Fatal("overwrite without update accepted")
+	}
+	policy.Rules[2].Capabilities = []string{"create", "update"}
+	if err := f.storage.UpdatePolicy(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.issueSignedLocalJobLease(request, "n1", job, 1, now); err != nil {
+		t.Fatalf("move with destination update rejected: %v", err)
 	}
 	job.Overwrite = false
 	policy.Rules = append(policy.Rules, rbac.Rule{Path: base + "/source/private/**", Capabilities: []string{"deny"}})

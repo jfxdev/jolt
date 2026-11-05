@@ -66,7 +66,7 @@ func TestJobAuthorizationRevisionAndDurability(t *testing.T) {
 	if _, err := s.ClaimNextJob(ctx, now); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unvalidated job claimed: %v", err)
 	}
-	for _, mutate := range []func(*entities.Job){func(j *entities.Job) { j.State = "queued" }, func(j *entities.Job) { j.SignedAuthBound = false }, func(j *entities.Job) { j.SourcePath = "other" }} {
+	for _, mutate := range []func(*entities.Job){func(j *entities.Job) { j.State = "queued" }, func(j *entities.Job) { j.SignedAuthBound = false }, func(j *entities.Job) { j.SourcePath = "other" }, func(j *entities.Job) { j.ConflictPolicy = "overwrite" }, func(j *entities.Job) { j.SourceChangePolicy = "skip" }, func(j *entities.Job) { j.VerifyChecksum = true }} {
 		changed := stored
 		mutate(&changed)
 		if err := s.UpdateJob(ctx, changed); !errors.Is(err, ErrInUse) {
