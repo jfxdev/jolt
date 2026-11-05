@@ -42,7 +42,8 @@ type SignedCopyIntent struct {
 	Accepted       bool                  `json:"-"`
 }
 
-func (request SignedCopyRequest) matchesOptions(options signedauth.JobOptions) bool {
+// MatchesOptions checks that a node's normalized options preserve the request.
+func (request SignedCopyRequest) MatchesOptions(options signedauth.JobOptions) bool {
 	conflict := strings.ToLower(strings.TrimSpace(request.ConflictPolicy))
 	if conflict == "" {
 		if request.Overwrite {
@@ -89,7 +90,7 @@ func (s *Store) CreateSignedCopyIntent(ctx context.Context, link JobAuthorizatio
 		return fail()
 	}
 	var request SignedCopyRequest
-	if strictIntentJSON(requestJSON, &request) != nil || request.MountID != link.Binding.SourceMountID || request.MountID != link.Binding.DestinationMountID || request.Source != link.Binding.SourceRoot || request.Destination != link.Binding.DestinationRoot || !request.matchesOptions(options) {
+	if strictIntentJSON(requestJSON, &request) != nil || request.MountID != link.Binding.SourceMountID || request.MountID != link.Binding.DestinationMountID || request.Source != link.Binding.SourceRoot || request.Destination != link.Binding.DestinationRoot || !request.MatchesOptions(options) {
 		return fail()
 	}
 	claims, _, err := signedauth.VerifyJobLease(envelope, keys, link.Binding, link.NodeID, 1, now)
@@ -200,7 +201,7 @@ func (s *Store) LoadSignedCopyIntent(ctx context.Context, nodeID, actorType, act
 	var binding signedauth.Binding
 	var request SignedCopyRequest
 	var options signedauth.JobOptions
-	if strictIntentJSON([]byte(rawBinding), &binding) != nil || strictIntentJSON([]byte(rawRequest), &request) != nil || strictIntentJSON([]byte(rawOptions), &options) != nil || binding.ActorID != actorID || binding.CredentialID != credentialID || binding.SourceNodeID != nodeID || binding.DestinationNodeID != nodeID || binding.PlanID != jobID || binding.Operation != "copy_local" || binding.RequestID != "" || binding.JobOptionsDigest == "" || binding.JobOptionsDigest != signedauth.JobOptionsDigest(options) || request.MountID != binding.SourceMountID || request.MountID != binding.DestinationMountID || request.Source != binding.SourceRoot || request.Destination != binding.DestinationRoot || !request.matchesOptions(options) {
+	if strictIntentJSON([]byte(rawBinding), &binding) != nil || strictIntentJSON([]byte(rawRequest), &request) != nil || strictIntentJSON([]byte(rawOptions), &options) != nil || binding.ActorID != actorID || binding.CredentialID != credentialID || binding.SourceNodeID != nodeID || binding.DestinationNodeID != nodeID || binding.PlanID != jobID || binding.Operation != "copy_local" || binding.RequestID != "" || binding.JobOptionsDigest == "" || binding.JobOptionsDigest != signedauth.JobOptionsDigest(options) || request.MountID != binding.SourceMountID || request.MountID != binding.DestinationMountID || request.Source != binding.SourceRoot || request.Destination != binding.DestinationRoot || !request.MatchesOptions(options) {
 		return fail()
 	}
 	expiry := time.Unix(0, expiryNS).UTC()
