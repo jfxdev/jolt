@@ -58,6 +58,15 @@ func (s *Server) registerSignedLocalJobLease(r *http.Request, node store.Node, j
 	if err != nil {
 		return time.Time{}, errSignedJobRegistrationUnavailable
 	}
+	return s.sendSignedJobLease(r, node, jobID, revision, envelope, time.Unix(claims.ExpiresAt, 0).UTC())
+}
+
+// sendSignedJobLease only transports a previously validated envelope. The
+// caller must establish its binding, current policy and durable revision.
+func (s *Server) sendSignedJobLease(r *http.Request, node store.Node, jobID string, revision uint64, envelope string, expiry time.Time) (time.Time, error) {
+	if !validPathIdentifier(node.ID) || !validPathIdentifier(jobID) || revision == 0 || envelope == "" || !expiry.After(time.Now().UTC()) || r.Context().Err() != nil {
+		return time.Time{}, errSignedJobRegistrationUnavailable
+	}
 	nodeToken, err := security.Decrypt(s.config.EncryptionKey, node.TokenEncrypted)
 	if err != nil {
 		return time.Time{}, errSignedJobRegistrationUnavailable
@@ -88,7 +97,7 @@ func (s *Server) registerSignedLocalJobLease(r *http.Request, node store.Node, j
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&result) != nil || decoder.Decode(new(any)) != io.EOF || result.Revision != revision || result.ExecutionEnabled == nil || *result.ExecutionEnabled || !result.ExpiresAt.Equal(time.Unix(claims.ExpiresAt, 0)) || !result.ExpiresAt.After(time.Now().UTC()) || r.Context().Err() != nil {
+	if decoder.Decode(&result) != nil || decoder.Decode(new(any)) != io.EOF || result.Revision != revision || result.ExecutionEnabled == nil || *result.ExecutionEnabled || !result.ExpiresAt.Equal(expiry) || !result.ExpiresAt.After(time.Now().UTC()) || r.Context().Err() != nil {
 		return time.Time{}, errSignedJobRegistrationUnavailable
 	}
 	return result.ExpiresAt, nil
