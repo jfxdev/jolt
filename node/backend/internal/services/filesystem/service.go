@@ -849,15 +849,24 @@ func (s *Service) CopyFileVerified(ctx context.Context, mountID, source, destina
 			(expectedChecksum != "" && checksum != expectedChecksum)) {
 		return written, checksum, ErrSourceChanged
 	}
+	if err := ctx.Err(); err != nil {
+		return written, checksum, err
+	}
 	if overwrite {
 		if info, statErr := safeLstat(dst); statErr == nil && info.IsDir() {
 			if err := rejectProtectedTree(ctx, mount, dst); err != nil {
+				return written, checksum, err
+			}
+			if err := ctx.Err(); err != nil {
 				return written, checksum, err
 			}
 			if err := safeRemoveAll(dst); err != nil {
 				return written, checksum, err
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return written, checksum, err
 	}
 	if err := publishPath(tempName, dst, overwrite); err != nil {
 		return written, checksum, err
@@ -869,6 +878,22 @@ func (s *Service) CopyFileVerified(ctx context.Context, mountID, source, destina
 // The checkpoint is the last byte count known to be synced and persisted by the
 // caller; bytes beyond it are discarded after an unclean interruption.
 func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destination, resumeKey string, overwrite bool, checkpoint, chunkSize int64, expectedChecksum string, allowSourceChange bool, progress func(int64, int64) error, limiters ...ByteRateLimiter) (int64, string, error) {
+	return s.copyFileResumable(ctx, mountID, source, destination, resumeKey, overwrite, checkpoint, chunkSize, expectedChecksum, allowSourceChange, progress, nil, limiters...)
+}
+
+// CopyFileResumableFiltered retains checkpoints while enforcing the verified
+// source and final destination policy. It does not enable protected jobs.
+func (s *Service) CopyFileResumableFiltered(ctx context.Context, mountID, source, destination, resumeKey string, overwrite bool, checkpoint, chunkSize int64, expectedChecksum string, allowSourceChange bool, progress func(int64, int64) error, filter *AccessFilter, limiters ...ByteRateLimiter) (int64, string, error) {
+	if filter == nil || cleanRelative(source) == cleanRelative(destination) {
+		return 0, "", ErrInvalid
+	}
+	return s.copyFileResumable(ctx, mountID, source, destination, resumeKey, overwrite, checkpoint, chunkSize, expectedChecksum, allowSourceChange, progress, filter, limiters...)
+}
+
+func (s *Service) copyFileResumable(ctx context.Context, mountID, source, destination, resumeKey string, overwrite bool, checkpoint, chunkSize int64, expectedChecksum string, allowSourceChange bool, progress func(int64, int64) error, filter *AccessFilter, limiters ...ByteRateLimiter) (int64, string, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, "", err
+	}
 	mount, src, err := s.resolve(ctx, mountID, source, false)
 	if err != nil {
 		return 0, "", err
@@ -880,6 +905,11 @@ func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destin
 	if err := writable(mount); err != nil {
 		return 0, "", err
 	}
+	if filter != nil {
+		if err := validateFilteredFileDestination(ctx, mount, dst, overwrite, filter); err != nil {
+			return 0, "", err
+		}
+	}
 	if chunkSize <= 0 {
 		chunkSize = 16 << 20
 	}
@@ -888,7 +918,12 @@ func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destin
 			return 0, "", ErrConflict
 		}
 	}
-	input, err := safeOpen(src)
+	var input *os.File
+	if filter != nil {
+		input, _, err = s.OpenFiltered(ctx, mountID, source, filter)
+	} else {
+		input, err = safeOpen(src)
+	}
 	if err != nil {
 		return 0, "", err
 	}
@@ -901,6 +936,9 @@ func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destin
 		return 0, "", fmt.Errorf("%w: source is not a regular file", ErrInvalid)
 	}
 	partialPath := resumablePartialPath(dst, resumeKey)
+	if err := ctx.Err(); err != nil {
+		return 0, "", err
+	}
 	partial, err := safeOpenFile(partialPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return 0, "", err
@@ -919,7 +957,7 @@ func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destin
 		}
 	}
 	if checkpoint > 0 {
-		matches, err := matchingPrefix(input, partial, checkpoint)
+		matches, err := matchingPrefix(ctx, input, partial, checkpoint)
 		if err != nil {
 			return 0, "", err
 		}
@@ -975,7 +1013,7 @@ func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destin
 		return completed, "", err
 	}
 	hash := sha256.New()
-	if _, err := io.Copy(hash, partial); err != nil {
+	if _, err := io.Copy(hash, &contextReader{ctx: ctx, reader: partial}); err != nil {
 		return completed, "", err
 	}
 	checksum := hex.EncodeToString(hash.Sum(nil))
@@ -985,15 +1023,27 @@ func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destin
 	if err := partial.Close(); err != nil {
 		return completed, checksum, err
 	}
+	if err := s.validateResumableCopyPublication(ctx, mountID, source, mount, dst, overwrite, before, filter); err != nil {
+		return completed, checksum, err
+	}
 	if overwrite {
 		if info, statErr := safeLstat(dst); statErr == nil && info.IsDir() {
+			if filter != nil {
+				return completed, checksum, ErrProtectedTree
+			}
 			if err := rejectProtectedTree(ctx, mount, dst); err != nil {
+				return completed, checksum, err
+			}
+			if err := ctx.Err(); err != nil {
 				return completed, checksum, err
 			}
 			if err := safeRemoveAll(dst); err != nil {
 				return completed, checksum, err
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return completed, checksum, err
 	}
 	if err := publishPath(partialPath, dst, overwrite); err != nil {
 		return completed, checksum, err
@@ -1005,9 +1055,25 @@ func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destin
 // ranges concurrently. A batch is synced in full before the durable contiguous
 // checkpoint advances, so interruption can only discard the current batch.
 func (s *Service) CopyFileResumableParallel(ctx context.Context, mountID, source, destination, resumeKey string, overwrite bool, checkpoint, chunkSize int64, maxParallel int, expectedChecksum string, allowSourceChange bool, progress func(int64, int64) error, limiter ByteRateLimiter) (int64, string, error) {
+	return s.copyFileResumableParallel(ctx, mountID, source, destination, resumeKey, overwrite, checkpoint, chunkSize, maxParallel, expectedChecksum, allowSourceChange, progress, nil, limiter)
+}
+
+// CopyFileResumableParallelFiltered is the policy-aware variant; failed
+// validation leaves the resumable partial unpublished.
+func (s *Service) CopyFileResumableParallelFiltered(ctx context.Context, mountID, source, destination, resumeKey string, overwrite bool, checkpoint, chunkSize int64, maxParallel int, expectedChecksum string, allowSourceChange bool, progress func(int64, int64) error, filter *AccessFilter, limiter ByteRateLimiter) (int64, string, error) {
+	if filter == nil || cleanRelative(source) == cleanRelative(destination) {
+		return 0, "", ErrInvalid
+	}
+	return s.copyFileResumableParallel(ctx, mountID, source, destination, resumeKey, overwrite, checkpoint, chunkSize, maxParallel, expectedChecksum, allowSourceChange, progress, filter, limiter)
+}
+
+func (s *Service) copyFileResumableParallel(ctx context.Context, mountID, source, destination, resumeKey string, overwrite bool, checkpoint, chunkSize int64, maxParallel int, expectedChecksum string, allowSourceChange bool, progress func(int64, int64) error, filter *AccessFilter, limiter ByteRateLimiter) (int64, string, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, "", err
+	}
 	if maxParallel <= 1 {
-		return s.CopyFileResumable(ctx, mountID, source, destination, resumeKey, overwrite,
-			checkpoint, chunkSize, expectedChecksum, allowSourceChange, progress, limiter)
+		return s.copyFileResumable(ctx, mountID, source, destination, resumeKey, overwrite,
+			checkpoint, chunkSize, expectedChecksum, allowSourceChange, progress, filter, limiter)
 	}
 	mount, src, err := s.resolve(ctx, mountID, source, false)
 	if err != nil {
@@ -1020,6 +1086,11 @@ func (s *Service) CopyFileResumableParallel(ctx context.Context, mountID, source
 	if err := writable(mount); err != nil {
 		return 0, "", err
 	}
+	if filter != nil {
+		if err := validateFilteredFileDestination(ctx, mount, dst, overwrite, filter); err != nil {
+			return 0, "", err
+		}
+	}
 	if chunkSize <= 0 {
 		chunkSize = 16 << 20
 	}
@@ -1031,7 +1102,12 @@ func (s *Service) CopyFileResumableParallel(ctx context.Context, mountID, source
 			return 0, "", ErrConflict
 		}
 	}
-	input, err := safeOpen(src)
+	var input *os.File
+	if filter != nil {
+		input, _, err = s.OpenFiltered(ctx, mountID, source, filter)
+	} else {
+		input, err = safeOpen(src)
+	}
 	if err != nil {
 		return 0, "", err
 	}
@@ -1044,6 +1120,9 @@ func (s *Service) CopyFileResumableParallel(ctx context.Context, mountID, source
 		return 0, "", fmt.Errorf("%w: source is not a regular file", ErrInvalid)
 	}
 	partialPath := resumablePartialPath(dst, resumeKey)
+	if err := ctx.Err(); err != nil {
+		return 0, "", err
+	}
 	partial, err := safeOpenFile(partialPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return 0, "", err
@@ -1062,7 +1141,7 @@ func (s *Service) CopyFileResumableParallel(ctx context.Context, mountID, source
 		}
 	}
 	if checkpoint > 0 {
-		matches, matchErr := matchingPrefix(input, partial, checkpoint)
+		matches, matchErr := matchingPrefix(ctx, input, partial, checkpoint)
 		if matchErr != nil {
 			return 0, "", matchErr
 		}
@@ -1169,7 +1248,7 @@ func (s *Service) CopyFileResumableParallel(ctx context.Context, mountID, source
 		return completed, "", err
 	}
 	hash := sha256.New()
-	if _, err := io.Copy(hash, partial); err != nil {
+	if _, err := io.Copy(hash, &contextReader{ctx: ctx, reader: partial}); err != nil {
 		return completed, "", err
 	}
 	checksum := hex.EncodeToString(hash.Sum(nil))
@@ -1179,15 +1258,27 @@ func (s *Service) CopyFileResumableParallel(ctx context.Context, mountID, source
 	if err := partial.Close(); err != nil {
 		return completed, checksum, err
 	}
+	if err := s.validateResumableCopyPublication(ctx, mountID, source, mount, dst, overwrite, before, filter); err != nil {
+		return completed, checksum, err
+	}
 	if overwrite {
 		if info, statErr := safeLstat(dst); statErr == nil && info.IsDir() {
+			if filter != nil {
+				return completed, checksum, ErrProtectedTree
+			}
 			if err := rejectProtectedTree(ctx, mount, dst); err != nil {
+				return completed, checksum, err
+			}
+			if err := ctx.Err(); err != nil {
 				return completed, checksum, err
 			}
 			if err := safeRemoveAll(dst); err != nil {
 				return completed, checksum, err
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return completed, checksum, err
 	}
 	if err := publishPath(partialPath, dst, overwrite); err != nil {
 		return completed, checksum, err
@@ -1502,7 +1593,7 @@ func resumablePartialPath(destination, resumeKey string) string {
 	return filepath.Join(filepath.Dir(destination), ".jolt-"+safeKey+".partial")
 }
 
-func matchingPrefix(source, partial *os.File, size int64) (bool, error) {
+func matchingPrefix(ctx context.Context, source, partial *os.File, size int64) (bool, error) {
 	if _, err := source.Seek(0, io.SeekStart); err != nil {
 		return false, err
 	}
@@ -1510,10 +1601,10 @@ func matchingPrefix(source, partial *os.File, size int64) (bool, error) {
 		return false, err
 	}
 	sourceHash, partialHash := sha256.New(), sha256.New()
-	if _, err := io.CopyN(sourceHash, source, size); err != nil {
+	if _, err := io.CopyN(sourceHash, &contextReader{ctx: ctx, reader: source}, size); err != nil {
 		return false, err
 	}
-	if _, err := io.CopyN(partialHash, partial, size); err != nil {
+	if _, err := io.CopyN(partialHash, &contextReader{ctx: ctx, reader: partial}, size); err != nil {
 		return false, err
 	}
 	return string(sourceHash.Sum(nil)) == string(partialHash.Sum(nil)), nil
@@ -1629,6 +1720,9 @@ func copyAtomicWithCheck(ctx context.Context, mount entities.Mount, source io.Re
 	if closeErr != nil {
 		return written, closeErr
 	}
+	if err := ctx.Err(); err != nil {
+		return written, err
+	}
 	if check != nil {
 		if err := check(); err != nil {
 			return written, err
@@ -1642,10 +1736,16 @@ func copyAtomicWithCheck(ctx context.Context, mount entities.Mount, source io.Re
 			if err := rejectProtectedTree(ctx, mount, destination); err != nil {
 				return written, err
 			}
+			if err := ctx.Err(); err != nil {
+				return written, err
+			}
 			if err := safeRemoveAll(destination); err != nil {
 				return written, err
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return written, err
 	}
 	if err := publishPath(tempName, destination, overwrite); err != nil {
 		return written, err

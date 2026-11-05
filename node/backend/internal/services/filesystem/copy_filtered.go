@@ -4,11 +4,33 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
 )
+
+func (s *Service) validateResumableCopyPublication(ctx context.Context, mountID, source string, mount entities.Mount, destination string, overwrite bool, original os.FileInfo, filter *AccessFilter) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if filter == nil {
+		return nil
+	}
+	current, info, err := s.OpenFiltered(ctx, mountID, source, filter)
+	if err != nil {
+		return err
+	}
+	closeErr := current.Close()
+	if closeErr != nil {
+		return closeErr
+	}
+	if !os.SameFile(original, info) {
+		return ErrSourceChanged
+	}
+	return validateFilteredFileDestination(ctx, mount, destination, overwrite, filter)
+}
 
 // CopyTreeFiltered copies authorized entries only. It is internal until the
 // same context is carried and enforced across every file operation.
