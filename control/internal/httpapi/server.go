@@ -3056,8 +3056,15 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 	// The node trusts the subject in a destructive plan request because the
 	// Control Tower authenticated it. These resources are reachable only through
 	// the dedicated routes, never through the pass-through proxy.
-	if strings.Contains(resource, "destructive-plans") {
+	if strings.Contains(resource, "destructive-plans") || strings.Contains(resource, "signed-pull") {
 		writeError(w, r, http.StatusNotFound, "resource_not_found", "Recurso do node não permitido.")
+		return
+	}
+	// Direct pulls run unsigned, with no renewed authorization and no per-policy
+	// filtering. With signed local jobs enabled, copies go through the logical
+	// transfer, which the destination node plans and runs under a lease.
+	if s.config.SignedLocalJobs && r.Method == http.MethodPost && strings.HasPrefix(resource, "transfers/pull") && !strings.HasSuffix(resource, "/plan") {
+		writeError(w, r, http.StatusConflict, "use_logical_transfer", "Com jobs assinados ativos, use a transferência lógica (POST /api/v1/nodes/{nodeID}/transfers) em vez do pull direto.")
 		return
 	}
 	targets := fileTargets{}
@@ -3657,6 +3664,10 @@ func (s *Server) createLogicalTransfer(w http.ResponseWriter, r *http.Request) {
 	}
 	resolved, ok := s.resolveLogicalTransferRequest(w, r, "execute")
 	if !ok {
+		return
+	}
+	if s.config.SignedLocalJobs && resolved.Request.Operation == "copy" {
+		s.createSignedLogicalTransfer(w, r, resolved)
 		return
 	}
 	payload := resolved.nodeRequest(r.Header.Get("X-Correlation-ID"))

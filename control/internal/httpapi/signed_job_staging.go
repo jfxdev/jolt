@@ -58,7 +58,7 @@ func (s *Server) stageSignedLocalJobLease(r *http.Request, nodeID, jobID string)
 	}
 	now := time.Now().UTC()
 	revision := link.ConfirmedRevision + 1
-	envelope, err := s.issueSignedLocalJobLease(r, nodeID, job, revision, now)
+	envelope, err := s.issueSignedJobLease(r, nodeID, job, revision, now)
 	if err != nil {
 		return fail()
 	}

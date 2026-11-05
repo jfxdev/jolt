@@ -263,6 +263,10 @@ CREATE TABLE IF NOT EXISTS job_authorization_links (
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
  PRIMARY KEY(node_id,job_id), FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS job_authorization_scopes (
+ node_id TEXT NOT NULL, job_id TEXT NOT NULL, scope TEXT NOT NULL, created_at TEXT NOT NULL,
+ PRIMARY KEY(node_id,job_id), FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS job_authorization_finished (
  node_id TEXT NOT NULL, job_id TEXT NOT NULL, finished_at TEXT NOT NULL,
  PRIMARY KEY(node_id,job_id), FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE

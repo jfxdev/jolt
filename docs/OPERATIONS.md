@@ -121,7 +121,7 @@ Prometheus/Grafana/Alertmanager e o agendador de backups são componentes extern
 `POST …/mounts/{id}/files/copy` como jobs vinculados à autorização do chamador.
 A opção vem desativada, exige a chave de assinatura (`CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_*`)
 e cobre cópia local, além de delete e move de pastas, que passam a exigir um plano.
-Transferências entre nodes continuam sem autorização renovável, e o move de pasta entre nodes é recusado enquanto não houver plano.
+Cópias entre nodes também usam autorização renovável (veja abaixo); o move entre nodes continua sem ela, e o de pasta é recusado enquanto não houver plano.
 
 **Antes de ativar**
 
@@ -171,8 +171,35 @@ pasta respondem `409 plan_required`. O fluxo é: `POST …/files/destructive-pla
 - Mover uma **pasta** entre nodes (transferência com `operation: move`, inclusive pelo
   diálogo de transferência da interface) responde `409 plan_required`, porque apaga a
   origem e esse fluxo ainda não tem plano. Copie a pasta e remova a origem com um
-  plano. Mover arquivos e copiar pastas continuam como antes, e continuam **sem**
-  autorização renovável nem filtro por policy.
+  plano. Mover **arquivos** entre nodes continua como antes, **sem** autorização
+  renovável nem filtro por policy.
+
+**Copiar entre nodes**
+
+`POST /api/v1/nodes/{destino}/transfers` com `operation: copy` cria um job executado
+pelo node de **destino**, sob a mesma autorização renovável. O destino busca o
+manifesto do node de origem pelo canal mTLS e planeja só o que a policy do usuário
+deixa listar e ler; o que ela esconde fica de fora e aparece apenas como contagem
+(`completed_with_warnings`). Um destino que a policy não deixa escrever recusa o
+plano inteiro. A cada item, e de novo logo antes de publicar um arquivo, o destino
+reavalia a policy com o lease vigente.
+
+- **Requisitos:** o node de destino precisa anunciar `signed_transfer_pull_v1`
+  (além das capacidades de cópia protegida) e ter as chaves públicas em
+  `authorization_public_keys`. O ID registrado de cada node no Control Tower precisa
+  ser o que o node informa; se divergirem, a criação responde `node_identity_mismatch`
+  (a policy nomeia os nodes pelo ID registrado).
+- **Pull direto bloqueado:** com a opção ligada, `POST …/transfers/pull`,
+  `…/pull/directory` e `…/pull/batch` respondem `409 use_logical_transfer`; as
+  prévias (`…/plan`) continuam.
+- **O que o node de origem vê:** ele serve o manifesto completo ao destino, pelo
+  grant, sem conhecer o usuário. O filtro por policy é aplicado no destino, então os
+  nomes ocultos trafegam entre os dois nodes, mas nunca chegam ao usuário nem ao
+  job. O grant segue sendo o limite que a origem impõe.
+- **A prévia do plano** (`…/transfers/plan`) ainda não aplica a policy: ela pode
+  contar entradas que a cópia depois omitirá.
+- Cópia interrompida por perda da autorização fica em `waiting_authorization` e
+  retoma sozinha; o que já foi copiado permanece.
 
 **O que observar**
 

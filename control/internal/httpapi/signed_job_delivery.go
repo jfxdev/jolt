@@ -58,7 +58,7 @@ func (s *Server) deliverPendingSignedJobLease(r *http.Request, nodeID, jobID str
 		return fail()
 	}
 	now := time.Now().UTC()
-	fresh, err := s.issueSignedLocalJobLease(r, node.ID, job, link.PendingRevision, now)
+	fresh, err := s.issueSignedJobLease(r, node.ID, job, link.PendingRevision, now)
 	if err != nil {
 		return fail()
 	}

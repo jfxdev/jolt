@@ -41,7 +41,7 @@ func (s *Server) bindSignedLocalJob(r *http.Request, nodeID, jobID string) error
 		return fail()
 	}
 	now := time.Now().UTC()
-	envelope, err := s.issueSignedLocalJobLease(r, nodeID, job, 1, now)
+	envelope, err := s.issueSignedJobLease(r, nodeID, job, 1, now)
 	if err != nil {
 		return fail()
 	}

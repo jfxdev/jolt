@@ -50,7 +50,7 @@ func (s *Server) registerSignedLocalJobLease(r *http.Request, node store.Node, j
 		return time.Time{}, errSignedJobRegistrationUnavailable
 	}
 	now := time.Now().UTC()
-	envelope, err := s.issueSignedLocalJobLease(r, node.ID, job, revision, now)
+	envelope, err := s.issueSignedJobLease(r, node.ID, job, revision, now)
 	if err != nil {
 		return time.Time{}, errSignedJobRegistrationUnavailable
 	}

@@ -94,7 +94,7 @@ func currentLinkedCredentialTx(ctx context.Context, tx *sql.Tx, link JobAuthoriz
 // The caller must verify the job metadata and permissions with the node.
 func (s *Store) CreateJobAuthorizationLink(ctx context.Context, link JobAuthorizationLink, now time.Time) error {
 	if !signedauth.ValidKeyID(link.NodeID) || !signedauth.ValidKeyID(link.JobID) || !signedauth.ValidKeyID(link.ActorID) || !signedauth.ValidKeyID(link.CredentialID) || !validCredentialDigest(link.CredentialDigest) || now.IsZero() ||
-		link.Binding.ActorID != link.ActorID || link.Binding.CredentialID != link.CredentialID || link.Binding.PlanID != link.JobID || link.Binding.SourceNodeID != link.NodeID || link.Binding.RequestID != "" ||
+		link.Binding.ActorID != link.ActorID || link.Binding.CredentialID != link.CredentialID || link.Binding.PlanID != link.JobID || !linkBindingOwnedByNode(link.Binding, link.NodeID) || link.Binding.RequestID != "" ||
 		link.ConfirmedRevision != 0 || link.ConfirmedDigest != "" || !link.ConfirmedExpiry.IsZero() || link.PendingRevision != 0 || link.PendingEnvelope != "" || !link.PendingExpiry.IsZero() {
 		return ErrConflict
 	}
@@ -102,7 +102,7 @@ func (s *Store) CreateJobAuthorizationLink(ctx context.Context, link JobAuthoriz
 		return ErrConflict
 	}
 	switch link.Binding.Operation {
-	case "delete", "copy_local", "move_local":
+	case "delete", "copy_local", "move_local", "transfer_pull_batch":
 	default:
 		return ErrConflict
 	}
@@ -164,7 +164,7 @@ func readJobAuthorizationLink(row scanner) (JobAuthorizationLink, error) {
 	}
 	link.ConfirmedRevision, link.PendingRevision = uint64(confirmed), uint64(pending)
 	if !signedauth.ValidKeyID(link.NodeID) || !signedauth.ValidKeyID(link.JobID) || !signedauth.ValidKeyID(link.ActorID) || !signedauth.ValidKeyID(link.CredentialID) || !validCredentialDigest(link.CredentialDigest) ||
-		(link.ActorType != "user" && link.ActorType != "service_account") || link.Binding.ActorID != link.ActorID || link.Binding.CredentialID != link.CredentialID || link.Binding.PlanID != link.JobID || link.Binding.SourceNodeID != link.NodeID || link.Binding.RequestID != "" ||
+		(link.ActorType != "user" && link.ActorType != "service_account") || link.Binding.ActorID != link.ActorID || link.Binding.CredentialID != link.CredentialID || link.Binding.PlanID != link.JobID || !linkBindingOwnedByNode(link.Binding, link.NodeID) || link.Binding.RequestID != "" ||
 		(confirmed == 0 && (link.ConfirmedDigest != "" || confirmedExpiry != 0)) || (confirmed > 0 && (!validCredentialDigest(link.ConfirmedDigest) || confirmedExpiry <= 0)) ||
 		(pending == 0 && (link.PendingEnvelope != "" || expiry != 0)) || (pending > 0 && (pending != confirmed+1 || link.PendingEnvelope == "" || len(link.PendingEnvelope) > 64*1024 || expiry <= 0)) {
 		return JobAuthorizationLink{}, ErrConflict
@@ -173,7 +173,7 @@ func readJobAuthorizationLink(row scanner) (JobAuthorizationLink, error) {
 		return JobAuthorizationLink{}, ErrConflict
 	}
 	switch link.Binding.Operation {
-	case "delete", "copy_local", "move_local":
+	case "delete", "copy_local", "move_local", "transfer_pull_batch":
 	default:
 		return JobAuthorizationLink{}, ErrConflict
 	}
@@ -393,4 +393,59 @@ func (s *Store) FinishJobAuthorizationLink(ctx context.Context, nodeID, jobID st
 		}
 	}
 	return tx.Commit()
+}
+
+// linkBindingOwnedByNode reports whether the node that runs the job is the one
+// the link is stored under: the source for local operations, the destination
+// for a node-to-node pull, which the destination executes.
+func linkBindingOwnedByNode(binding signedauth.Binding, nodeID string) bool {
+	if binding.Operation == "transfer_pull_batch" {
+		return binding.DestinationNodeID == nodeID
+	}
+	return binding.SourceNodeID == nodeID
+}
+
+// SaveJobAuthorizationScope records, once, what a node-to-node copy was
+// authorized to read and write, so each renewal re-checks the same selection.
+// The scope is private state; a second save must carry identical content.
+func (s *Store) SaveJobAuthorizationScope(ctx context.Context, nodeID, jobID string, scope []byte, now time.Time) error {
+	if !signedauth.ValidKeyID(nodeID) || !signedauth.ValidKeyID(jobID) || len(scope) == 0 || len(scope) > 64*1024 || !json.Valid(scope) || now.IsZero() {
+		return ErrConflict
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := readJobAuthorizationLink(tx.QueryRowContext(ctx, jobLinkSelect, nodeID, jobID)); err != nil {
+		return err
+	}
+	var existing string
+	err = tx.QueryRowContext(ctx, `SELECT scope FROM job_authorization_scopes WHERE node_id=? AND job_id=?`, nodeID, jobID).Scan(&existing)
+	switch {
+	case err == nil:
+		if existing != string(scope) {
+			return ErrConflict
+		}
+		return nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO job_authorization_scopes(node_id,job_id,scope,created_at) VALUES(?,?,?,?)`, nodeID, jobID, string(scope), now.UTC().Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// GetJobAuthorizationScope returns the scope saved for a node-to-node copy.
+func (s *Store) GetJobAuthorizationScope(ctx context.Context, nodeID, jobID string) ([]byte, error) {
+	var scope string
+	err := s.db.QueryRowContext(ctx, `SELECT scope FROM job_authorization_scopes WHERE node_id=? AND job_id=?`, nodeID, jobID).Scan(&scope)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return []byte(scope), nil
 }
