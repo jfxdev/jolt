@@ -196,8 +196,10 @@ reavalia a policy com o lease vigente.
   grant, sem conhecer o usuário. O filtro por policy é aplicado no destino, então os
   nomes ocultos trafegam entre os dois nodes, mas nunca chegam ao usuário nem ao
   job. O grant segue sendo o limite que a origem impõe.
-- **A prévia do plano** (`…/transfers/plan`) ainda não aplica a policy: ela pode
-  contar entradas que a cópia depois omitirá.
+- **A prévia do plano** (`…/transfers/plan`) também roda sob a policy do usuário: o
+  destino planeja com um lease descartável, lista só o que o usuário pode ver e
+  informa `sources_omitted` (a interface avisa quantas entradas não serão copiadas).
+  Sem a capacidade no destino a prévia responde 409, sem voltar à prévia sem filtro.
 - Cópia interrompida por perda da autorização fica em `waiting_authorization` e
   retoma sozinha; o que já foi copiado permanece.
 
