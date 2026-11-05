@@ -29,6 +29,10 @@ func (s *Server) guardSignedContext(next http.Handler) http.Handler {
 			return
 		}
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
+		if len(parts) == 5 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "jobs" && parts[3] != "" && parts[4] == "authorization" && r.Method == http.MethodPost {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if len(parts) == 6 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "mounts" && parts[3] != "" && parts[4] == "files" && parts[5] == "content" && r.Method == http.MethodPut {
 			next.ServeHTTP(w, r)
 			return

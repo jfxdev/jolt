@@ -120,6 +120,9 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 	mux.HandleFunc("GET /api/v1/jobs/summary", s.jobSummary)
 	mux.HandleFunc("GET /api/v1/jobs/events", s.streamJobEvents)
 	mux.HandleFunc("GET /api/v1/jobs/{jobID}", s.getJob)
+	if _, ok := s.store.(signedJobAuthorizationRegistrar); ok {
+		mux.HandleFunc("POST /api/v1/jobs/{jobID}/authorization", s.registerJobAuthorization)
+	}
 	mux.HandleFunc("GET /api/v1/jobs/{jobID}/items", s.listJobItems)
 	mux.HandleFunc("POST /api/v1/jobs/{jobID}/items/{ordinal}/override", s.overrideJobItem)
 	mux.HandleFunc("POST /api/v1/jobs/{jobID}/pause", s.pauseJob)
@@ -357,6 +360,9 @@ func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 		capabilities = append(capabilities, "signed_local_read_v1", "signed_local_tree_read_v1")
 		if s.store != nil {
 			capabilities = append(capabilities, "signed_upload_sessions_v1", "signed_upload_reauthorize_v1", "signed_simple_upload_v1")
+		}
+		if _, ok := s.store.(signedJobAuthorizationRegistrar); ok {
+			capabilities = append(capabilities, "signed_job_authorization_registration_v1")
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -2431,6 +2437,29 @@ paths:
         - {in: path, name: jobID, required: true, schema: {type: string}}
       responses:
         "200": {description: Durable job state and progress}
+  /api/v1/jobs/{jobID}/authorization:
+    post:
+      summary: Register a signed job authorization without enabling execution
+      description: Requires the operational bearer token and a signed, job-bound envelope. The node verifies the job scope and next revision, stores the context encrypted, and keeps the job awaiting validation. This capability does not enable job execution or periodic renewal.
+      parameters:
+        - {in: path, name: jobID, required: true, schema: {type: string}}
+        - {in: header, name: X-Jolt-Access-Authorization, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: Authorization registered or an identical current envelope retried
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revision, expires_at, execution_enabled]
+                properties:
+                  revision: {type: integer, minimum: 1}
+                  expires_at: {type: string, format: date-time}
+                  execution_enabled: {type: boolean, const: false}
+        "400": {description: Missing or ambiguous signed envelope}
+        "401": {description: Invalid operational bearer token}
+        "403": {description: Invalid, expired, replayed or mismatched authorization}
+        "503": {description: Signing keys or durable state unavailable}
   /api/v1/jobs/{jobID}/items:
     get:
       parameters:

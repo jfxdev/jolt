@@ -22,6 +22,20 @@ type JobAuthorization struct {
 	ExpiresAt time.Time          `yaml:"expires_at" json:"-"`
 }
 
+// RegisterSignedJobAuthorization derives a candidate binding from a verified
+// envelope, then compares it against the stored job and next revision.
+func (s *Store) RegisterSignedJobAuthorization(ctx context.Context, jobID, nodeID, envelope string, keys map[string]ed25519.PublicKey, now time.Time) (uint64, time.Time, error) {
+	binding, err := signedauth.VerifiedJobLeaseBinding(envelope, keys, nodeID, now)
+	if err != nil || binding.PlanID != jobID {
+		return 0, time.Time{}, ErrInUse
+	}
+	authorization, err := s.RenewJobAuthorization(ctx, jobID, nodeID, envelope, binding, keys, now)
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+	return authorization.Revision, authorization.ExpiresAt, nil
+}
+
 // jobAuthorizationMatches compares server-derived authorization scope with
 // the persisted job. Peer trust and grants are separate execution checks.
 func jobAuthorizationMatches(job entities.Job, expected signedauth.Binding, nodeID string) bool {

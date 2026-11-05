@@ -64,3 +64,19 @@ func VerifyJobLease(token string, keys map[string]ed25519.PublicKey, expected Bi
 	}
 	return Verify(token, keys, binding, receivingNode, now)
 }
+
+// VerifiedJobLeaseBinding extracts a candidate only after signature, time and
+// context validation. The caller must still compare it with trusted job state
+// and verify the persisted revision before accepting the envelope.
+func VerifiedJobLeaseBinding(token string, keys map[string]ed25519.PublicKey, receivingNode string, now time.Time) (Binding, error) {
+	claims, _, err := verifySigned(token, keys, now)
+	if err != nil || receivingNode == "" || receivingNode != claims.Binding.SourceNodeID && receivingNode != claims.Binding.DestinationNodeID {
+		return Binding{}, ErrInvalid
+	}
+	binding := claims.Binding
+	binding.RequestID = ""
+	if _, err := JobLeaseBinding(binding, 1); err != nil {
+		return Binding{}, ErrInvalid
+	}
+	return binding, nil
+}

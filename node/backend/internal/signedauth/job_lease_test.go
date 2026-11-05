@@ -28,6 +28,16 @@ func TestJobLeaseBindingReplayAndScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Unix(claims.IssuedAt, 0)
+	candidate, err := VerifiedJobLeaseBinding(token, keys, "source", now)
+	if err != nil || candidate != base {
+		t.Fatalf("verified candidate=%+v err=%v", candidate, err)
+	}
+	if _, err := VerifiedJobLeaseBinding(token, keys, "other", now); err == nil {
+		t.Fatal("candidate accepted for wrong node")
+	}
+	if _, err := VerifiedJobLeaseBinding(token, map[string]ed25519.PublicKey{}, "source", now); err == nil {
+		t.Fatal("candidate accepted without key")
+	}
 	for _, node := range []string{"source", "destination"} {
 		if _, _, err := VerifyJobLease(token, keys, base, node, 1, now); err != nil {
 			t.Fatalf("%s: %v", node, err)
