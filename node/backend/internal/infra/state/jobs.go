@@ -22,7 +22,7 @@ func (s *Store) CreateJobWithItems(ctx context.Context, j entities.Job, items []
 	return s.CreateJobWithItemsHashed(ctx, j, items, key, "")
 }
 func (s *Store) CreateJobWithItemsHashed(ctx context.Context, j entities.Job, items []entities.JobItem, key, hash string) (entities.Job, bool, error) {
-	if j.DestructivePlanID != "" {
+	if j.DestructivePlanID != "" || j.SignedAuthBound {
 		return entities.Job{}, false, ErrInUse
 	}
 	reused := false
@@ -87,7 +87,7 @@ func (s *Store) UpdateJob(ctx context.Context, j entities.Job) error {
 		if e != nil {
 			return e
 		}
-		if !validDestructiveJobUpdate(old, j) {
+		if !validSecuredJobUpdate(old, j) {
 			return ErrInUse
 		}
 		j.CreatedAt = old.CreatedAt
@@ -103,7 +103,7 @@ func (s *Store) UpdateJobWithEvent(ctx context.Context, j entities.Job, event en
 		if e != nil {
 			return e
 		}
-		if !validDestructiveJobUpdate(old, j) {
+		if !validSecuredJobUpdate(old, j) {
 			return ErrInUse
 		}
 		j.CreatedAt = old.CreatedAt
@@ -116,14 +116,13 @@ func (s *Store) UpdateJobWithEvent(ctx context.Context, j entities.Job, event en
 	})
 }
 
-// Until execution-time plan validation is integrated, a plan-bound job may
-// only remain waiting, be paused, or be canceled. In particular, a generic
-// resume or retry must not start destructive work without revalidation.
-func validDestructiveJobUpdate(old, next entities.Job) bool {
-	if old.DestructivePlanID != next.DestructivePlanID {
+// Until renewable execution is integrated, a secured job may only remain
+// waiting, be paused, or be canceled. Generic resume and retry cannot start it.
+func validSecuredJobUpdate(old, next entities.Job) bool {
+	if old.DestructivePlanID != next.DestructivePlanID || old.SignedAuthBound != next.SignedAuthBound {
 		return false
 	}
-	if old.DestructivePlanID == "" {
+	if old.DestructivePlanID == "" && !old.SignedAuthBound {
 		return true
 	}
 	if old.Type != next.Type || old.MountID != next.MountID || old.SourcePath != next.SourcePath || old.Destination != next.Destination || old.Overwrite != next.Overwrite || old.Recursive != next.Recursive || old.PeerNodeID != next.PeerNodeID || old.SourceGrantID != next.SourceGrantID || old.DestinationGrantID != next.DestinationGrantID {

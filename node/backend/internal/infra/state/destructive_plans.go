@@ -171,7 +171,7 @@ func (s *Store) AcceptDestructivePlan(ctx context.Context, id, subjectType, subj
 			return err
 		}
 		if !now.Before(plan.ExpiresAt) || now.Before(plan.CreatedAt) || subtle.ConstantTimeCompare([]byte(plan.TreeDigest), []byte(treeDigest)) != 1 ||
-			plan.DestinationExists != destinationExists || plan.DestinationDigest != destinationDigest || !signedauth.ValidKeyID(job.ID) || job.State != "queued" || job.DestructivePlanID != "" {
+			plan.DestinationExists != destinationExists || plan.DestinationDigest != destinationDigest || !signedauth.ValidKeyID(job.ID) || job.State != "queued" || job.DestructivePlanID != "" || job.SignedAuthBound {
 			return ErrInUse
 		}
 		if _, exists := s.index["jobs"][job.ID]; exists {
