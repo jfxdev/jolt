@@ -1,6 +1,6 @@
 # Proposta — Certificados e chaves com ciclo de vida gerenciado pelo Jolt
 
-> **Status:** proposta aprovada; **fases 1 e 2 implementadas** (ver §12), fases 3 e 4 só em parte · **Data:** 6 de novembro de 2026 · **Origem:** o Jolt precisa funcionar **fechado**, sem depender de reverse proxy, ACME, CA externa ou operação manual de `openssl` · **Complementa:** [`plano-consolidado-seguranca.md`](plano-consolidado-seguranca.md) (contextos assinados) e [`../PRODUCTION.md`](../PRODUCTION.md) · **Código lido:** `node/backend/internal/infra/crypto/certificates.go`, `node/backend/internal/infra/config/config.go`, `control/internal/config/config.go`, `control/internal/store/store.go`, `docs/NODE_YAML.md`, `scripts/signed-read-smoke.py`.
+> **Status:** proposta aprovada; **fases 1, 2 e 4 implementadas** (ver §12); a fase 3 só em parte (a página `/ca` e as telas existem, o `jolt-mcp trust` não) · **Data:** 6 de novembro de 2026 · **Origem:** o Jolt precisa funcionar **fechado**, sem depender de reverse proxy, ACME, CA externa ou operação manual de `openssl` · **Complementa:** [`plano-consolidado-seguranca.md`](plano-consolidado-seguranca.md) (contextos assinados) e [`../PRODUCTION.md`](../PRODUCTION.md) · **Código lido:** `node/backend/internal/infra/crypto/certificates.go`, `node/backend/internal/infra/config/config.go`, `control/internal/config/config.go`, `control/internal/store/store.go`, `docs/NODE_YAML.md`, `scripts/signed-read-smoke.py`.
 
 ## 1. Resumo
 
@@ -197,7 +197,7 @@ Sem reverse proxy e sem CA pública, o certificado HTTPS do Control Tower só é
 | --- | --- |
 | `manual` (padrão) | Igual a hoje. Nada desta proposta é ativado. |
 | `managed` | CA, pacote, certificados e rotação automáticos. O token compartilhado ainda é aceito, para migrar sem parada. |
-| `managed-only` | Só certificado de cliente da CA autentica o Control Tower. Token compartilhado recusado. |
+| `managed-only` | Só certificado de cliente da CA autentica o Control Tower. Token compartilhado recusado. **Só existe no node** (`tls_mode: managed-only`); o Control Tower continua em `managed`. |
 
 A migração de um node existente usa o mesmo token de adesão, com o nome do node já cadastrado: o enrollment atualiza o registro em vez de criar outro. Reverter para `manual` é possível enquanto o node ainda tiver o token e o YAML antigos.
 
@@ -263,6 +263,17 @@ O Control Tower comprometido já controlaria todos os nodes pelo token compartil
 - `managed-only`, rotação de raiz, lista de revogados no pacote, `DISASTER_RECOVERY.md`, alertas de referência.
 - Critérios: ensaio de rotação de raiz com dois nodes; ensaio de perda da raiz e re-enrollment; ensaio de node que expirou.
 
+**Fase 4 — implementada em 6 de novembro de 2026.** `tls_mode: managed-only` no node, revogação de seriais (por serial ou por node), rotação da intermediária (planejada ou por chave vazada), rotação da raiz em três passos, `jolt-control ca export-root|import-root|renew-intermediate|status`, métrica e alertas, `DISASTER_RECOVERY.md` e a tela de operações em Access > Certificados. Operação em [`../OPERATIONS.md`](../OPERATIONS.md#certificados-e-chaves-gerenciados) e [`../DISASTER_RECOVERY.md`](../DISASTER_RECOVERY.md#managed-certificate-authority). Verificada com testes nos dois módulos, mutação nas verificações novas, jornadas Playwright (desktop e mobile) e `scripts/managed-rotation-smoke.py` (binários reais: `managed-only`, revogação, intermediária vazada, rotação de raiz com a aposentadoria da antiga). O que mudou em relação ao texto acima:
+
+- **`managed-only` é do node.** O Control Tower não ganhou um modo novo: quem recusa o token é o node, e cada node migra por si. O Control Tower registra, a cada ciclo, como cada node o autentica (`auth_mode`) e a tela mostra quantos ainda aceitam o token.
+- **O certificado de cliente é conferido a cada requisição**, não só no handshake. Uma revogação vale também numa conexão já aberta, e a revogação vale pela **cadeia inteira**: um serial revogado numa intermediária leva o que ela assinou.
+- **O Control Tower confere o certificado do node ele mesmo.** O TLS padrão não aplica a lista de revogados nem alcança um node cujo certificado expirou. O Control Tower então aceita, além do que verifica normalmente, **o certificado exato que ele emitiu** para aquele node (impressão digital guardada), desde que o serial dele não esteja revogado e o nome do endereço conste nele. É o que faz um node voltar depois de 60 dias fora, ou depois de a intermediária ser trocada, e renovar sozinho em vez de pedir token novo. Também por isso as conexões abertas são revalidadas quando o pacote muda (`RecheckConnections`): um defeito achado pelo ensaio com processos reais, em que uma conexão keep-alive sobrevivia à revogação.
+- **A intermediária vazada não espera o node.** Era "revoga, gera outra e reemite" (§7); ficou assim: a antiga sai do pacote e é revogada na hora, e o Control Tower troca o certificado de cada node no ciclo seguinte, alcançando-o pelo certificado exato que emitiu.
+- **A rotação de raiz só avança pela confirmação dos nodes.** A promoção é explícita e o Control Tower a recusa (`409 nodes_behind`) enquanto um node não tiver o pacote com a raiz nova; a aposentadoria da antiga é automática quando todo node tem o pacote atual, sem erro e com certificado da cadeia nova. Um token criado antes da promoção deixa de servir. Os navegadores precisam instalar a raiz nova (`/ca/next.pem`): é o único caso em que mudam.
+- **`ca export-root` não faz sozinho a renovação.** Com a raiz fora do banco, `ca renew-intermediate --root-file` emite a intermediária com a chave do arquivo sem nunca gravá-la. Todos os comandos `ca` exigem o Control Tower parado, como `recover-admin`.
+- Defeitos achados pelos testes e corrigidos: `Ensure` não republicava o pacote quando uma revogação saía e outra entrava na mesma passagem (a lista mantinha o tamanho); o nome do endereço não era conferido para um node por IP, porque o estado TLS não o traz (a verificação passou a ser feita no discador); uma conexão aberta sobrevivia à revogação.
+- Fica de fora: `jolt-mcp trust` (fase 3), HSM, e restaurar um snapshot do Control Tower mais velho que a última troca de chave de assinatura (documentado em `DISASTER_RECOVERY.md`).
+
 Cada fase é útil sozinha e reversível enquanto o modo `manual` existir.
 
 ## 13. Decisões
@@ -274,4 +285,4 @@ Cada fase é útil sozinha e reversível enquanto o modo `manual` existir.
 
 ## 14. O que não está provado
 
-Nada aqui foi executado. Os pontos que dependem de ambiente real e que ficam para o aceite do mantenedor: renovação em dois hosts com relógio divergente, expiração e re-enrollment, recarga a quente do certificado HTTPS sob carga, e comportamento dos navegadores e do `jolt-mcp` com a raiz instalada em cada sistema operacional.
+Exercitado com testes nos dois módulos, mutação nas verificações, jornadas Playwright e dois ensaios com processos reais em loopback (`scripts/managed-tls-smoke.py` e `scripts/managed-rotation-smoke.py`). Os pontos que dependem de ambiente real e que ficam para o aceite do mantenedor: renovação e rotação em hosts distintos com relógio divergente, expiração e retorno de um node real depois de semanas, recarga a quente do certificado HTTPS sob carga, comportamento dos navegadores e do `jolt-mcp` com a raiz instalada (e depois trocada) em cada sistema operacional, ensaio de refazer a autoridade do zero com vários nodes, e restore de um snapshot antigo do Control Tower.

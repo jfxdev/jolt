@@ -411,10 +411,12 @@ Uma regra de policy pode conceder `delete` ou `update` **somente com a aprovaç�
 
 ## Certificados e chaves gerenciados
 
-> **Status:** fases 1 e 2 de [`proposals/certificados-gerenciados.md`](proposals/certificados-gerenciados.md). O
+> **Status:** fases 1, 2 e 4 de [`proposals/certificados-gerenciados.md`](proposals/certificados-gerenciados.md). O
 > Control Tower é a autoridade, serve o próprio HTTPS e enrola nodes com um token de uso único; o node recebe o
-> pacote de confiança e o certificado da API e os renova sozinho. Validado com processos reais em loopback
-> (`scripts/managed-tls-smoke.py`), não entre hosts nem sob carga.
+> pacote de confiança e o certificado da API e os renova sozinho. Um node pode ser posto em `managed-only` (só o
+> certificado do Control Tower o autentica), e há revogação, rotação da intermediária e da raiz e raiz fora do
+> banco. Validado com processos reais em loopback (`scripts/managed-tls-smoke.py` e
+> `scripts/managed-rotation-smoke.py`), não entre hosts nem sob carga. O `jolt-mcp trust` (fase 3) não existe.
 
 `CONTROL_TOWER_TLS_MODE=managed` faz o Control Tower manter uma autoridade própria e dispensa `openssl`,
 certificado externo e reverse proxy. O padrão, `manual`, não muda nada.
@@ -522,15 +524,115 @@ assinatura do pacote entram no que o node aceita **junto** com as do `node.yaml`
 YAML.
 
 O Control Tower fala com os nodes enrolados confiando só na raiz da autoridade (e no que o operador já tinha
-configurado) e apresenta o seu certificado de cliente, que o node confere se for oferecido: mesma autoridade, nome
-`Jolt Control Tower`, serial fora da lista de revogados. **Nesta fase o certificado de cliente não é obrigatório**:
-o token operacional ainda autentica o Control Tower.
+configurado) e apresenta o seu certificado de cliente. Ele confere o certificado do node **ele mesmo**, para que a
+lista de revogados valha: um certificado cuja cadeia tenha qualquer serial revogado é recusado. A única exceção é o
+certificado **exato** que a própria autoridade emitiu para aquele node (a impressão digital fica no registro): se
+ele expirou com o node fora do ar, ou se a intermediária que o assinou foi trocada, o Control Tower ainda alcança o
+node, que prova ser o dono pela chave, e o renova. O serial do próprio certificado ainda precisa estar fora da
+lista, e o nome do endereço tem de constar nele.
 
-### Se a raiz sair do banco ou o banco se perder
+### Só certificado: `managed-only`
 
-A fase 1 não tem `ca export-root`: a raiz fica sempre no banco. Perder o banco ou a chave
-`CONTROL_TOWER_DB_ENCRYPTION_KEY` perde a autoridade; uma instalação nova cria outra raiz e todo dispositivo
-precisa instalá-la de novo. O backup que já cobre o banco cobre a autoridade.
+No `node.yaml`, `tls_mode: managed-only` faz o node autenticar o Control Tower **só** pelo certificado de cliente
+dele e **recusar** o token operacional, mesmo o correto. O certificado é conferido a cada requisição contra o pacote
+em uso, então uma revogação vale também numa conexão que já estava aberta. As rotas de rotação do token
+(`/api/v1/crypto/operational-token/{prepare,commit}`) respondem `409 operational_token_disabled`. `/metrics` segue
+com o próprio token de métricas e `/health` com `public_health`, como antes.
+
+Para migrar um node que já está em `managed`: troque `tls_mode` para `managed-only` e reinicie. Em Access >
+Certificados cada node mostra **Certificado** ou **Token compartilhado**, e um aviso conta quantos ainda aceitam o
+token. Para voltar, `tls_mode: managed` e reiniciar: o node volta a aceitar o token que escolheu na adesão.
+
+Roubar o canal exige então a chave de cliente do Control Tower (que fica na memória dele) **e**, para assinar
+contextos, a chave de assinatura. Um node que vaze sua própria chave não dá acesso a nenhum outro.
+
+### Revogar um certificado
+
+`POST /api/v1/control-tower/crypto/revocations` (`sudo`), com `{"node_id": "..."}` ou `{"serial": "..."}` e um
+`reason`, ou o botão **Revogar certificado** do node em Access > Certificados. O serial entra no próximo pacote
+assinado, que o Control Tower envia a cada node no ciclo de um minuto. Depois disso:
+
+- o Control Tower **deixa de falar** com aquele node, e os outros passam a recusar o certificado dele;
+- um certificado do próprio Control Tower (HTTPS, cliente) que seja revogado é reemitido no mesmo ciclo;
+- o serial sai do pacote um dia depois de o certificado vencer de qualquer jeito, para a lista não crescer.
+
+Para o node revogado voltar, enrole-o de novo: um token novo e um `data_dir` limpo no host (o estado cifrado que
+guarda o certificado revogado não é reaproveitado). **A intermediária em uso não se revoga assim**; use a rotação abaixo. Uma raiz nunca se revoga.
+
+### A chave da intermediária vazou
+
+`POST /api/v1/control-tower/crypto/ca/intermediate/rotate` com `{"revoke_previous": true}` (ou o botão **Girar e
+revogar** em Access > Certificados). A intermediária atual é revogada e sai do pacote na hora; uma nova, assinada pela
+raiz, passa a emitir; o Control Tower reemite os próprios certificados e, no próximo ciclo, **troca o certificado de
+cada node** sem que ninguém seja enrolado de novo. Navegadores e nodes não instalam nada, porque confiam na raiz.
+Isto pede a chave da raiz no banco (ou o arquivo dela, veja abaixo).
+
+Sem `revoke_previous` a rotação é a planejada: a nova assina e a antiga fica no pacote até vencer. Cabem duas
+intermediárias no pacote; uma terceira só entra depois de a mais antiga sair ou de ser revogada.
+
+### Trocar a raiz
+
+Em três passos, sem parada e sem re-enrolar ninguém. É o único caso em que **cada navegador e agente instala uma
+raiz nova**, porque o certificado HTTPS passa a ser assinado por ela.
+
+1. **Começar** (`POST .../crypto/ca/root/rotate`, ou **Começar a troca da raiz**). A raiz nova nasce e vai para o
+   pacote ao lado da atual; nada é assinado por ela ainda. Os nodes a recebem no ciclo seguinte. A página `/ca`
+   oferece a raiz nova em `/ca/next.pem`, com o fingerprint, para instalar nos dispositivos agora.
+2. **Promover** (`POST .../crypto/ca/root/promote`, ou **Promover a raiz nova**). O Control Tower **recusa** enquanto
+   algum node não confirmou o pacote que traz a raiz nova (`409 nodes_behind`), porque esse node deixaria de confiar
+   nele. `force` promove assim mesmo, e os nodes que ficaram para trás precisam ser enrolados de novo. Promovido, a
+   raiz nova assina uma intermediária nova, o certificado HTTPS e o de cliente passam a ser dela e cada node recebe
+   um certificado da cadeia nova no ciclo seguinte. `/.well-known/jolt/ca.pem` passa a servir a raiz nova.
+3. **Aposentar**: sozinho. Quando todo node tem o pacote atual, sem erro de sincronização, e um certificado assinado
+   sob a cadeia nova, a raiz antiga e as intermediárias dela saem do banco e do pacote. Com nenhum node enrolado,
+   isso acontece no ciclo seguinte à promoção.
+
+Um node cujo certificado foi **revogado** não conta nessas esperas: ele não é mais alcançado e não segura a troca.
+
+Tokens de adesão criados depois da promoção fixam a raiz nova. **Um token criado antes dela deixa de servir**: o
+Control Tower passa a publicar a raiz nova e o node, que confere o fingerprint do token, recusa sem enviar nada.
+Crie outro.
+
+### Raiz fora do banco (opcional)
+
+Sem HSM ou segundo host, a raiz fica no mesmo banco que a intermediária. O endurecimento é tirá-la de lá. Com o
+**Control Tower parado** (os comandos abrem o banco direto e usam o mesmo travamento de instância):
+
+```sh
+export JOLT_ROOT_KEY_PASSWORD_FILE=/run/secrets/jolt-root-password   # 16 caracteres ou mais
+jolt-control ca export-root --data-dir /data --out /seguro/jolt-root.json --confirm-remove-from-database
+```
+
+O arquivo é cifrado com Argon2id e AES-256-GCM e **nunca sobrescreve** outro. A chave só sai do banco depois de o
+arquivo gravado ser relido e abrir com a senha. **Guarde o arquivo fora deste host e a senha longe dele**: sem os
+dois a intermediária não pode ser renovada e a autoridade precisa ser refeita (todos os nodes e dispositivos de
+novo). `jolt_root_key_in_database` passa a 0.
+
+Sem a chave o Control Tower continua trabalhando normalmente: emite folhas, renova o HTTPS, gira a chave de
+assinatura. Só falha o que pede a raiz: renovar a intermediária (a cada 2 anos, aos 2/3 da vida) e girá-la. O aviso
+é o log `the intermediate certificate is due for renewal and the root key is not in the database`, o alerta abaixo
+e a métrica. Com o Control Tower parado:
+
+```sh
+jolt-control ca renew-intermediate --data-dir /data --root-file /seguro/jolt-root.json
+# chave vazada:  ... --revoke-previous --reason "chave copiada"
+jolt-control ca import-root --data-dir /data --in /seguro/jolt-root.json   # devolve a chave ao banco
+jolt-control ca status --data-dir /data                                    # raiz, intermediárias, onde está a chave
+```
+
+A chave da raiz **nunca** volta ao banco em `renew-intermediate`. Um arquivo legível por outros (`chmod` diferente de
+600) é recusado. A troca de raiz funciona com a antiga fora do banco: só a raiz nova precisa estar nele.
+
+### Quando algo sai do normal
+
+| Situação | O que acontece | O que fazer |
+| --- | --- | --- |
+| Node fora do ar além de 60 dias (certificado vence antes de renovar) | O Control Tower o alcança pelo certificado exato que emitiu e o renova ao voltar | Nada |
+| Node com a chave vazada | | Revogar; enrolar de novo |
+| Chave da intermediária vazada | | Girar e revogar; nada nos nodes |
+| Chave da raiz vazada | A autoridade inteira está comprometida | Refazer a autoridade; veja `DISASTER_RECOVERY.md` |
+| Node recusa o pacote (`last_error` no node) | O node não adota pacote que não seja mais novo, não mantenha uma raiz que tinha ou não esteja assinado por chave que conhecia | Investigar; um pacote legítimo nunca cai aqui |
+| Restore de um snapshot antigo do Control Tower | Os nodes não aceitam um pacote mais velho que o deles | `DISASTER_RECOVERY.md`: o intervalo entre snapshots importa |
 
 ### Observabilidade
 
@@ -538,6 +640,7 @@ precisa instalá-la de novo. O backup que já cobre o banco cobre a autoridade.
   `intermediate`, `https`, `signing_key`). Chave que está saindo ou publicada e ainda sem assinar não conta,
   para uma despedida planejada não parecer problema.
 - `jolt_trust_bundle_version`: versão do pacote publicado.
+- `jolt_root_key_in_database`: 1 enquanto a chave da raiz está no banco, 0 depois de `ca export-root`.
 - `jolt_managed_nodes`, `jolt_managed_node_bundle_lag` (quantas versões o node mais atrasado está atrás) e
   `jolt_managed_node_certificate_expiry_seconds` (o certificado de API que vence primeiro).
 - No node: `jolt_node_api_certificate_expiry_seconds` e `jolt_node_trust_bundle_version`.
@@ -557,19 +660,42 @@ precisa instalá-la de novo. O backup que já cobre o banco cobre a autoridade.
         labels: {severity: critical}
         annotations:
           summary: "A intermediária do Control Tower não foi renovada"
+      - alert: JoltRootKeyNeededSoon
+        # Com a raiz fora do banco, a intermediária só é renovada por uma pessoa, com o arquivo e a senha.
+        expr: jolt_root_key_in_database == 0 and jolt_certificate_expiry_seconds{kind="intermediate"} < 90 * 24 * 3600
+        for: 1h
+        labels: {severity: critical}
+        annotations:
+          summary: "Renove a intermediária: jolt-control ca renew-intermediate (o Control Tower precisa estar parado)"
+      - alert: JoltNodeBundleBehind
+        expr: jolt_managed_node_bundle_lag > 0
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "Há node enrolado com um pacote de confiança antigo; veja last_error em Access > Certificados"
+      - alert: JoltNodeCertificateEndsSoon
+        expr: jolt_managed_node_certificate_expiry_seconds < 14 * 24 * 3600
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "O certificado de API de um node enrolado não foi renovado"
 ```
 
-### Limites desta fase
+### Limites
 
-- O certificado de cliente do Control Tower existe e é conferido quando oferecido, mas **não é exigido**; o token
-  operacional continua autenticando. Exigi-lo (e dispensar o token) é a fase 4.
-- Não há revogação de seriais (a lista vai vazia no pacote) nem rotação de raiz.
-- `ca export-root` (raiz fora do banco) não existe; o erro `ErrRootUnavailable` só aparece se alguém retirar o
-  segredo da raiz do banco à mão, e o Control Tower continua servindo enquanto a intermediária vigente não expira.
-- Um node cujo certificado de API expirou sem renovar (fora do ar por mais de 90 dias) precisa de um token novo.
-- O `jolt-mcp trust` e a rotação do certificado HTTPS do Control Tower em clientes não mudaram.
-- Exercitado com processos reais em loopback e com nodes simulados; **não** entre hosts, com relógios divergentes,
-  sob carga nem com os navegadores de cada sistema.
+- **Raiz e intermediária no mesmo banco** por padrão. Quem tem o banco e `CONTROL_TOWER_DB_ENCRYPTION_KEY` tem a
+  autoridade; `ca export-root` separa a raiz, mas não protege contra quem já tem o processo em execução.
+- **Restore de um snapshot antigo** do Control Tower pode deixá-lo com um pacote e uma chave de assinatura que os
+  nodes já substituíram. Os nodes não aceitam pacote mais velho. Mantenha snapshots com menos de 14 dias de idade em
+  relação à última rotação da chave de assinatura (veja `DISASTER_RECOVERY.md`).
+- Uma troca de raiz exige que **cada navegador e agente instale a raiz nova**; só a intermediária e as folhas são
+  invisíveis para eles.
+- O certificado de cliente do Control Tower fica na memória dele: um `managed-only` com o Control Tower fora do ar
+  não deixa ninguém operar o node.
+- `ca export-root`, `import-root` e `renew-intermediate` exigem o Control Tower parado.
+- O `jolt-mcp trust` (fase 3) não existe: agentes recebem a raiz por configuração, como antes.
+- Exercitado com processos reais em loopback e com nodes simulados; **não** entre hosts, com relógios divergentes
+  (a folga de `NotBefore` é de 5 minutos), sob carga nem com os navegadores de cada sistema.
 
 ## Rotinas
 

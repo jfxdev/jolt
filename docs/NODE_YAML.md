@@ -117,7 +117,28 @@ previous bundle listed, and merges the bundle's signing keys with
 `authorization_public_keys` (the YAML wins on a clash). It advertises
 `managed_tls_v1` and exposes `/api/v1/crypto/trust-bundle` and `/api/v1/crypto/api-cert`.
 A client certificate, if offered, must come from that authority, be named
-`Jolt Control Tower` and not be revoked; it is not yet required.
+`Jolt Control Tower` and not be revoked.
+
+### `managed-only`
+
+```yaml
+tls_mode: managed-only
+api_public_endpoint: https://node.example:8080
+```
+
+Everything in `managed` applies. In addition the Control Tower is authenticated by its
+client certificate **alone**: a request needs a certificate that chains to the authority,
+is named `Jolt Control Tower`, has client-auth usage and whose serial, and the serial of
+anything in its chain, is not in the bundle's revoked list. The bearer token is
+refused, even the correct one. The certificate is judged on every request against the
+bundle in use, so a revocation reaches a connection that is already open. The routes
+that rotate the operational token answer `409 operational_token_disabled`. `/metrics`
+keeps its own token and `/health` keeps `public_health`.
+
+Switch a node by changing `tls_mode` and restarting; switch back the same way, and the
+operational token it chose when it enrolled works again. `GET /api/v1/crypto/trust-bundle`
+reports `auth_mode` (`token` or `certificate`) and the serial, issuer serial and SHA-256
+of the API certificate, which the Control Tower records.
 
 ## State and keys
 
