@@ -187,8 +187,8 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 	}
 	if s.store != nil {
 		mux.HandleFunc("GET /api/v1/crypto/operational-token", s.operationalTokenState)
-		mux.HandleFunc("POST /api/v1/crypto/operational-token/prepare", s.prepareOperationalToken)
-		mux.HandleFunc("POST /api/v1/crypto/operational-token/commit", s.commitOperationalToken)
+		mux.HandleFunc("POST /api/v1/crypto/operational-token/prepare", s.withoutCertificateOnlyAuth(s.prepareOperationalToken))
+		mux.HandleFunc("POST /api/v1/crypto/operational-token/commit", s.withoutCertificateOnlyAuth(s.commitOperationalToken))
 	}
 	if s.transfers != nil {
 		mux.HandleFunc("POST /api/v1/transfers/pull", s.createPullTransfer)
@@ -225,12 +225,41 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if s.certificateOnly() {
+			// The Control Tower's client certificate is the only credential.
+			// A bearer token, even a correct one, opens nothing.
+			if !s.trust.ControlTowerPresented(r.TLS) {
+				writeError(w, r, http.StatusUnauthorized, "unauthorized", "A valid Control Tower certificate is required.", nil)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
 		if !strings.HasPrefix(header, prefix) || !s.acceptOperationalToken(r.Context(), token) {
 			writeError(w, r, http.StatusUnauthorized, "unauthorized", "A valid bearer token is required.", nil)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// certificateOnly reports whether this node was set to managed-only and is
+// enrolled: the client certificate of the Control Tower authenticates it, not
+// the operational token.
+func (s *Server) certificateOnly() bool {
+	return s.config.TLSMode == config.TLSManagedOnly && s.trust != nil && s.trust.Managed()
+}
+
+// withoutCertificateOnlyAuth refuses a route that works on the operational
+// token when that token is not what authenticates the Control Tower.
+func (s *Server) withoutCertificateOnlyAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.certificateOnly() {
+			writeError(w, r, http.StatusConflict, "operational_token_disabled", "This node authenticates the Control Tower by certificate; there is no operational token to rotate.", nil)
+			return
+		}
+		next(w, r)
+	}
 }
 
 // instrument records request counts and latency. The route label is the
@@ -2581,7 +2610,7 @@ paths:
       summary: Which trust bundle and API certificate this node holds
       description: Only on a node the Control Tower's certificate authority enrolled (capability managed_tls_v1); 404 managed_tls_disabled otherwise.
       responses:
-        "200": {description: The bundle version and the API certificate's end and serial}
+        "200": {description: The bundle version, how the node authenticates the Control Tower (auth_mode token or certificate) and the API certificate's end, serial, issuer serial and SHA-256}
         "404": {description: This node is not enrolled}
     put:
       summary: Adopt a newer trust bundle

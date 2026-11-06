@@ -164,7 +164,7 @@ func TestANodeThatWasNeverEnrolledChangesNothing(t *testing.T) {
 	if m.Managed() || m.BundleVersion() != 0 || len(m.AuthorizationKeys()) != 1 {
 		t.Fatal("an unenrolled node reports trust it does not have")
 	}
-	if _, err := m.TLSConfig(true).GetCertificate(&tls.ClientHelloInfo{}); err == nil {
+	if _, err := m.TLSConfig().GetCertificate(&tls.ClientHelloInfo{}); err == nil {
 		t.Fatal("an unenrolled node served a certificate")
 	}
 	if m.Adopt(context.Background(), Bundle{}) == nil || m.InstallCertificate(context.Background(), "x") == nil {
@@ -313,7 +313,7 @@ func TestARenewalMovesToANewCertificateWithoutARestart(t *testing.T) {
 	if err := m.InstallCertificate(context.Background(), pemOf(issued, c.issuer)); err != nil {
 		t.Fatal(err)
 	}
-	served, err := m.TLSConfig(true).GetCertificate(&tls.ClientHelloInfo{})
+	served, err := m.TLSConfig().GetCertificate(&tls.ClientHelloInfo{})
 	if err != nil || served.Leaf.SerialNumber.Cmp(issued.SerialNumber) != 0 {
 		t.Fatal("the listener did not pick up the renewed certificate")
 	}
@@ -362,12 +362,18 @@ func clientConfig(t *testing.T, c *ca, name string, usage x509.ExtKeyUsage, root
 	}
 }
 
-func serve(t *testing.T, m *Manager) string { return serveWith(t, m, true) }
-
-func serveWith(t *testing.T, m *Manager, requireClient bool) string {
+// serve answers "control-tower" to a request that carries the Control Tower's
+// certificate and "anonymous" to any other, which is how the API decides.
+func serve(t *testing.T, m *Manager) string {
 	t.Helper()
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "ok") }))
-	config := m.TLSConfig(requireClient)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if m.ControlTowerPresented(r.TLS) {
+			_, _ = io.WriteString(w, "control-tower")
+			return
+		}
+		_, _ = io.WriteString(w, "anonymous")
+	}))
+	config := m.TLSConfig()
 	config.Time = func() time.Time { return epoch }
 	server.TLS = config
 	server.StartTLS()
@@ -375,53 +381,76 @@ func serveWith(t *testing.T, m *Manager, requireClient bool) string {
 	return server.URL
 }
 
-func get(t *testing.T, url string, config *tls.Config) error {
-	t.Helper()
-	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{TLSClientConfig: config}}
+func fetch(client *http.Client, url string) (string, error) {
 	response, err := client.Get(url)
 	if err != nil {
-		return err
+		return "", err
 	}
-	response.Body.Close()
-	return nil
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	return string(body), nil
 }
 
-func TestOnlyTheControlTowersCertificateFromTheAuthorityReachesTheAPI(t *testing.T) {
+func get(t *testing.T, url string, config *tls.Config) (string, error) {
+	t.Helper()
+	return fetch(&http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{TLSClientConfig: config}}, url)
+}
+
+func TestOnlyTheControlTowersCertificateFromTheAuthorityIsTakenForTheControlTower(t *testing.T) {
 	m, _, c, _ := enrolled(t)
 	url := serve(t, m)
-	if err := get(t, url, clientConfig(t, c, ControlTowerName, x509.ExtKeyUsageClientAuth, c.root)); err != nil {
-		t.Fatalf("the Control Tower's certificate was refused: %v", err)
+	if who, err := get(t, url, clientConfig(t, c, ControlTowerName, x509.ExtKeyUsageClientAuth, c.root)); err != nil || who != "control-tower" {
+		t.Fatalf("the Control Tower's certificate: %q %v", who, err)
 	}
-	if err := get(t, url, clientConfig(t, c, "Someone Else", x509.ExtKeyUsageClientAuth, c.root)); err == nil {
-		t.Error("a certificate with another name was accepted")
-	}
-	other := newCA(t)
-	if err := get(t, url, clientConfig(t, other, ControlTowerName, x509.ExtKeyUsageClientAuth, c.root)); err == nil {
-		t.Error("a certificate from another authority was accepted")
-	}
+	// A client that presents none gets through the handshake and is nobody.
 	noCert := clientConfig(t, c, ControlTowerName, x509.ExtKeyUsageClientAuth, c.root)
 	noCert.Certificates = nil
-	if err := get(t, url, noCert); err == nil {
-		t.Error("a client without a certificate was accepted")
+	if who, err := get(t, url, noCert); err != nil || who != "anonymous" {
+		t.Fatalf("no certificate: %q %v", who, err)
 	}
-	if err := get(t, url, clientConfig(t, c, ControlTowerName, x509.ExtKeyUsageServerAuth, c.root)); err == nil {
+	// Presenting a certificate is a claim, and a wrong claim is refused.
+	if _, err := get(t, url, clientConfig(t, c, "Someone Else", x509.ExtKeyUsageClientAuth, c.root)); err == nil {
+		t.Error("a certificate with another name was accepted")
+	}
+	if _, err := get(t, url, clientConfig(t, newCA(t), ControlTowerName, x509.ExtKeyUsageClientAuth, c.root)); err == nil {
+		t.Error("a certificate from another authority was accepted")
+	}
+	if _, err := get(t, url, clientConfig(t, c, ControlTowerName, x509.ExtKeyUsageServerAuth, c.root)); err == nil {
 		t.Error("a server certificate was accepted as a client certificate")
 	}
 }
 
-func TestARevokedClientCertificateIsRefusedOnceTheBundleSaysSo(t *testing.T) {
+func TestARevokedClientCertificateStopsWorkingEvenOnAConnectionAlreadyOpen(t *testing.T) {
 	m, _, c, _ := enrolled(t)
 	url := serve(t, m)
 	config := clientConfig(t, c, ControlTowerName, x509.ExtKeyUsageClientAuth, c.root)
-	if err := get(t, url, config); err != nil {
-		t.Fatal(err)
+	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{TLSClientConfig: config}}
+	if who, err := fetch(client, url); err != nil || who != "control-tower" {
+		t.Fatalf("before: %q %v", who, err)
 	}
 	leaf, _ := x509.ParseCertificate(config.Certificates[0].Certificate[0])
 	if err := m.Adopt(context.Background(), c.bundle(t, 2, "k1", []string{leaf.SerialNumber.Text(16)}, "k1")); err != nil {
 		t.Fatal(err)
 	}
-	if err := get(t, url, config); err == nil {
-		t.Fatal("a revoked certificate still reaches the API")
+	// The connection the client already holds is reused, with no new handshake.
+	if who, err := fetch(client, url); err != nil || who != "anonymous" {
+		t.Fatalf("a revoked certificate still authenticates on an open connection: %q %v", who, err)
+	}
+	// A new connection does not get past the handshake.
+	if _, err := get(t, url, config); err == nil {
+		t.Fatal("a revoked certificate completed a new handshake")
+	}
+}
+
+func TestRevokingTheIssuerRevokesWhatItSigned(t *testing.T) {
+	m, _, c, _ := enrolled(t)
+	url := serve(t, m)
+	config := clientConfig(t, c, ControlTowerName, x509.ExtKeyUsageClientAuth, c.root)
+	if err := m.Adopt(context.Background(), c.bundle(t, 2, "k1", []string{c.issuer.SerialNumber.Text(16)}, "k1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := get(t, url, config); err == nil {
+		t.Fatal("a certificate from a revoked intermediate was accepted")
 	}
 }
 
@@ -486,25 +515,5 @@ func TestEnrollmentNeedsAnOperationalTokenHash(t *testing.T) {
 		if m.Enroll(context.Background(), c.pin(), c.bundle(t, 1, "k1", nil, "k1"), chain, der, hash) == nil {
 			t.Errorf("hash %q accepted", hash)
 		}
-	}
-}
-
-func TestWithoutTheRequirementAClientWithNoCertificateReachesTheAPIButAWrongOneDoesNot(t *testing.T) {
-	m, _, c, _ := enrolled(t)
-	url := serveWith(t, m, false)
-	noCert := clientConfig(t, c, ControlTowerName, x509.ExtKeyUsageClientAuth, c.root)
-	noCert.Certificates = nil
-	if err := get(t, url, noCert); err != nil {
-		t.Fatalf("a client with no certificate was refused where none is required: %v", err)
-	}
-	if err := get(t, url, clientConfig(t, c, ControlTowerName, x509.ExtKeyUsageClientAuth, c.root)); err != nil {
-		t.Fatalf("the Control Tower's certificate was refused: %v", err)
-	}
-	// Presenting a certificate is a claim; a wrong claim is refused.
-	if err := get(t, url, clientConfig(t, c, "Someone Else", x509.ExtKeyUsageClientAuth, c.root)); err == nil {
-		t.Error("a certificate with another name was accepted")
-	}
-	if err := get(t, url, clientConfig(t, newCA(t), ControlTowerName, x509.ExtKeyUsageClientAuth, c.root)); err == nil {
-		t.Error("a certificate from another authority was accepted")
 	}
 }

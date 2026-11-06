@@ -167,9 +167,11 @@ func main() {
 	apiTLSOn := cfg.APITLSEnabled() || trustManager.Managed()
 	if trustManager.Managed() {
 		// The certificate is the authority's and is renewed while the node runs.
-		// A client certificate is checked when one is offered; requiring it is
-		// for a later stage, so the token still authenticates the Control Tower.
-		server.TLSConfig = trustManager.TLSConfig(false)
+		// A client certificate is verified when one is offered. In managed-only
+		// the API then accepts nothing else from the Control Tower; the check
+		// is made on every request, so a revoked certificate stops working on
+		// a connection that is already open.
+		server.TLSConfig = trustManager.TLSConfig()
 	} else if cfg.APITLSEnabled() {
 		apiTLS, tlsErr := apiTLSConfig(cfg)
 		if tlsErr != nil {
@@ -249,9 +251,9 @@ func enrollIfManaged(ctx context.Context, cfg config.Config, identity entities.I
 	if err != nil {
 		return nil, err
 	}
-	if cfg.TLSMode != config.TLSManaged {
+	if !cfg.Managed() {
 		if manager.Managed() {
-			return nil, errors.New("this node was enrolled in a managed authority; set tls_mode: managed again (its certificate and trusted keys come from that authority)")
+			return nil, errors.New("this node was enrolled in a managed authority; set tls_mode: managed (or managed-only) again (its certificate and trusted keys come from that authority)")
 		}
 		return manager, nil
 	}

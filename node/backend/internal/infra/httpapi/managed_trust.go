@@ -30,12 +30,19 @@ func (s *Server) managedTrust(next http.HandlerFunc) http.HandlerFunc {
 // trustStatus tells the Control Tower which bundle and certificate the node
 // holds, so it can send only what is missing.
 func (s *Server) trustStatus(w http.ResponseWriter, _ *http.Request) {
-	end, serial := s.trust.CertificateEnd()
+	info := s.trust.Certificate()
+	authMode := "token"
+	if s.certificateOnly() {
+		authMode = "certificate"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"bundle_version": s.trust.BundleVersion(),
+		"auth_mode":      authMode,
 		"api_certificate": map[string]any{
-			"not_after": end.UTC().Format(time.RFC3339),
-			"serial":    serial,
+			"not_after":     info.NotAfter.UTC().Format(time.RFC3339),
+			"serial":        info.Serial,
+			"issuer_serial": info.Issuer,
+			"fingerprint":   info.Fingerprint,
 		},
 	})
 }

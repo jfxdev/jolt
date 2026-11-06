@@ -392,3 +392,27 @@ func TestAManagedNodeDoesNotNeedTheSharedTokenButAManualOneDoes(t *testing.T) {
 		t.Fatalf("managed node: %+v %v", cfg, err)
 	}
 }
+
+func TestManagedOnlyIsManagedPlusCertificateOnlyAndKeepsEveryManagedRule(t *testing.T) {
+	cfg, err := Read(writeConfig(t, "version: 1\nnode_name: n\ntls_mode: managed-only\napi_public_endpoint: https://node.lan:8080\n"))
+	if err != nil || cfg.TLSMode != TLSManagedOnly || !cfg.Managed() {
+		t.Fatalf("managed-only: %+v %v", cfg, err)
+	}
+	for name, body := range map[string]string{
+		"no endpoint":    "version: 1\nnode_name: n\ntls_mode: managed-only\n",
+		"hand-made cert": "version: 1\nnode_name: n\ntls_mode: managed-only\napi_public_endpoint: https://node.lan:8080\napi_tls_cert_file: /x\napi_tls_key_file: /y\n",
+	} {
+		if _, err := Read(writeConfig(t, body)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	t.Setenv("JOLT_STATE_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("CONTROL_TOWER_TOKEN", "")
+	t.Setenv("JOLT_JOIN_TOKEN", "jolt-join:v1:x")
+	if loaded, err := Load(writeConfig(t, "version: 1\nnode_name: n\ntls_mode: managed-only\napi_public_endpoint: https://node.lan:8080\n")); err != nil || loaded.ControlTowerToken != "" {
+		t.Fatalf("managed-only node needs no shared token: %+v %v", loaded, err)
+	}
+	if (Config{TLSMode: TLSManual}).Managed() || (Config{}).Managed() {
+		t.Fatal("manual reported as managed")
+	}
+}

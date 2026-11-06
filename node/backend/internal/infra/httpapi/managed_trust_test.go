@@ -3,7 +3,11 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -38,6 +42,11 @@ type managedNode struct {
 
 func newManagedNode(t *testing.T, enroll bool) *managedNode {
 	t.Helper()
+	return newManagedNodeIn(t, enroll, config.TLSManaged)
+}
+
+func newManagedNodeIn(t *testing.T, enroll bool, mode string) *managedNode {
+	t.Helper()
 	store, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
@@ -56,9 +65,9 @@ func newManagedNode(t *testing.T, enroll bool) *managedNode {
 	}
 	files := filesystem.New(store)
 	identity := entities.Identity{NodeID: "n1"}
-	cfg := config.Config{ControlTowerToken: "secret", NodeName: "test", APIAddress: ":0", MTLSAddress: ":0"}
+	cfg := config.Config{ControlTowerToken: "secret", NodeName: "test", APIAddress: ":0", MTLSAddress: ":0", TLSMode: mode}
 	handler := New(cfg, identity, files, jobs.New(store, files), pairing.New(store, identity), grants.New(store, files),
-		slog.New(slog.NewTextHandler(io.Discard, nil)), manager)
+		slog.New(slog.NewTextHandler(io.Discard, nil)), manager, store)
 	return &managedNode{handler: handler, trust: manager, ca: ca, store: store}
 }
 
@@ -197,5 +206,104 @@ func TestAKeyFromTheBundleVerifiesASignedReadWithoutAnyYAMLKey(t *testing.T) {
 	keys := n.trust.AuthorizationKeys()
 	if len(keys) != 1 || !keys["k1"].Equal(n.ca.SigningKey("k1").Public().(ed25519.PublicKey)) {
 		t.Fatalf("keys: %v", keys)
+	}
+}
+
+// asControlTower makes the request look as if it arrived on a connection whose
+// client certificate the TLS layer verified for the given leaf.
+func (n *managedNode) asControlTower(method, path string, leaf *x509.Certificate) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(method, path, nil)
+	if leaf != nil {
+		request.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf, n.ca.Issuer, n.ca.Root}}}
+	}
+	response := httptest.NewRecorder()
+	n.handler.ServeHTTP(response, request)
+	return response
+}
+
+func (n *managedNode) controlTowerLeaf(t *testing.T, name string, usage x509.ExtKeyUsage) *x509.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n.ca.Leaf(t, &key.PublicKey, name, usage, trusttest.Epoch.Add(90*24*time.Hour))
+}
+
+func TestManagedOnlyAuthenticatesTheControlTowerByCertificateAndRefusesTheToken(t *testing.T) {
+	n := newManagedNodeIn(t, true, config.TLSManagedOnly)
+	leaf := n.controlTowerLeaf(t, trust.ControlTowerName, x509.ExtKeyUsageClientAuth)
+	if w := n.asControlTower("GET", "/api/v1/node", leaf); w.Code != http.StatusOK {
+		t.Fatalf("the certificate was refused: %d %s", w.Code, w.Body)
+	}
+	if w := n.asControlTower("GET", "/api/v1/crypto/trust-bundle", leaf); !strings.Contains(w.Body.String(), `"auth_mode":"certificate"`) {
+		t.Fatalf("the node does not say it authenticates by certificate: %s", w.Body)
+	}
+	if w := newManagedNode(t, true).call("GET", "/api/v1/crypto/trust-bundle", nil, "secret"); !strings.Contains(w.Body.String(), `"auth_mode":"token"`) {
+		t.Fatalf("a managed node does not say it authenticates by token: %s", w.Body)
+	}
+	// The token the node holds opens nothing, over a connection with no certificate or with one.
+	if w := n.call("GET", "/api/v1/node", nil, "secret"); w.Code != http.StatusUnauthorized {
+		t.Fatalf("the shared token was accepted: %d %s", w.Code, w.Body)
+	}
+	withToken := httptest.NewRequest("GET", "/api/v1/node", nil)
+	withToken.Header.Set("Authorization", "Bearer secret")
+	withToken.TLS = &tls.ConnectionState{}
+	rec := httptest.NewRecorder()
+	n.handler.ServeHTTP(rec, withToken)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("the token over TLS without a certificate: %d", rec.Code)
+	}
+	// A certificate with another name, or meant for a server, is nobody.
+	for name, other := range map[string]*x509.Certificate{
+		"another name": n.controlTowerLeaf(t, "Someone Else", x509.ExtKeyUsageClientAuth),
+		"server usage": n.controlTowerLeaf(t, trust.ControlTowerName, x509.ExtKeyUsageServerAuth),
+	} {
+		if w := n.asControlTower("GET", "/api/v1/node", other); w.Code != http.StatusUnauthorized {
+			t.Errorf("%s: %d", name, w.Code)
+		}
+	}
+}
+
+func TestManagedOnlyStopsAtOnceForACertificateTheBundleRevokes(t *testing.T) {
+	n := newManagedNodeIn(t, true, config.TLSManagedOnly)
+	leaf := n.controlTowerLeaf(t, trust.ControlTowerName, x509.ExtKeyUsageClientAuth)
+	if w := n.asControlTower("GET", "/api/v1/node", leaf); w.Code != http.StatusOK {
+		t.Fatalf("before: %d", w.Code)
+	}
+	revoked, _ := n.ca.Bundle(t, 2, "k1", []string{leaf.SerialNumber.Text(16)}, "k1").Marshal()
+	if w := n.asControlTower("PUT", "/api/v1/crypto/trust-bundle", leaf); w.Code != http.StatusBadRequest {
+		t.Fatalf("a push with no body should be refused for its content, not its caller: %d", w.Code)
+	}
+	request := httptest.NewRequest("PUT", "/api/v1/crypto/trust-bundle", bytes.NewReader(revoked))
+	request.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf, n.ca.Issuer, n.ca.Root}}}
+	rec := httptest.NewRecorder()
+	n.handler.ServeHTTP(rec, request)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the push of the revocation: %d %s", rec.Code, rec.Body)
+	}
+	if w := n.asControlTower("GET", "/api/v1/node", leaf); w.Code != http.StatusUnauthorized {
+		t.Fatalf("a revoked certificate still authenticates: %d", w.Code)
+	}
+}
+
+func TestManagedOnlyHasNoOperationalTokenToRotateButManagedStillDoes(t *testing.T) {
+	only := newManagedNodeIn(t, true, config.TLSManagedOnly)
+	leaf := only.controlTowerLeaf(t, trust.ControlTowerName, x509.ExtKeyUsageClientAuth)
+	for _, route := range []string{"/api/v1/crypto/operational-token/prepare", "/api/v1/crypto/operational-token/commit"} {
+		if w := only.asControlTower("POST", route, leaf); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "operational_token_disabled") {
+			t.Errorf("%s: %d %s", route, w.Code, w.Body)
+		}
+	}
+	plain := newManagedNode(t, true)
+	if w := plain.call("POST", "/api/v1/crypto/operational-token/prepare", []byte(`{"new_token":"short"}`), "secret"); w.Code != http.StatusBadRequest {
+		t.Fatalf("managed mode lost its token rotation: %d %s", w.Code, w.Body)
+	}
+}
+
+func TestManagedOnlyDoesNotChangeANodeThatWasNeverEnrolled(t *testing.T) {
+	n := newManagedNodeIn(t, false, config.TLSManagedOnly)
+	if w := n.call("GET", "/api/v1/node", nil, "secret"); w.Code != http.StatusOK {
+		t.Fatalf("an unenrolled node stopped taking its token: %d", w.Code)
 	}
 }

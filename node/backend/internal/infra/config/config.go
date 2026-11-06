@@ -59,7 +59,14 @@ type UploadInspectionConfig struct {
 const (
 	TLSManual  = "manual"
 	TLSManaged = "managed"
+	// TLSManagedOnly is managed, and the Control Tower is also authenticated by
+	// its client certificate alone: the shared operational token is refused.
+	TLSManagedOnly = "managed-only"
 )
+
+// Managed reports whether a certificate authority keeps this node's
+// certificates, in either managed mode.
+func (c Config) Managed() bool { return c.TLSMode == TLSManaged || c.TLSMode == TLSManagedOnly }
 
 type AuthorizationPublicKey struct {
 	ID  string `yaml:"id"`
@@ -189,11 +196,11 @@ func Load(paths ...string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if c.TLSMode != TLSManaged && c.JoinToken != "" {
-		return Config{}, errors.New("JOLT_JOIN_TOKEN requires tls_mode: managed")
+	if !c.Managed() && c.JoinToken != "" {
+		return Config{}, errors.New("JOLT_JOIN_TOKEN requires tls_mode: managed or managed-only")
 	}
 	// A managed node is given its operational token when it is enrolled.
-	if c.ControlTowerToken == "" && c.TLSMode != TLSManaged {
+	if c.ControlTowerToken == "" && !c.Managed() {
 		return Config{}, errors.New("CONTROL_TOWER_TOKEN is required")
 	}
 	c.MetricsToken, err = SecretValue("METRICS_TOKEN")
@@ -373,11 +380,11 @@ func Read(file string) (Config, error) {
 	if c.TLSMode == "" {
 		c.TLSMode = TLSManual
 	}
-	if c.TLSMode != TLSManual && c.TLSMode != TLSManaged {
-		return c, fail("tls_mode", "must be manual or managed")
+	if c.TLSMode != TLSManual && !c.Managed() {
+		return c, fail("tls_mode", "must be manual, managed or managed-only")
 	}
 	c.APIPublicEndpoint = strings.TrimRight(strings.TrimSpace(c.APIPublicEndpoint), "/")
-	if c.TLSMode == TLSManaged {
+	if c.Managed() {
 		endpoint, e := url.Parse(c.APIPublicEndpoint)
 		if e != nil || endpoint.Scheme != "https" || endpoint.Hostname() == "" || endpoint.Path != "" || endpoint.User != nil || endpoint.RawQuery != "" {
 			return c, fail("api_public_endpoint", "managed mode needs an absolute https URL such as https://node.example:8080")
@@ -386,7 +393,7 @@ func Read(file string) (Config, error) {
 			return c, fail("api_tls_cert_file", "managed mode issues the API certificate; remove api_tls_cert_file, api_tls_key_file and api_tls_client_ca_file")
 		}
 	} else if c.APIPublicEndpoint != "" {
-		return c, fail("api_public_endpoint", "requires tls_mode: managed")
+		return c, fail("api_public_endpoint", "requires tls_mode: managed or managed-only")
 	}
 	if (c.APITLSCertFile == "") != (c.APITLSKeyFile == "") {
 		return c, fail("api_tls_cert_file", "certificate and key must be set together")

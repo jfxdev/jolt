@@ -324,10 +324,16 @@ func (m *Manager) checkServerChain(bundle Bundle, certPEM string) error {
 	if len(chain) == 0 {
 		return errors.New("no certificate")
 	}
-	if bundle.Revoked(chain[0].SerialNumber.Text(16)) {
-		return errors.New("the certificate was revoked")
+	chains, err := VerifiedChains(chain[0], roots, append(intermediates, chain[1:]...), x509.ExtKeyUsageServerAuth, m.now())
+	if err != nil {
+		return err
 	}
-	return Chain(chain[0], roots, append(intermediates, chain[1:]...), x509.ExtKeyUsageServerAuth, m.now())
+	for _, verified := range chains {
+		if !bundle.ChainRevoked(verified) {
+			return nil
+		}
+	}
+	return errors.New("the certificate was revoked")
 }
 
 // CertificateEnd is when the API certificate in use ends.
@@ -340,11 +346,38 @@ func (m *Manager) CertificateEnd() (time.Time, string) {
 	return m.cert.Leaf.NotAfter, m.cert.Leaf.SerialNumber.Text(16)
 }
 
+// CertificateInfo describes the API certificate in use: its end, its serial,
+// the serial of the intermediate that signed it and its SHA-256. It is what the
+// Control Tower compares with what it issued.
+type CertificateInfo struct {
+	NotAfter       time.Time
+	Serial, Issuer string
+	Fingerprint    string
+}
+
+// Certificate returns CertificateInfo for the certificate in use.
+func (m *Manager) Certificate() CertificateInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.cert == nil || m.cert.Leaf == nil {
+		return CertificateInfo{}
+	}
+	info := CertificateInfo{NotAfter: m.cert.Leaf.NotAfter, Serial: m.cert.Leaf.SerialNumber.Text(16), Fingerprint: Fingerprint(m.cert.Leaf)}
+	if len(m.cert.Certificate) > 1 {
+		if issuer, err := x509.ParseCertificate(m.cert.Certificate[1]); err == nil {
+			info.Issuer = issuer.SerialNumber.Text(16)
+		}
+	}
+	return info
+}
+
 // TLSConfig serves the API with the managed certificate and picks up a renewed
-// one without a restart. A client certificate, when one is presented, must come
-// from the authority, carry the Control Tower's name and not be revoked; with
-// requireClient the API refuses a connection that presents none.
-func (m *Manager) TLSConfig(requireClient bool) *tls.Config {
+// one without a restart. A client certificate, when one is presented, must
+// chain to the authority, carry the Control Tower's name and not be revoked.
+// Whether a request is the Control Tower's is decided per request, by
+// ControlTowerPresented, so a connection that outlives a revocation does not
+// keep its access.
+func (m *Manager) TLSConfig() *tls.Config {
 	return &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -367,17 +400,13 @@ func (m *Manager) TLSConfig(requireClient bool) *tls.Config {
 			for _, root := range roots {
 				pool.AddCert(root)
 			}
-			clientAuth := tls.VerifyClientCertIfGiven
-			if requireClient {
-				clientAuth = tls.RequireAndVerifyClientCert
-			}
 			return &tls.Config{
 				MinVersion:   tls.VersionTLS12,
 				Certificates: []tls.Certificate{*cert},
 				ClientCAs:    pool,
-				ClientAuth:   clientAuth,
+				ClientAuth:   tls.VerifyClientCertIfGiven,
 				VerifyPeerCertificate: func(raw [][]byte, chains [][]*x509.Certificate) error {
-					if len(raw) == 0 && !requireClient {
+					if len(raw) == 0 {
 						return nil
 					}
 					return verifyClient(bundle, chains, m.now())
@@ -387,10 +416,22 @@ func (m *Manager) TLSConfig(requireClient bool) *tls.Config {
 	}
 }
 
+// ControlTowerPresented reports whether the connection carries the Control
+// Tower's client certificate, judged against the bundle in use now.
+func (m *Manager) ControlTowerPresented(state *tls.ConnectionState) bool {
+	if state == nil {
+		return false
+	}
+	m.mu.RLock()
+	bundle, managed := m.bundle, m.managed
+	m.mu.RUnlock()
+	return managed && verifyClient(bundle, state.VerifiedChains, m.now()) == nil
+}
+
 func verifyClient(bundle Bundle, chains [][]*x509.Certificate, now time.Time) error {
 	for _, chain := range chains {
 		leaf := chain[0]
-		if leaf.Subject.CommonName != ControlTowerName || bundle.Revoked(leaf.SerialNumber.Text(16)) || now.After(leaf.NotAfter) || now.Before(leaf.NotBefore) {
+		if leaf.Subject.CommonName != ControlTowerName || bundle.ChainRevoked(chain) || now.After(leaf.NotAfter) || now.Before(leaf.NotBefore) {
 			continue
 		}
 		for _, usage := range leaf.ExtKeyUsage {

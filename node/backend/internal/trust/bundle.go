@@ -133,6 +133,17 @@ func (b Bundle) Revoked(serial string) bool {
 	return false
 }
 
+// ChainRevoked reports whether any certificate in the chain, leaf, intermediate
+// or root, has a serial this bundle revokes.
+func (b Bundle) ChainRevoked(chain []*x509.Certificate) bool {
+	for _, cert := range chain {
+		if b.Revoked(cert.SerialNumber.Text(16)) {
+			return true
+		}
+	}
+	return false
+}
+
 // validate checks a bundle on its own: sizes, identifiers, and that every
 // intermediate chains to a root it lists.
 func (b Bundle) validate(now time.Time) error {
