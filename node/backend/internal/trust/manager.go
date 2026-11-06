@@ -21,11 +21,6 @@ import (
 	"github.com/jfxdev/jolt/backend/internal/entities"
 )
 
-// ControlTowerName is the subject of the client certificate the Control Tower
-// presents. A certificate from the same authority with another name is not
-// accepted on the node's API.
-const ControlTowerName = "Jolt Control Tower"
-
 // Store keeps the enrollment state.
 type Store interface {
 	GetManagedTrust(context.Context) (entities.ManagedTrust, error)

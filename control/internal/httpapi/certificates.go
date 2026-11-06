@@ -14,7 +14,7 @@ const certificateResource = "control-tower/crypto"
 // certificateKinds are the series the expiry gauge reports. One series per kind
 // keeps a retired certificate that expires as planned from looking like an
 // outage, and keeps the label set fixed.
-var certificateKinds = []string{"root", "intermediate", "https", "signing_key"}
+var certificateKinds = []string{"root", "intermediate", "https", "client", "signing_key"}
 
 // authority returns the managed authority or answers that there is none.
 func (s *Server) authority(w http.ResponseWriter, r *http.Request) *pki.Manager {

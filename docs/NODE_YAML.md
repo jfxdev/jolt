@@ -85,6 +85,40 @@ transaction. The node never edits the operator's file. The Control Tower shows
 `configuration_managed_by_file`. Reads include effective authorization, and grants
 include `configured_enabled` and `inactive_reason`.
 
+## Managed certificates
+
+By default (`tls_mode: manual`) the operator brings the node's API certificate
+(`api_tls_*`) and its signing keys (`authorization_public_keys`). With
+`tls_mode: managed` the Control Tower's own certificate authority does both:
+
+```yaml
+tls_mode: managed
+api_public_endpoint: https://node.example:8080   # what the Control Tower reaches this node at
+```
+
+`api_public_endpoint` must be an absolute `https` URL with no path, user or query.
+Managed mode refuses `api_tls_cert_file`, `api_tls_key_file` and
+`api_tls_client_ca_file`, and `api_public_endpoint` without it. The node needs no
+`CONTROL_TOWER_TOKEN`: it chooses an operational token when it enrolls.
+
+The first start needs `JOLT_JOIN_TOKEN` (or `JOLT_JOIN_TOKEN_FILE`), a token an
+administrator made in the Control Tower. The node fetches the root without
+trusting the connection, continues only if its SHA-256 is the one in the token,
+and sends the secret over a connection that must chain to that root. It then
+keeps in its encrypted state the trust bundle it verified, its API certificate and
+key, and the hash of its operational token, in one write; the first write raises
+the state's security version, so an older binary cannot open it. Later starts
+ignore the token.
+
+An enrolled node serves HTTPS with its certificate, renews it when the Control
+Tower asks (the key is made on the node and never leaves it), adopts a trust
+bundle only if it is newer, keeps a root it already had and is signed by a key the
+previous bundle listed, and merges the bundle's signing keys with
+`authorization_public_keys` (the YAML wins on a clash). It advertises
+`managed_tls_v1` and exposes `/api/v1/crypto/trust-bundle` and `/api/v1/crypto/api-cert`.
+A client certificate, if offered, must come from that authority, be named
+`Jolt Control Tower` and not be revoked; it is not yet required.
+
 ## State and keys
 
 The in-progress signed-authorization integration accepts a list of trusted

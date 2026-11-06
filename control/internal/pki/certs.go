@@ -10,6 +10,11 @@ import (
 	"time"
 )
 
+// ControlTowerName is the subject of the client certificate the Control Tower
+// presents to a node, and the only client name a node's API accepts from the
+// authority.
+const ControlTowerName = "Jolt Control Tower"
+
 // Fingerprint is the SHA-256 of a certificate, lowercase hex without
 // separators: the form a join token pins.
 func Fingerprint(cert *x509.Certificate) string {

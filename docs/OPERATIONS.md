@@ -411,9 +411,10 @@ Uma regra de policy pode conceder `delete` ou `update` **somente com a aprovaç�
 
 ## Certificados e chaves gerenciados
 
-> **Status:** fase 1 de [`proposals/certificados-gerenciados.md`](proposals/certificados-gerenciados.md). O
-> Control Tower já é a autoridade e serve o próprio HTTPS; os nodes **ainda não** recebem o pacote de confiança
-> sozinhos (isso é a fase 2). Nada disso é validado entre hosts nem sob carga.
+> **Status:** fases 1 e 2 de [`proposals/certificados-gerenciados.md`](proposals/certificados-gerenciados.md). O
+> Control Tower é a autoridade, serve o próprio HTTPS e enrola nodes com um token de uso único; o node recebe o
+> pacote de confiança e o certificado da API e os renova sozinho. Validado com processos reais em loopback
+> (`scripts/managed-tls-smoke.py`), não entre hosts nem sob carga.
 
 `CONTROL_TOWER_TLS_MODE=managed` faz o Control Tower manter uma autoridade própria e dispensa `openssl`,
 certificado externo e reverse proxy. O padrão, `manual`, não muda nada.
@@ -424,8 +425,9 @@ certificado externo e reverse proxy. O padrão, `manual`, não muda nada.
 | `CONTROL_TOWER_TLS_NAMES` | vazio | Nomes DNS e IPs extras no certificado HTTPS, separados por vírgula. O host de `CONTROL_TOWER_PUBLIC_BASE_URL`, `localhost`, `127.0.0.1` e `::1` entram sempre. |
 | `CONTROL_TOWER_CERTIFICATE_VALIDITY_DAYS` | `90` | Vida dos certificados folha, de 7 a 180. Renovam aos 2/3. |
 | `CONTROL_TOWER_CA_ADDRESS` | `:8091` | Página HTTP simples que serve só a raiz pública. `off` a desliga. |
+| `CONTROL_TOWER_ENROLLMENT_APPROVAL` | `auto` | `auto`: um token válido enrola o node sem mais nada. `manual`: uma pessoa aprova cada adesão. Um token pode pedir `manual` com o padrão `auto`; nenhum token afrouxa um `manual`. |
 
-As três últimas só valem no modo `managed`; usá-las no `manual` é erro de configuração. `managed` também
+As quatro últimas só valem no modo `managed`; usá-las no `manual` é erro de configuração. `managed` também
 recusa `CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID` e `_FILE`: a chave de assinatura passa a ser gerada.
 
 ### O que existe
@@ -460,12 +462,69 @@ Com HTTPS no listener, o healthcheck do Compose precisa de `CONTROL_HEALTHCHECK_
 (ou `/readyz`); o `wget` já roda com `--no-check-certificate` dentro do container. Publique a porta `8091` só
 para quem precisa baixar a raiz.
 
-### Configurar um node enquanto a fase 2 não existe
+### Enrolar um node
 
-`GET /api/v1/control-tower/crypto/authorization-keys` devolve o bloco `authorization_public_keys` pronto, com
-a chave em uso e as que ainda estão na janela de sobreposição. Cole-o no `node.yaml` e reinicie o node. Durante
-uma rotação, o bloco muda: repita o passo antes de a chave antiga sair do pacote (14 dias após a sucessora
-nascer), senão o node recusa os contextos novos.
+Com `CONTROL_TOWER_PUBLIC_BASE_URL` em `https://` (o endereço que os nodes alcançam; o certificado já cobre o host
+dele), em **Access > Certificados > Adesão de nodes**:
+
+1. Crie um token: nome do node, aprovação (automática ou por uma pessoa) e validade (15 minutos por padrão, até 24 h).
+   Ele aparece **uma vez**. O Control Tower guarda só um hash.
+2. No node, ponha `JOLT_JOIN_TOKEN=<token>` (ou `JOLT_JOIN_TOKEN_FILE`) no ambiente e, no `node.yaml`:
+
+   ```yaml
+   tls_mode: managed
+   api_public_endpoint: https://ENDEREÇO-DESTE-NODE:8080
+   ```
+
+   Sem `api_tls_*` (o modo gerenciado os recusa) e sem `CONTROL_TOWER_TOKEN`: o node escolhe o próprio token
+   operacional e o entrega ao Control Tower na adesão.
+3. Inicie o node. Ele baixa a raiz **sem confiar na conexão**, só segue se o SHA-256 for o do token, e então envia
+   o segredo por uma conexão que precisa encadear nessa raiz. Recebe o certificado da API e o primeiro pacote de
+   confiança, guarda tudo no estado cifrado e passa a servir HTTPS. O Control Tower o cadastra sozinho.
+
+Nos Compose de exemplo (`docker-compose.yml`, `deploy/docker-compose*.yml`) o `CONTROL_TOWER_TOKEN` é declarado como
+obrigatório. Para um node gerenciado, use um override que o troque pelo token de adesão, por exemplo no
+`deploy/docker-compose.node.yml`: remova `CONTROL_TOWER_TOKEN_FILE`, monte o token como secret e defina
+`JOLT_JOIN_TOKEN_FILE: /run/secrets/join_token`. O `node.yaml` montado precisa trazer `tls_mode` e
+`api_public_endpoint`.
+
+Depois disso o token pode sair do ambiente (um reinício o ignora: `this node is already enrolled`).
+
+**O que o node confere antes de guardar:** o pacote traz uma raiz com o fingerprint do token e é assinado por uma
+chave dele; o certificado é para a chave que o próprio node gerou, encadeia nessa raiz e serve para servidor. Se
+algo falha, nada é gravado.
+
+**Aprovação por uma pessoa:** o node fica esperando (até 15 minutos, sem aceitar operações) e escreve o seu
+fingerprint de identidade no log. O administrador vê o pedido em *Aguardando aprovação*, **compara** esse
+fingerprint com o do log e aprova ou rejeita (o motivo chega ao node). Só `sudo` em
+`control-tower/enrollments` decide; agentes e contas de serviço não.
+
+**Se a resposta se perder:** o node repete o mesmo pedido e recebe a mesma resposta, sem token novo. Um pedido
+diferente com o mesmo token é recusado.
+
+**Travas:** todo token errado (desconhecido, expirado, usado, de outro nome de node) responde o mesmo 401. Cinco
+falhas do mesmo endereço o travam por tempo crescente (o endereço vê um `429`); atrás de um NAT, isso vale para
+todos os nodes por ele. No máximo 20 adesões esperando ao mesmo tempo.
+
+### Renovação e pacote nos nodes enrolados
+
+A cada minuto o Control Tower olha cada node enrolado:
+
+- se o node está atrás no pacote de confiança, envia o atual. O **node decide sozinho**: só adota um pacote mais novo,
+  que mantenha uma raiz que ele já tinha e esteja assinado por uma chave que o pacote anterior listava. Estar
+  autenticado no canal não basta;
+- aos 2/3 da vida do certificado da API (60 de 90 dias), pede um pedido de assinatura ao node (a chave nova nasce
+  nele e nunca sai), emite o certificado e o instala. Se o certificado não for para essa chave ou não encadear, o
+  node mantém o atual.
+
+Um node fora do ar fica com o erro registrado (`last_error` do node enrolado) e os outros seguem. As chaves de
+assinatura do pacote entram no que o node aceita **junto** com as do `node.yaml`; em caso de mesmo `id`, vale a do
+YAML.
+
+O Control Tower fala com os nodes enrolados confiando só na raiz da autoridade (e no que o operador já tinha
+configurado) e apresenta o seu certificado de cliente, que o node confere se for oferecido: mesma autoridade, nome
+`Jolt Control Tower`, serial fora da lista de revogados. **Nesta fase o certificado de cliente não é obrigatório**:
+o token operacional ainda autentica o Control Tower.
 
 ### Se a raiz sair do banco ou o banco se perder
 
@@ -479,6 +538,9 @@ precisa instalá-la de novo. O backup que já cobre o banco cobre a autoridade.
   `intermediate`, `https`, `signing_key`). Chave que está saindo ou publicada e ainda sem assinar não conta,
   para uma despedida planejada não parecer problema.
 - `jolt_trust_bundle_version`: versão do pacote publicado.
+- `jolt_managed_nodes`, `jolt_managed_node_bundle_lag` (quantas versões o node mais atrasado está atrás) e
+  `jolt_managed_node_certificate_expiry_seconds` (o certificado de API que vence primeiro).
+- No node: `jolt_node_api_certificate_expiry_seconds` e `jolt_node_trust_bundle_version`.
 - Access > Certificados lista tudo, com datas e fingerprint, e avisa quando algo em uso está perto do fim.
   Nenhuma chave privada sai pela API.
 
@@ -499,13 +561,15 @@ precisa instalá-la de novo. O backup que já cobre o banco cobre a autoridade.
 
 ### Limites desta fase
 
-- Os nodes não recebem o pacote nem os certificados; a chave pública vai à mão para o YAML.
-- Não há `enrollment`, certificado de cliente do Control Tower nem certificado de API do node.
-- Não há revogação de seriais (a lista existe vazia no pacote) nem rotação de raiz.
-- `ca export-root` (raiz fora do banco) não existe; o erro `ErrRootUnavailable` só aparece se alguém retirar
-  o segredo da raiz do banco à mão, e o Control Tower continua servindo enquanto a intermediária vigente não
-  expira.
-- Não foi exercitado entre hosts, com relógios divergentes nem com navegadores de cada sistema.
+- O certificado de cliente do Control Tower existe e é conferido quando oferecido, mas **não é exigido**; o token
+  operacional continua autenticando. Exigi-lo (e dispensar o token) é a fase 4.
+- Não há revogação de seriais (a lista vai vazia no pacote) nem rotação de raiz.
+- `ca export-root` (raiz fora do banco) não existe; o erro `ErrRootUnavailable` só aparece se alguém retirar o
+  segredo da raiz do banco à mão, e o Control Tower continua servindo enquanto a intermediária vigente não expira.
+- Um node cujo certificado de API expirou sem renovar (fora do ar por mais de 90 dias) precisa de um token novo.
+- O `jolt-mcp trust` e a rotação do certificado HTTPS do Control Tower em clientes não mudaram.
+- Exercitado com processos reais em loopback e com nodes simulados; **não** entre hosts, com relógios divergentes,
+  sob carga nem com os navegadores de cada sistema.
 
 ## Rotinas
 

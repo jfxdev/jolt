@@ -35,6 +35,9 @@ func registerControlMetrics(registry *metrics.Registry) {
 	registry.Gauge("jolt_certificate_expiry_seconds",
 		"Seconds until the soonest active certificate or key of each kind ends (managed TLS only).", "kind")
 	registry.Gauge("jolt_trust_bundle_version", "Version of the trust bundle nodes are told to adopt (managed TLS only).")
+	registry.Gauge("jolt_managed_nodes", "Nodes the Control Tower's certificate authority enrolled.")
+	registry.Gauge("jolt_managed_node_bundle_lag", "Versions the most outdated enrolled node is behind the published trust bundle.")
+	registry.Gauge("jolt_managed_node_certificate_expiry_seconds", "Seconds until the soonest API certificate of an enrolled node ends.")
 	registry.GaugeFunc("jolt_control_info",
 		"Always 1; present so a scrape confirms the Control Tower is up.",
 		func() float64 { return 1 })

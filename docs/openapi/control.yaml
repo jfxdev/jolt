@@ -160,6 +160,111 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/enroll:
+    post:
+      tags: [Administration]
+      summary: A node enrolls with a join token
+      description: >-
+        Public: the join token's secret is the only credential, and every way it can be wrong (unknown,
+        expired, spent, for another node name) answers the same 401 `invalid_join_token`. Five failures from
+        one address lock it out. Answers 200 with the node's certificate and the first trust bundle, or 202 with
+        a `request_id` and a `poll_secret` when a person must approve. A retry of the same request returns the
+        same answer. Answers 404 `managed_tls_disabled` unless CONTROL_TOWER_TLS_MODE=managed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object}
+      security: []
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '202': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/enroll/{enrollmentID}:
+    get:
+      tags: [Administration]
+      summary: How a pending enrollment went
+      description: >-
+        Public; the bearer credential is the `poll_secret` returned when the enrollment was started. 202 while
+        pending, 200 with the certificate once approved, 403 with the reason once rejected, 410 once expired.
+      security: []
+      parameters:
+        - {name: enrollmentID, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '202': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '410': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/enrollments/tokens:
+    post:
+      tags: [Administration]
+      summary: Create a one-use join token for a node
+      description: >-
+        Needs `sudo` on `control-tower/enrollments`. The token names this Control Tower and pins the SHA-256 of
+        its root; it is shown once and only a hash is kept. A token can ask for manual approval but never
+        weakens CONTROL_TOWER_ENROLLMENT_APPROVAL. Needs CONTROL_TOWER_PUBLIC_BASE_URL over https.
+      responses:
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+    get:
+      tags: [Administration]
+      summary: List join tokens
+      description: Needs `sudo` on `control-tower/enrollments`. Never carries a secret or its hash.
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/enrollments/tokens/{tokenID}:
+    delete:
+      tags: [Administration]
+      summary: Take back a token that was not used
+      parameters:
+        - {name: tokenID, in: path, required: true, schema: {type: string}}
+      responses:
+        '204': {description: Revoked}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/enrollments:
+    get:
+      tags: [Administration]
+      summary: List enrollments
+      description: >-
+        Needs `sudo` on `control-tower/enrollments`. Shows what each node announced, including its identity
+        fingerprint, for the administrator to compare with the one in the node's log.
+      parameters:
+        - {name: state, in: query, schema: {type: string, enum: [pending, issued, rejected, expired]}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/enrollments/{enrollmentID}/approve:
+    post:
+      tags: [Administration]
+      summary: Approve a pending enrollment
+      description: Needs `sudo` on `control-tower/enrollments`. Issues the node's certificate and registers it.
+      parameters:
+        - {name: enrollmentID, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/enrollments/{enrollmentID}/reject:
+    post:
+      tags: [Administration]
+      summary: Reject a pending enrollment
+      description: Needs `sudo` on `control-tower/enrollments`. The optional note reaches the node.
+      parameters:
+        - {name: enrollmentID, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/crypto/ca:
     get:
       tags: [Administration]

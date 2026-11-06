@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -55,7 +56,7 @@ func TestPKIObjectsRoundTripAndRaiseTheSecurityVersionOnFirstWrite(t *testing.T)
 	if objects, _ := reopened.ListPKIObjects(ctx); len(objects) != 1 {
 		t.Fatalf("lost across restart: %+v", objects)
 	}
-	if _, err := reopened.db.Exec(`UPDATE metadata SET value=? WHERE key='minimum_security_version'`, "10"); err != nil {
+	if _, err := reopened.db.Exec(`UPDATE metadata SET value=? WHERE key='minimum_security_version'`, strconv.Itoa(supportedSecurityVersion+1)); err != nil {
 		t.Fatal(err)
 	}
 	reopened.Close()

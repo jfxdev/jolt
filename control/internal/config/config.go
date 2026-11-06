@@ -48,6 +48,10 @@ type Config struct {
 	// CertificateValidity is how long a managed leaf certificate lives; zero
 	// means the default.
 	CertificateValidity time.Duration
+	// EnrollmentApproval is "auto" (a valid join token enrolls a node without
+	// further ado) or "manual" (a person approves each enrollment). A token can
+	// ask for manual when this is auto, never the other way round.
+	EnrollmentApproval string
 	// CAAddress is where the plain-HTTP page with the public root certificate
 	// listens in managed mode.
 	CAAddress string
@@ -114,6 +118,10 @@ func Load() (Config, error) {
 	}
 	managed := cfg.TLSMode == TLSManaged
 	if managed {
+		cfg.EnrollmentApproval = strings.ToLower(value("CONTROL_TOWER_ENROLLMENT_APPROVAL", "auto"))
+		if cfg.EnrollmentApproval != "auto" && cfg.EnrollmentApproval != "manual" {
+			return Config{}, errors.New("CONTROL_TOWER_ENROLLMENT_APPROVAL must be auto or manual")
+		}
 		cfg.CAAddress = value("CONTROL_TOWER_CA_ADDRESS", ":8091")
 		if cfg.CAAddress == "off" {
 			cfg.CAAddress = ""
@@ -131,7 +139,7 @@ func Load() (Config, error) {
 			cfg.CertificateValidity = time.Duration(days) * 24 * time.Hour
 		}
 	} else {
-		for _, name := range []string{"CONTROL_TOWER_TLS_NAMES", "CONTROL_TOWER_CA_ADDRESS", "CONTROL_TOWER_CERTIFICATE_VALIDITY_DAYS"} {
+		for _, name := range []string{"CONTROL_TOWER_TLS_NAMES", "CONTROL_TOWER_CA_ADDRESS", "CONTROL_TOWER_CERTIFICATE_VALIDITY_DAYS", "CONTROL_TOWER_ENROLLMENT_APPROVAL"} {
 			if strings.TrimSpace(os.Getenv(name)) != "" {
 				return Config{}, errors.New(name + " requires CONTROL_TOWER_TLS_MODE=managed")
 			}

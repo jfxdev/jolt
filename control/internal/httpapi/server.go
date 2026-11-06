@@ -82,7 +82,7 @@ func NewWithBackground(cfg config.Config, storage *store.Store, logger *slog.Log
 	if err != nil {
 		return nil, nil, err
 	}
-	transport.TLSClientConfig = tlsConfig
+	transport.TLSClientConfig = withAuthority(cfg, tlsConfig)
 	server, handler := newServerHandler(cfg, storage, logger, &http.Client{Transport: transport})
 	return handler, server.background, nil
 }
@@ -159,6 +159,14 @@ func newServerHandler(cfg config.Config, storage *store.Store, logger *slog.Logg
 	mux.Handle("GET /api/v1/control-tower/auth/me", s.auth(http.HandlerFunc(s.me)))
 	mux.Handle("GET /api/v1/control-tower/about", s.auth(http.HandlerFunc(s.about)))
 	mux.Handle("POST /api/v1/control-tower/auth/permissions", s.auth(http.HandlerFunc(s.permissions)))
+	mux.HandleFunc("POST /api/v1/control-tower/enroll", s.enroll)
+	mux.HandleFunc("GET /api/v1/control-tower/enroll/{enrollmentID}", s.pollEnrollment)
+	mux.Handle("POST /api/v1/control-tower/enrollments/tokens", s.auth(http.HandlerFunc(s.createJoinToken)))
+	mux.Handle("GET /api/v1/control-tower/enrollments/tokens", s.auth(http.HandlerFunc(s.listJoinTokens)))
+	mux.Handle("DELETE /api/v1/control-tower/enrollments/tokens/{tokenID}", s.auth(http.HandlerFunc(s.revokeJoinToken)))
+	mux.Handle("GET /api/v1/control-tower/enrollments", s.auth(http.HandlerFunc(s.listEnrollments)))
+	mux.Handle("POST /api/v1/control-tower/enrollments/{enrollmentID}/approve", s.auth(http.HandlerFunc(s.approveEnrollment)))
+	mux.Handle("POST /api/v1/control-tower/enrollments/{enrollmentID}/reject", s.auth(http.HandlerFunc(s.rejectEnrollment)))
 	mux.Handle("GET /api/v1/control-tower/crypto/ca", s.auth(http.HandlerFunc(s.listCertificates)))
 	mux.Handle("GET /api/v1/control-tower/crypto/trust-bundle", s.auth(http.HandlerFunc(s.trustBundle)))
 	mux.Handle("GET /api/v1/control-tower/crypto/authorization-keys", s.auth(http.HandlerFunc(s.authorizationKeysSnippet)))
@@ -255,6 +263,7 @@ func newServerHandler(cfg config.Config, storage *store.Store, logger *slog.Logg
 func (s *Server) background(ctx context.Context) {
 	if s.config.Authority != nil {
 		go s.runCertificateMetrics(ctx.Done())
+		go s.runManagedSync(ctx.Done())
 	}
 	if s.config.SignedLocalJobs {
 		s.runSignedJobRenewal(ctx)

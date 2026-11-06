@@ -4,17 +4,20 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -102,6 +105,8 @@ type Manager struct {
 	root        *x509.Certificate
 	httpsLeaf   *tls.Certificate
 	httpsParsed *x509.Certificate
+	issuer      *Authority
+	clientLeaf  *tls.Certificate
 	inventory   []Item
 }
 
@@ -140,7 +145,10 @@ func (m *Manager) unseal(kind, sealed string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(plain)
 }
 
-func renewDue(notBefore, notAfter, now time.Time) bool {
+func renewDue(notBefore, notAfter, now time.Time) bool { return RenewalDue(notBefore, notAfter, now) }
+
+// RenewalDue reports whether two thirds of a certificate's life have passed.
+func RenewalDue(notBefore, notAfter, now time.Time) bool {
 	return !now.Before(notBefore.Add(notAfter.Sub(notBefore) * 2 / 3))
 }
 
@@ -524,14 +532,30 @@ func (m *Manager) manageSigningKeys(objects []store.PKIObject, now time.Time, to
 // when it is missing, due, or no longer covers the configured names.
 func (m *Manager) publish(rootObject store.PKIObject, rootCert *x509.Certificate, issuerObject store.PKIObject, keys []signingKey, bundle Bundle, now time.Time) error {
 	m.mu.RLock()
-	leaf, parsed := m.httpsLeaf, m.httpsParsed
+	leaf, parsed, issuer, client := m.httpsLeaf, m.httpsParsed, m.issuer, m.clientLeaf
 	m.mu.RUnlock()
 	dns, ips := m.splitNames()
-	if leaf == nil || parsed == nil || renewDue(parsed.NotBefore, parsed.NotAfter, now) || parsed.Issuer.CommonName != issuerCommonName(issuerObject) {
-		issuer, err := m.authority(store.PKIIntermediate, issuerObject)
+	// The intermediate is the key used every day: it stays in memory, unlike
+	// the root, which is read only to sign an intermediate.
+	if issuer == nil || issuer.Cert.SerialNumber.Text(16) != issuerObject.Serial {
+		loaded, err := m.authority(store.PKIIntermediate, issuerObject)
 		if err != nil {
 			return err
 		}
+		issuer = loaded
+	}
+	if client == nil || client.Leaf == nil || renewDue(client.Leaf.NotBefore, client.Leaf.NotAfter, now) || client.Leaf.Issuer.CommonName != issuer.Cert.Subject.CommonName {
+		key, err := generateKey()
+		if err != nil {
+			return err
+		}
+		cert, err := issuer.Issue(now, &key.PublicKey, LeafSpec{CommonName: ControlTowerName, Usage: x509.ExtKeyUsageClientAuth, Validity: m.opts.LeafValidity})
+		if err != nil {
+			return err
+		}
+		client = &tls.Certificate{Certificate: [][]byte{cert.Raw, issuer.Cert.Raw}, PrivateKey: key, Leaf: cert}
+	}
+	if leaf == nil || parsed == nil || renewDue(parsed.NotBefore, parsed.NotAfter, now) || parsed.Issuer.CommonName != issuerCommonName(issuerObject) {
 		key, err := generateKey()
 		if err != nil {
 			return err
@@ -562,6 +586,7 @@ func (m *Manager) publish(rootObject store.PKIObject, rootCert *x509.Certificate
 		inventory = append(inventory, item("intermediate", cert.Subject.CommonName, state, cert))
 	}
 	inventory = append(inventory, item("https", "Control Tower", stateActive, parsed))
+	inventory = append(inventory, item("client", ControlTowerName, stateActive, client.Leaf))
 	for _, key := range keys {
 		id := key.object.ID[len("signing-"):]
 		if key.object.State == stateActive {
@@ -577,6 +602,7 @@ func (m *Manager) publish(rootObject store.PKIObject, rootCert *x509.Certificate
 	m.signing, m.signingID, m.verifying = signing, signingID, verifying
 	m.bundle, m.bundleJSON, m.root = bundle, encoded, rootCert
 	m.httpsLeaf, m.httpsParsed, m.inventory = leaf, parsed, inventory
+	m.issuer, m.clientLeaf = issuer, client
 	m.mu.Unlock()
 	return nil
 }
@@ -622,6 +648,72 @@ func (m *Manager) splitNames() (dns []string, ips []net.IP) {
 		}
 	}
 	return dns, ips
+}
+
+// ClientCertificate is the certificate the Control Tower presents to a node. It
+// is renewed in memory like the HTTPS certificate, so a connection made after a
+// renewal presents the new one.
+func (m *Manager) ClientCertificate() (*tls.Certificate, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.clientLeaf == nil {
+		return nil, errors.New("the client certificate is not ready")
+	}
+	return m.clientLeaf, nil
+}
+
+// RootPool trusts the root of this authority and nothing else.
+func (m *Manager) RootPool() *x509.CertPool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.root == nil {
+		return nil
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(m.root)
+	return pool
+}
+
+// IssueServerCertificate signs the API certificate of a node from the request
+// the node made. The key stays with the node. The request must be well formed,
+// for a P-256 key, and carry the node's ID as its name; the names the
+// certificate covers come from the address the node announced, never from the
+// request. It returns the certificate and the intermediate, as PEM.
+func (m *Manager) IssueServerCertificate(csrPEM []byte, nodeID, host string) (string, *x509.Certificate, error) {
+	block, rest := pem.Decode(csrPEM)
+	if block == nil || block.Type != "CERTIFICATE REQUEST" || len(strings.TrimSpace(string(rest))) != 0 {
+		return "", nil, errors.New("expected exactly one PEM certificate request")
+	}
+	request, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil || request.CheckSignature() != nil {
+		return "", nil, errors.New("the certificate request is not valid")
+	}
+	public, ok := request.PublicKey.(*ecdsa.PublicKey)
+	if !ok || public.Curve != elliptic.P256() {
+		return "", nil, errors.New("the certificate request must be for an ECDSA P-256 key")
+	}
+	if nodeID == "" || request.Subject.CommonName != nodeID {
+		return "", nil, errors.New("the certificate request is not for this node")
+	}
+	spec := LeafSpec{CommonName: nodeID, Usage: x509.ExtKeyUsageServerAuth, Validity: m.opts.LeafValidity}
+	if ip := net.ParseIP(host); ip != nil {
+		spec.IPs = []net.IP{ip}
+	} else if host != "" {
+		spec.DNSNames = []string{host}
+	}
+	m.mu.RLock()
+	issuer := m.issuer
+	m.mu.RUnlock()
+	if issuer == nil {
+		return "", nil, errors.New("the certificate authority is not ready")
+	}
+	cert, err := issuer.Issue(m.opts.Now().UTC(), public, spec)
+	if err != nil {
+		return "", nil, err
+	}
+	chain := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+	chain = append(chain, issuer.PEM()...)
+	return string(chain), cert, nil
 }
 
 // Current is the key that signs authorization contexts now.

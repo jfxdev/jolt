@@ -21,7 +21,7 @@ var (
 	ErrLastAdmin = errors.New("at least one enabled administrator is required")
 )
 
-const supportedSecurityVersion = 9
+const supportedSecurityVersion = 10
 
 type User struct {
 	ID           string    `json:"user_id"`
@@ -288,6 +288,23 @@ CREATE TABLE IF NOT EXISTS pending_operations (
  note TEXT NOT NULL DEFAULT '', result_status INTEGER NOT NULL DEFAULT 0, result_body TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS pending_operations_state ON pending_operations(state, expires_at_ns);
+CREATE TABLE IF NOT EXISTS join_tokens (
+ id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL UNIQUE, node_name TEXT NOT NULL, approval TEXT NOT NULL,
+ created_by TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+ used_at TEXT NOT NULL DEFAULT '', enrollment_id TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS enrollments (
+ id TEXT PRIMARY KEY, token_id TEXT NOT NULL, state TEXT NOT NULL, node_name TEXT NOT NULL, node_id TEXT NOT NULL,
+ node_fingerprint TEXT NOT NULL, api_endpoint TEXT NOT NULL, remote_addr TEXT NOT NULL, csr_pem TEXT NOT NULL, csr_hash TEXT NOT NULL,
+ operational_encrypted TEXT NOT NULL, poll_hash TEXT NOT NULL, decided_by TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+ response TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, expires_at TEXT NOT NULL, decided_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS enrollments_state ON enrollments(state, expires_at);
+CREATE TABLE IF NOT EXISTS managed_nodes (
+ node_id TEXT PRIMARY KEY, enrolled_at TEXT NOT NULL, bundle_version INTEGER NOT NULL DEFAULT 0, cert_serial TEXT NOT NULL DEFAULT '',
+ cert_not_before TEXT NOT NULL DEFAULT '', cert_not_after TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '', last_error_at TEXT NOT NULL DEFAULT '',
+ FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS pki_objects (
  id TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, serial TEXT NOT NULL DEFAULT '',
  fingerprint TEXT NOT NULL DEFAULT '', public TEXT NOT NULL, secret TEXT NOT NULL DEFAULT '',

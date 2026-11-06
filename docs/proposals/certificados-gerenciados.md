@@ -1,6 +1,6 @@
 # Proposta — Certificados e chaves com ciclo de vida gerenciado pelo Jolt
 
-> **Status:** proposta aprovada; **fase 1 implementada** (ver §12), fases 2 a 4 não · **Data:** 6 de novembro de 2026 · **Origem:** o Jolt precisa funcionar **fechado**, sem depender de reverse proxy, ACME, CA externa ou operação manual de `openssl` · **Complementa:** [`plano-consolidado-seguranca.md`](plano-consolidado-seguranca.md) (contextos assinados) e [`../PRODUCTION.md`](../PRODUCTION.md) · **Código lido:** `node/backend/internal/infra/crypto/certificates.go`, `node/backend/internal/infra/config/config.go`, `control/internal/config/config.go`, `control/internal/store/store.go`, `docs/NODE_YAML.md`, `scripts/signed-read-smoke.py`.
+> **Status:** proposta aprovada; **fases 1 e 2 implementadas** (ver §12), fases 3 e 4 só em parte · **Data:** 6 de novembro de 2026 · **Origem:** o Jolt precisa funcionar **fechado**, sem depender de reverse proxy, ACME, CA externa ou operação manual de `openssl` · **Complementa:** [`plano-consolidado-seguranca.md`](plano-consolidado-seguranca.md) (contextos assinados) e [`../PRODUCTION.md`](../PRODUCTION.md) · **Código lido:** `node/backend/internal/infra/crypto/certificates.go`, `node/backend/internal/infra/config/config.go`, `control/internal/config/config.go`, `control/internal/store/store.go`, `docs/NODE_YAML.md`, `scripts/signed-read-smoke.py`.
 
 ## 1. Resumo
 
@@ -244,6 +244,16 @@ O Control Tower comprometido já controlaria todos os nodes pelo token compartil
 **Fase 2: enrollment e pacote no node.**
 - Token de adesão, endpoints de enrollment e de pacote, estado cifrado no node, certificado de servidor da API e renovação dirigida pelo Control Tower, certificado de cliente do Control Tower.
 - Critérios: node de mentira cobre cada passo do §5.2; um teste de falha para cada linha da tabela do §11; teste com processo real de node (feito pelo mantenedor).
+
+**Fase 2 — implementada em 6 de novembro de 2026.** Token de adesão, enrollment com aprovação automática ou por uma pessoa (§5.4), pacote de confiança e certificado da API no node, renovação dirigida pelo Control Tower, certificado de cliente do Control Tower e a tela de adesão em Access > Certificados. Operação em [`../OPERATIONS.md`](../OPERATIONS.md#enrolar-um-node) e [`../NODE_YAML.md`](../NODE_YAML.md#managed-certificates). Verificada com testes nos dois módulos, mutação e `scripts/managed-tls-smoke.py` (binários reais: adesão automática, token gasto, reinício sem token, token com raiz errada, adesão aprovada por uma pessoa). O que mudou em relação ao texto acima:
+
+- O verificador do pacote existe em duas cópias idênticas (`control/internal/pki` e `node/backend/internal/trust`), com um teste de deriva e um corpus de pacotes em `testdata/trust-bundle-cases.json` que os dois módulos leem.
+- O node escolhe o próprio token operacional e o entrega ao Control Tower na adesão (§5.2 dizia que o Control Tower o geraria). Evita um segredo viajando do Control Tower para o node e o node o guarda só como hash, na mesma gravação da adesão; um reinício completa o que um travamento interrompeu.
+- Para buscar a raiz o node usa uma conexão sem verificação e confere o SHA-256 antes de enviar qualquer coisa; só depois verifica a cadeia do servidor contra essa raiz. É o desenho do `kubeadm`.
+- Uma repetição do mesmo pedido de adesão recebe a mesma resposta (o token já gasto é reconhecido pelo hash do CSR); qualquer outro pedido sob o token gasto é recusado.
+- O certificado de cliente do Control Tower **não é exigido** nesta fase: o token operacional continua autenticando, e o certificado é conferido apenas se for oferecido. Exigi-lo é o `managed-only` da fase 4.
+- Defeito achado pelos testes e corrigido: a validação de serial revogado usava `hex.DecodeString`, que recusa tamanho ímpar, mas `big.Int.Text(16)` pode produzir um. Passou a aceitar hex minúsculo de qualquer comprimento.
+- Fica de fora: revogação de seriais, rotação de raiz, `ca export-root`, `jolt-mcp trust` e um node que expirou sem renovar (precisa de token novo).
 
 **Fase 3: ergonomia e agentes.**
 - Página `/ca`, `jolt-mcp trust`, hot reload do certificado HTTPS, UI de inventário e enrollment.

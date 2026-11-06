@@ -2,10 +2,16 @@ package pki
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/pem"
 	"errors"
 	"strings"
 	"sync"
@@ -507,3 +513,123 @@ func TestTheInventoryCarriesDatesAndNoSecrets(t *testing.T) {
 }
 
 func encode(key ed25519.PublicKey) string { return base64.StdEncoding.EncodeToString(key) }
+
+func csrFor(t *testing.T, key any, name string, dns ...string) []byte {
+	t.Helper()
+	request, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: name}, DNSNames: dns}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: request})
+}
+
+func TestTheClientCertificateChainsToTheBundleAndRenewsInMemory(t *testing.T) {
+	repo, c := newMemoryRepo(), &clock{epoch}
+	m := newManager(t, repo, c, "control.lan")
+	if _, err := m.ClientCertificate(); err == nil {
+		t.Fatal("a client certificate before the authority was ready")
+	}
+	ensure(t, m)
+	check := func() *x509.Certificate {
+		t.Helper()
+		pair, err := m.ClientCertificate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots, intermediates, _ := m.Bundle().Certificates()
+		if err := Chain(pair.Leaf, roots, intermediates, x509.ExtKeyUsageClientAuth, c.now); err != nil {
+			t.Fatalf("client certificate does not chain: %v", err)
+		}
+		if pair.Leaf.Subject.CommonName != ControlTowerName {
+			t.Fatalf("name %q", pair.Leaf.Subject.CommonName)
+		}
+		if err := Chain(pair.Leaf, roots, intermediates, x509.ExtKeyUsageServerAuth, c.now); err == nil {
+			t.Fatal("a client certificate is usable as a server certificate")
+		}
+		return pair.Leaf
+	}
+	first := check()
+	c.advance(59 * 24 * time.Hour)
+	ensure(t, m)
+	if same := check(); same.SerialNumber.Cmp(first.SerialNumber) != 0 {
+		t.Fatal("renewed too early")
+	}
+	c.advance(2 * 24 * time.Hour)
+	ensure(t, m)
+	if renewed := check(); renewed.SerialNumber.Cmp(first.SerialNumber) == 0 {
+		t.Fatal("not renewed at two thirds of its life")
+	}
+	if m.RootPool() == nil {
+		t.Fatal("no root pool")
+	}
+}
+
+func TestANodeCertificateIsIssuedFromItsRequestForTheAnnouncedAddress(t *testing.T) {
+	repo, c := newMemoryRepo(), &clock{epoch}
+	m := newManager(t, repo, c)
+	ensure(t, m)
+	key, _ := generateKey()
+	// The request asks for names the node was never announced under: they must not appear.
+	chain, leaf, err := m.IssueServerCertificate(csrFor(t, key, "node-1", "evil.example", "control.lan"), "node-1", "node.lan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leaf.DNSNames) != 1 || leaf.DNSNames[0] != "node.lan" || leaf.Subject.CommonName != "node-1" {
+		t.Fatalf("names: %v / %q", leaf.DNSNames, leaf.Subject.CommonName)
+	}
+	if !leaf.PublicKey.(*ecdsa.PublicKey).Equal(&key.PublicKey) {
+		t.Fatal("the certificate is not for the requested key")
+	}
+	roots, intermediates, _ := m.Bundle().Certificates()
+	if err := Chain(leaf, roots, intermediates, x509.ExtKeyUsageServerAuth, c.now); err != nil {
+		t.Fatalf("does not chain: %v", err)
+	}
+	if err := Chain(leaf, roots, intermediates, x509.ExtKeyUsageClientAuth, c.now); err == nil {
+		t.Fatal("a node's server certificate works as a client certificate")
+	}
+	// The chain carries the intermediate and not the root.
+	count := strings.Count(chain, "BEGIN CERTIFICATE")
+	if count != 2 || strings.Count(chain, string(m.RootPEM())) != 0 {
+		t.Fatalf("chain has %d certificates", count)
+	}
+	_, ipLeaf, err := m.IssueServerCertificate(csrFor(t, key, "node-1"), "node-1", "10.1.2.3")
+	if err != nil || len(ipLeaf.IPAddresses) != 1 || ipLeaf.IPAddresses[0].String() != "10.1.2.3" || len(ipLeaf.DNSNames) != 0 {
+		t.Fatalf("ip address: %v", err)
+	}
+}
+
+func TestARequestThatIsNotForThisNodeOrNotP256IsRefused(t *testing.T) {
+	repo, c := newMemoryRepo(), &clock{epoch}
+	m := newManager(t, repo, c)
+	ensure(t, m)
+	p256, _ := generateKey()
+	p384, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	rsaKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	good := csrFor(t, p256, "node-1")
+	tampered := append([]byte(nil), good...)
+	block, _ := pem.Decode(tampered)
+	block.Bytes[len(block.Bytes)-3] ^= 0x01
+	cases := map[string]struct {
+		csr  []byte
+		node string
+		host string
+	}{
+		"another node id":  {good, "node-2", "node.lan"},
+		"empty node id":    {good, "", "node.lan"},
+		"P-384 key":        {csrFor(t, p384, "node-1"), "node-1", "node.lan"},
+		"RSA key":          {csrFor(t, rsaKey, "node-1"), "node-1", "node.lan"},
+		"broken signature": {pem.EncodeToMemory(block), "node-1", "node.lan"},
+		"two requests":     {append(append([]byte(nil), good...), good...), "node-1", "node.lan"},
+		"not a request":    {[]byte("nope"), "node-1", "node.lan"},
+		"no address":       {good, "node-1", ""},
+		"a certificate":    {pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: block.Bytes}), "node-1", "node.lan"},
+	}
+	for name, tc := range cases {
+		if _, _, err := m.IssueServerCertificate(tc.csr, tc.node, tc.host); err == nil {
+			t.Errorf("%s: issued", name)
+		}
+	}
+	if _, _, err := newManager(t, newMemoryRepo(), c).IssueServerCertificate(good, "node-1", "node.lan"); err == nil {
+		t.Error("issued by an authority that was never started")
+	}
+}

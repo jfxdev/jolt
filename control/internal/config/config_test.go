@@ -332,7 +332,7 @@ func TestManualTLSIsTheDefaultAndRefusesManagedOnlySettings(t *testing.T) {
 	if err != nil || cfg.TLSMode != TLSManual || cfg.CAAddress != "" || len(cfg.TLSNames) != 0 {
 		t.Fatalf("default: %+v %v", cfg, err)
 	}
-	for _, name := range []string{"CONTROL_TOWER_TLS_NAMES", "CONTROL_TOWER_CA_ADDRESS", "CONTROL_TOWER_CERTIFICATE_VALIDITY_DAYS"} {
+	for _, name := range []string{"CONTROL_TOWER_TLS_NAMES", "CONTROL_TOWER_CA_ADDRESS", "CONTROL_TOWER_CERTIFICATE_VALIDITY_DAYS", "CONTROL_TOWER_ENROLLMENT_APPROVAL"} {
 		t.Setenv(name, "30")
 		if _, err := Load(); err == nil || !strings.Contains(err.Error(), name) {
 			t.Errorf("%s was accepted without managed mode: %v", name, err)
@@ -400,5 +400,22 @@ func TestManagedTLSGeneratesTheSigningKeyAndRefusesAFileForIt(t *testing.T) {
 	t.Setenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID", "")
 	if _, err := Load(); err == nil {
 		t.Fatal("signed reads were accepted without any signing key")
+	}
+}
+
+func TestEnrollmentApprovalIsAutoByDefaultAndStrict(t *testing.T) {
+	managedBase(t)
+	t.Setenv("CONTROL_TOWER_TLS_MODE", "managed")
+	cfg, err := Load()
+	if err != nil || cfg.EnrollmentApproval != "auto" {
+		t.Fatalf("default: %q %v", cfg.EnrollmentApproval, err)
+	}
+	t.Setenv("CONTROL_TOWER_ENROLLMENT_APPROVAL", "Manual")
+	if cfg, err = Load(); err != nil || cfg.EnrollmentApproval != "manual" {
+		t.Fatalf("manual: %q %v", cfg.EnrollmentApproval, err)
+	}
+	t.Setenv("CONTROL_TOWER_ENROLLMENT_APPROVAL", "maybe")
+	if _, err := Load(); err == nil {
+		t.Fatal("an unknown approval mode was accepted")
 	}
 }
