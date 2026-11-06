@@ -384,16 +384,30 @@ Uma regra de policy pode conceder `delete` ou `update` **somente com a aprovaç�
   não as conhece não leia a concessão como comum. Faça rollback só com backup anterior à ativação.
 - A marca vale só em regras por caminho; uma regra por tipo não pode pedi-la.
 
-**O que ainda não existe**
+**Pastas, transferências e agentes**
 
-- Agentes **não** podem pedir aprovação: o perfil `agent` continua só leitura, e é uma decisão separada
-  ampliar isso.
-- Apagar ou mover **pasta** (plano e confirmação), transferências entre nodes e envios continuam
-  recusados quando a concessão exige aprovação. Aprovar um plano criado por outra credencial é o próximo
-  passo.
-- Em Access → Acesso efetivo uma concessão assim aparece como “exige aprovação”.
-- A integridade do corpo guardado é conferida (SHA-256) antes de executar; o servidor não tem teste que
-  adultere o banco, só o de unidade da conferência.
+- **Pasta** (apagar ou mover): o plano é permitido, pois não muda nada, mas o pedido de **confirmação** fica
+  guardado com os números que o node contou, e quem pediu nunca recebe o token. Quem aprova **planeja de novo
+  como ele mesmo**, precisa encontrar os mesmos números (arquivos, pastas, bytes; se mudaram, nada roda e
+  o pedido se refaz) e confirma na hora, então o job é dele e sua autorização renova com as permissões dele.
+  Uma confirmação de plano antigo de uma concessão que passou a exigir aprovação cancela o job.
+- **Transferência entre nodes** (move, ou cópia que sobrescreve): a prévia é permitida; a criação fica
+  guardada com os números da prévia. Quem aprova faz a prévia de novo, confere os números e cria com a
+  confirmação da própria prévia. A chave de criação deriva do pedido, então repetir a aprovação não cria um
+  segundo job.
+- **Efeito do tempo**: um acesso que só existe por concessão temporária (JIT) termina com ela, também no
+  meio de um download ou de um stream: o pedido é cortado quando a mais cedo das concessões temporárias de que
+  dependeu expira. Se algo permanente também dá o acesso, ou se é administrador, nada o limita. Leases de
+  jobs e de transferências já nunca passam da concessão temporária e não se renovam depois de revogada.
+- **Agentes**: uma credencial de agente com `request_deletes` pode enviar um `DELETE` de arquivo. Ela continua
+  sem apagar: o pedido só é guardado quando uma regra **da conta** que exige aprovação cobre o caminho, uma
+  concessão comum segue recusada, e qualquer outra coisa além do teto de leitura também. Só apagar um arquivo
+  pode ser pedido (nem mover, copiar, enviar nem a lixeira). Quem decide vê que foi um agente. O pedido é
+  encerrado se a credencial for revogada ou perder o direito antes da decisão.
+- Onde nada disso se aplica (envio com sobrescrita, share, apagar de vez da lixeira), a concessão marcada
+  continua **recusada** (`approval_unsupported`).
+- A conferência SHA-256 do corpo guardado fica no estado cifrado e é recusada na hora de tomar o pedido
+  (`pending_operation_corrupt`), com teste que adultera o banco.
 
 ## Rotinas
 

@@ -411,3 +411,50 @@ func sortedKeys(values map[string]struct{}) []string {
 	sort.Strings(result)
 	return result
 }
+
+// RuleMatch is a rule that bears on a decision, for diagnosis.
+type RuleMatch struct {
+	PolicyID      string              `json:"policy_id"`
+	Path          string              `json:"path"`
+	Capabilities  []string            `json:"capabilities"`
+	Effect        string              `json:"effect"`
+	FileTypes     *filetypes.Selector `json:"file_types,omitempty"`
+	Visibility    string              `json:"visibility,omitempty"`
+	NeedsApproval []string            `json:"needs_approval,omitempty"`
+}
+
+// MatchingRules lists the rules that cover the path and bear on the capability,
+// with the effect each one has: allow, deny, typed_allow or typed_deny. It does
+// not decide anything; it shows what the decision was made from. A rule that
+// covers the path but says nothing about the capability is left out.
+func MatchingRules(policies []Policy, path, capability string) []RuleMatch {
+	path = NormalizePath(path)
+	capability = strings.ToLower(strings.TrimSpace(capability))
+	var matches []RuleMatch
+	for _, policy := range policies {
+		for _, rule := range policy.Rules {
+			covers, _ := match(rule.Path, path)
+			if !covers {
+				continue
+			}
+			capabilities := capabilitySet(rule.Capabilities)
+			effect := ""
+			switch {
+			case capabilities["deny"] && rule.FileTypes == nil:
+				effect = "deny"
+			case capabilities["deny"] && (len(capabilities) == 1 || grants(capabilities, capability)):
+				effect = "typed_deny"
+			case !capabilities["deny"] && grants(capabilities, capability) && rule.FileTypes != nil:
+				effect = "typed_allow"
+			case !capabilities["deny"] && grants(capabilities, capability):
+				effect = "allow"
+			}
+			if effect == "" {
+				continue
+			}
+			matches = append(matches, RuleMatch{PolicyID: policy.ID, Path: NormalizePath(rule.Path), Capabilities: append([]string(nil), rule.Capabilities...),
+				Effect: effect, FileTypes: rule.FileTypes, Visibility: rule.Visibility, NeedsApproval: append([]string(nil), rule.NeedsApproval...)})
+		}
+	}
+	return matches
+}

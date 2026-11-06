@@ -24,7 +24,11 @@ type planApprovalHarness struct {
 	// files, directories and bytes are what the node counts when asked to plan.
 	files, directories, bytes int64
 	plans                     int
+	// capabilities is what the node reports; empty means a node that predates them.
+	capabilities string
 }
+
+const planNodeCapabilities = `["destructive_plans_v1","signed_local_copy_execution_v1","signed_job_authorization_registration_v1","signed_job_authorization_status_v1","signed_job_options_binding_v1"]`
 
 func (h *planApprovalHarness) seen() []planNodeCall {
 	h.mutex.Lock()
@@ -44,7 +48,7 @@ func (h *planApprovalHarness) count(method, suffix string) int {
 
 func newPlanApprovalHarness(t *testing.T) *planApprovalHarness {
 	t.Helper()
-	h := &planApprovalHarness{files: 2, directories: 3, bytes: 2048}
+	h := &planApprovalHarness{files: 2, directories: 3, bytes: 2048, capabilities: planNodeCapabilities}
 	h.typedHarness = newTypedHarness(t, false, func(r *http.Request) (int, http.Header, string) {
 		header := make(http.Header)
 		header.Set("Content-Type", "application/json")
@@ -63,7 +67,7 @@ func newPlanApprovalHarness(t *testing.T) *planApprovalHarness {
 		}
 		switch {
 		case r.URL.Path == "/api/v1/node":
-			return 200, header, `{"node_id":"n1","capabilities":["destructive_plans_v1","signed_local_copy_execution_v1","signed_job_authorization_registration_v1","signed_job_authorization_status_v1","signed_job_options_binding_v1"]}`
+			return 200, header, `{"node_id":"n1","capabilities":` + h.capabilities + `}`
 		case r.URL.Path == "/api/v1/mounts/m/files/destructive-plans":
 			h.mutex.Lock()
 			h.plans++

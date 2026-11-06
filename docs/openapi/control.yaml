@@ -844,7 +844,10 @@ paths:
         inspects the tree (files, directories, bytes and an identity digest) and
         records a five-minute plan for the current actor. The response carries the
         one-use confirmation token once. Permissions are the same as for the direct
-        operation, including the refusal when a deny rule sits inside the tree.
+        operation, including the refusal when a deny rule sits inside the tree. When a
+        grant needs a person's approval (CONTROL_TOWER_APPROVALS) the answer is 202
+        with a `pending_operation_id` and the counts instead of a plan: the token is
+        withheld, and the approver plans and confirms again as themselves.
       parameters:
         - {$ref: '#/components/parameters/NodeID'}
         - {$ref: '#/components/parameters/MountID'}
@@ -862,6 +865,7 @@ paths:
                 overwrite: {type: boolean, description: Only for move; replaces an existing destination directory, whose contents are pinned by the plan}
       responses:
         '201': {$ref: '#/components/responses/JSONObject'}
+        '202': {$ref: '#/components/responses/JSONObject'}
         '400': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
@@ -926,7 +930,10 @@ paths:
         otherwise 422 plan_required. The node refuses the move when anything it
         previewed changed (409 tree_changed) or when part of the selection is
         hidden from the caller (409 move_incomplete). The direct pull routes
-        answer 409 use_logical_transfer.
+        answer 409 use_logical_transfer. When a source or destination grant needs a
+        person's approval (CONTROL_TOWER_APPROVALS), the creation answers 202 with a
+        `pending_operation_id` and the preview's counts instead of a job; the approver
+        previews and creates it again under their own policy.
         Idempotency-Key is required (1–512 characters). Repeating the same key
         and logical payload returns the existing job. Reusing the key with a
         different payload returns 409 idempotency_conflict. Records are durable;
@@ -1422,6 +1429,7 @@ components:
         allowed_cidrs: {type: array, maxItems: 64, items: {type: string}, description: Empty allows any source address}
         read_media_types: {type: array, maxItems: 64, uniqueItems: true, items: {type: string, example: text/plain}, description: Empty allows all media types. Exact types only; archive downloads and multipart ranges are refused while this restriction is active.}
         capabilities: {type: array, maxItems: 2, uniqueItems: true, items: {type: string, enum: [list, read]}, description: Optional capability ceiling. Omitted permits list and read; an empty array permits neither. Policies remain required.}
+        request_deletes: {type: boolean, default: false, description: 'The credential may send a DELETE for a file and have it kept for a person to approve. It still cannot delete: only a rule of the account that needs approval covers it, and CONTROL_TOWER_APPROVALS must be on.'}
     WorkloadIdentityInput:
       type: object
       required: [provider_id, issuer, subject, audience]

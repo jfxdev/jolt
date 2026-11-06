@@ -192,6 +192,16 @@ export interface EffectiveCapability {
   outcome: EffectiveOutcome;
   policy_ids: string[];
   typed: boolean;
+  // The rules the answer was made from.
+  rules?: {
+    policy_id: string;
+    path: string;
+    capabilities: string[];
+    effect: "allow" | "deny" | "typed_allow" | "typed_deny";
+    file_types?: { classes?: string[]; extensions?: string[]; names?: string[] };
+    visibility?: string;
+    needs_approval?: string[];
+  }[];
 }
 
 export interface EffectiveAccessCheck {

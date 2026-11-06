@@ -1,11 +1,15 @@
 package httpapi
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/jfxdev/jolt/control/internal/store"
 )
 
 func TestControlOpenAPIDocumentsRegisteredRoutes(t *testing.T) {
@@ -107,4 +111,36 @@ func documentedOperations(t *testing.T, spec string) map[string]map[string]bool 
 		}
 	}
 	return result
+}
+
+// TestEveryDocumentedOperationIsServed is the other direction of the check
+// above: an operation the spec promises must reach a handler. A request without
+// credentials is enough, since the handler (or its authentication) answers it;
+// only the router's own "no such route" and "wrong method" answers are failures.
+func TestEveryDocumentedOperationIsServed(t *testing.T) {
+	specSource, err := os.ReadFile("../../../docs/openapi/control.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, _, _ := testUserHandler(t, store.User{ID: "admin", Username: "admin", Role: "admin", Enabled: true})
+	parameter := regexp.MustCompile(`\{[^}]+\}`)
+	checked := 0
+	for route, methods := range documentedOperations(t, string(specSource)) {
+		target := parameter.ReplaceAllString(route, "x")
+		for method := range methods {
+			request := httptest.NewRequest(strings.ToUpper(method), target, nil)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			checked++
+			if response.Code == http.StatusMethodNotAllowed {
+				t.Errorf("%s %s: documented, but the server does not route this method", strings.ToUpper(method), route)
+			}
+			if response.Code == http.StatusNotFound && strings.Contains(response.Body.String(), `"code":"not_found"`) && strings.Contains(response.Body.String(), "Rota não encontrada") {
+				t.Errorf("%s %s: documented, but the server has no such route", strings.ToUpper(method), route)
+			}
+		}
+	}
+	if checked < 100 {
+		t.Fatalf("only %d operations were exercised", checked)
+	}
 }

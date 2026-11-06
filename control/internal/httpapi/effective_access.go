@@ -34,6 +34,9 @@ type effectiveCapability struct {
 	Outcome   string   `json:"outcome"`
 	PolicyIDs []string `json:"policy_ids"`
 	Typed     bool     `json:"typed"`
+	// Rules are the rules the answer was made from, so a refusal can be traced
+	// to the one that caused it.
+	Rules []rbac.RuleMatch `json:"rules"`
 }
 
 type effectiveAccessResult struct {
@@ -157,9 +160,9 @@ func (s *Server) effectiveAccess(w http.ResponseWriter, r *http.Request) {
 		for _, capability := range effectiveCapabilities {
 			switch {
 			case builtinAdmin:
-				result.Capabilities[capability] = effectiveCapability{Allowed: true, Outcome: "allowed", PolicyIDs: []string{"builtin-admin"}}
+				result.Capabilities[capability] = effectiveCapability{Allowed: true, Outcome: "allowed", PolicyIDs: []string{"builtin-admin"}, Rules: []rbac.RuleMatch{}}
 			case outside:
-				result.Capabilities[capability] = effectiveCapability{Outcome: "denied", PolicyIDs: []string{}}
+				result.Capabilities[capability] = effectiveCapability{Outcome: "denied", PolicyIDs: []string{}, Rules: []rbac.RuleMatch{}}
 			default:
 				result.Capabilities[capability] = s.effectiveCapability(policies, check, capability)
 			}
@@ -200,7 +203,11 @@ func (s *Server) effectiveCapability(policies []rbac.Policy, check effectiveAcce
 	case decision.Visibility == "visible":
 		outcome = "blocked"
 	}
-	return effectiveCapability{Allowed: allowed, Denied: decision.Denied, Outcome: outcome, PolicyIDs: ids, Typed: decision.Typed}
+	rules := rbac.MatchingRules(policies, check.Path, capability)
+	if rules == nil {
+		rules = []rbac.RuleMatch{}
+	}
+	return effectiveCapability{Allowed: allowed, Denied: decision.Denied, Outcome: outcome, PolicyIDs: ids, Typed: decision.Typed, Rules: rules}
 }
 
 func hasTypedRules(policies []rbac.Policy) bool {

@@ -389,3 +389,47 @@ func TestValidNeedsApproval(t *testing.T) {
 		}
 	}
 }
+
+func TestMatchingRulesShowWhatADecisionWasMadeFrom(t *testing.T) {
+	base := "nodes/n/files/mounts/m"
+	policies := []Policy{
+		{ID: "wide", Rules: []Rule{{Path: base + "/**", Capabilities: []string{"read", "list", "delete"}, NeedsApproval: []string{"delete"}}}},
+		{ID: "no-keys", Rules: []Rule{{Path: base + "/**", Capabilities: []string{"deny", "read"}, FileTypes: &filetypes.Selector{Extensions: []string{"pem"}}, Visibility: "visible"}}},
+		{ID: "vault", Rules: []Rule{{Path: base + "/vault/**", Capabilities: []string{"deny"}}}},
+		{ID: "elsewhere", Rules: []Rule{{Path: "nodes/other/**", Capabilities: []string{"read"}}}},
+		{ID: "writes", Rules: []Rule{{Path: base + "/inbox/**", Capabilities: []string{"write"}}}},
+	}
+	effects := func(path, capability string) map[string]string {
+		result := map[string]string{}
+		for _, match := range MatchingRules(policies, path, capability) {
+			result[match.PolicyID] = match.Effect
+		}
+		return result
+	}
+	want := func(got, expected map[string]string) {
+		t.Helper()
+		if len(got) != len(expected) {
+			t.Fatalf("got %v want %v", got, expected)
+		}
+		for key, value := range expected {
+			if got[key] != value {
+				t.Fatalf("got %v want %v", got, expected)
+			}
+		}
+	}
+	want(effects(base+"/docs/a.txt", "read"), map[string]string{"wide": "allow", "no-keys": "typed_deny"})
+	// A typed denial that names only read says nothing about delete.
+	want(effects(base+"/docs/a.txt", "delete"), map[string]string{"wide": "allow"})
+	// A path denial bears on every capability.
+	want(effects(base+"/vault/x", "list"), map[string]string{"wide": "allow", "vault": "deny"})
+	// Write grants update, so the rule that gives it is a cause of an update.
+	want(effects(base+"/inbox/f", "update"), map[string]string{"writes": "allow"})
+	// A rule for another node never appears.
+	if _, found := effects(base+"/docs/a.txt", "read")["elsewhere"]; found {
+		t.Fatal("a rule that does not cover the path was listed")
+	}
+	marked := MatchingRules(policies, base+"/docs/a.txt", "delete")
+	if len(marked) != 1 || len(marked[0].NeedsApproval) != 1 {
+		t.Fatalf("the approval mark was lost: %+v", marked)
+	}
+}

@@ -14,6 +14,14 @@ test("a cell names the policies that decided it and says when a type rule did", 
   assert.match(text, /403/);
   assert.match(text, /por tipo/);
   assert.match(text, /sem-chaves, p2/);
+  const traced = explainCell(
+    { allowed: false, denied: true, outcome: "hidden", policy_ids: ["p1"], typed: true, rules: [
+      { policy_id: "p1", path: "nodes/a/files/mounts/m/**", capabilities: ["read"], effect: "allow" },
+      { policy_id: "p2", path: "nodes/a/files/mounts/m/**", capabilities: ["deny", "read"], effect: "typed_deny" },
+    ] },
+    { p2: "sem-chaves" },
+  );
+  assert.match(traced, /Regras: p1 · concede · nodes\/a\/files\/mounts\/m\/\*\*; sem-chaves · nega por tipo ·/);
   const plain = explainCell({ allowed: true, denied: false, outcome: "allowed", policy_ids: [], typed: false }, {});
   assert.doesNotMatch(plain, /Policies envolvidas/);
   assert.doesNotMatch(plain, /por tipo/);

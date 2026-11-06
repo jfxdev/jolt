@@ -19,6 +19,13 @@ const MEANINGS: Record<EffectiveOutcome, string> = {
   approval: "A regra concede a operação somente depois que uma pessoa aprova cada pedido.",
 };
 
+const RULE_EFFECTS: Record<string, string> = {
+  allow: "concede",
+  deny: "nega",
+  typed_allow: "concede por tipo",
+  typed_deny: "nega por tipo",
+};
+
 export function outcomeLabel(outcome: EffectiveOutcome): string {
   return LABELS[outcome];
 }
@@ -36,7 +43,10 @@ export function explainCell(cell: EffectiveCapability, policyNames: Record<strin
   const via = cell.policy_ids.map((id) => policyNames[id] ?? id);
   const origin = via.length ? ` Policies envolvidas: ${via.join(", ")}.` : "";
   const typed = cell.typed ? " Decidido por regra por tipo." : "";
-  return `${LABELS[cell.outcome]}. ${MEANINGS[cell.outcome]}${typed}${origin}`;
+  const rules = (cell.rules ?? []).length
+    ? ` Regras: ${(cell.rules ?? []).map((rule) => `${policyNames[rule.policy_id] ?? rule.policy_id} · ${RULE_EFFECTS[rule.effect] ?? rule.effect} · ${rule.path}`).join("; ")}.`
+    : "";
+  return `${LABELS[cell.outcome]}. ${MEANINGS[cell.outcome]}${typed}${origin}${rules}`;
 }
 
 /** A path with a node and mount filled in, for the first row of a new query. */

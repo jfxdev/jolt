@@ -90,6 +90,17 @@ func TestEffectiveAccessSeparatesFilesFromDirectoriesAndTellsHiddenFromBlocked(t
 	if !got[2].Typed || len(got[2].PolicyIDs) != 1 || got[2].PolicyIDs[0] != "typed" {
 		t.Fatalf("typed rule not attributed: %+v", got[2])
 	}
+	// The answer says which rules it came from, so a refusal can be traced.
+	effects := map[string]bool{}
+	for _, rule := range got[2].Rules {
+		effects[rule.Effect] = true
+	}
+	if !effects["allow"] || !effects["typed_deny"] {
+		t.Fatalf("rules behind a blocked read: %+v", got[2].Rules)
+	}
+	if len(out.Results[0].Capabilities["sudo"].Rules) != 0 {
+		t.Fatalf("a capability no rule mentions listed rules: %+v", out.Results[0].Capabilities["sudo"].Rules)
+	}
 	if out.Results[0].Capabilities["create"].Outcome != "denied" || out.Results[0].Capabilities["sudo"].Allowed {
 		t.Fatalf("an ungranted capability is allowed: %+v", out.Results[0].Capabilities)
 	}
