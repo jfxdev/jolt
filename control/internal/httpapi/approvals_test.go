@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -497,5 +498,100 @@ func TestEffectiveAccessShowsAGrantThatWaitsForApproval(t *testing.T) {
 		if deleted.Outcome != wantOutcome || deleted.Allowed || read.Outcome != "allowed" || !read.Allowed {
 			t.Fatalf("approvals=%v: delete=%+v read=%+v", approvals, deleted, read)
 		}
+	}
+}
+
+// agentAsking builds the agent fixture, a policy that lets it delete only with
+// approval, and the credential's permission to ask.
+func agentAsking(t *testing.T, markDelete bool, mayAsk bool) (agentFixture, *atomic.Int32) {
+	t.Helper()
+	var reached atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		reached.Add(1)
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"done":true}`))}, nil
+	})}
+	limits := store.DefaultAgentLimits()
+	limits.RequestDeletes = mayAsk
+	f := setupAgentConfigured(t, limits, client, func(cfg *config.Config) { cfg.Approvals = true })
+	rule := rbac.Rule{Path: "nodes/n1/files/mounts/m/**", Capabilities: []string{"read", "list", "delete"}}
+	if markDelete {
+		rule.NeedsApproval = []string{"delete"}
+	}
+	policy := store.Policy{ID: "wide", Name: "wide", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Rules: []rbac.Rule{rule}}
+	if err := f.storage.UpdatePolicy(context.Background(), policy); err != nil {
+		t.Fatal(err)
+	}
+	return f, &reached
+}
+
+func TestAnAgentThatMayAskCanRequestADeleteButNeverRunOne(t *testing.T) {
+	f, reached := agentAsking(t, true, true)
+	w := httptest.NewRecorder()
+	f.handler.ServeHTTP(w, f.request("DELETE", "/api/v1/nodes/n1/mounts/m/files?path=docs/a.txt"))
+	if w.Code != http.StatusAccepted || !strings.Contains(w.Body.String(), "pending_approval") || reached.Load() != 0 {
+		t.Fatalf("request: %d %s reached=%d", w.Code, w.Body, reached.Load())
+	}
+	pending, err := f.storage.ListPendingOperations(context.Background(), store.PendingState, "service_account", f.accountID, 10, time.Now())
+	if err != nil || len(pending) != 1 || pending[0].CredentialID != "token-"+f.tokenID || !strings.Contains(string(pending[0].Summary), `"requester_kind":"agent"`) {
+		t.Fatalf("pending %+v %v", pending, err)
+	}
+	// A person decides; the delete runs as that person.
+	approve := httptest.NewRecorder()
+	f.handler.ServeHTTP(approve, authenticatedRequest(http.MethodPost, decide+pending[0].ID+"/approve", f.adminSession, nil))
+	if approve.Code != http.StatusOK || !strings.Contains(approve.Body.String(), `"state":"executed"`) || reached.Load() != 1 {
+		t.Fatalf("approve: %d %s reached=%d", approve.Code, approve.Body, reached.Load())
+	}
+}
+
+func TestAnAgentStillCannotDeleteWithoutAnApprovalMarkOrWithoutPermissionToAsk(t *testing.T) {
+	for name, test := range map[string]struct{ mark, mayAsk bool }{
+		"a plain grant would be a direct write": {mark: false, mayAsk: true},
+		"the credential may not ask":            {mark: true, mayAsk: false},
+	} {
+		f, reached := agentAsking(t, test.mark, test.mayAsk)
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, f.request("DELETE", "/api/v1/nodes/n1/mounts/m/files?path=docs/a.txt"))
+		if w.Code != http.StatusForbidden || reached.Load() != 0 {
+			t.Fatalf("%s: %d %s reached=%d", name, w.Code, w.Body, reached.Load())
+		}
+		pending, _ := f.storage.ListPendingOperations(context.Background(), "", "", "", 10, time.Now())
+		if len(pending) != 0 {
+			t.Fatalf("%s: a request was kept: %+v", name, pending)
+		}
+	}
+}
+
+func TestAnAgentMayAskOnlyToDeleteAFile(t *testing.T) {
+	f, reached := agentAsking(t, true, true)
+	for _, test := range []struct{ method, path string }{
+		{"POST", "/api/v1/nodes/n1/mounts/m/files/move"},
+		{"POST", "/api/v1/nodes/n1/mounts/m/files/copy"},
+		{"PUT", "/api/v1/nodes/n1/mounts/m/files/content?path=a.txt&overwrite=true"},
+		{"DELETE", "/api/v1/nodes/n1/mounts/m/trash/tr_1_a"},
+		{"DELETE", "/api/v1/control-tower/users/someone"},
+	} {
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, f.request(test.method, test.path))
+		if w.Code == http.StatusAccepted || w.Code == http.StatusOK || reached.Load() != 0 {
+			t.Fatalf("%s %s: %d %s", test.method, test.path, w.Code, w.Body)
+		}
+	}
+}
+
+func TestAnAgentRequestIsRefusedAtApprovalWhenItsCredentialIsRevoked(t *testing.T) {
+	f, reached := agentAsking(t, true, true)
+	w := httptest.NewRecorder()
+	f.handler.ServeHTTP(w, f.request("DELETE", "/api/v1/nodes/n1/mounts/m/files?path=docs/a.txt"))
+	pending, _ := f.storage.ListPendingOperations(context.Background(), store.PendingState, "", "", 10, time.Now())
+	if w.Code != http.StatusAccepted || len(pending) != 1 {
+		t.Fatalf("request: %d %s", w.Code, w.Body)
+	}
+	if err := f.storage.RevokeServiceAccountToken(context.Background(), f.accountID, f.tokenID); err != nil {
+		t.Fatal(err)
+	}
+	approve := httptest.NewRecorder()
+	f.handler.ServeHTTP(approve, authenticatedRequest(http.MethodPost, decide+pending[0].ID+"/approve", f.adminSession, nil))
+	if approve.Code != http.StatusConflict || !strings.Contains(approve.Body.String(), "requester_not_allowed") || reached.Load() != 0 {
+		t.Fatalf("approve: %d %s reached=%d", approve.Code, approve.Body, reached.Load())
 	}
 }

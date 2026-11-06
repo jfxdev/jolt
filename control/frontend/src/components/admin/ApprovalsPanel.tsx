@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import { decisionMessage, describePending, operationLabel, remainingLabel, stateLabel } from "@/lib/approvals";
+import { askedByAgent, decisionMessage, describePending, operationLabel, remainingLabel, stateLabel } from "@/lib/approvals";
 import type { PendingOperation } from "@/lib/types";
 import { useApiError } from "@/hooks/useApiError";
 import { useAuth } from "@/context/AuthContext";
@@ -137,6 +137,7 @@ export function ApprovalsPanel({ active }: { active: boolean }) {
             <p className="break-all text-sm">{describePending(op)}</p>
             <p className="text-xs text-muted-foreground">
               Pedido de {op.requester_name ?? op.requester_id}
+              {askedByAgent(op) ? " (agente de IA, não uma pessoa)" : ""}
               {op.requester_type === "user" && op.requester_id === user?.user_id ? " (você)" : ""}
             </p>
             {canDecide && (

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { asPendingApproval, decisionMessage, describePending, pendingToast, remainingLabel, stateLabel, treeSize } from "../src/lib/approvals.ts";
+import { askedByAgent, asPendingApproval, decisionMessage, describePending, pendingToast, remainingLabel, stateLabel, treeSize } from "../src/lib/approvals.ts";
 import {
   canAskApproval,
   describeApproval,
@@ -35,6 +35,11 @@ test("a folder waiting for approval is described by what it holds", () => {
   assert.equal(treeSize({ files: 0, directories: 1, bytes: 0 }), "0 arquivos em 1 pasta (0 B)");
   const notice = { pending_operation_id: "p", state: "pending_approval" as const, expires_at: "2026-11-05T12:05:00Z", operation: "delete" as const, files: 2, directories: 1, bytes: 10 };
   assert.match(pendingToast(notice, Date.parse("2026-11-05T12:00:00Z")), /^Apagar 2 arquivos em 1 pasta \(10 B\) aguardando aprovação/);
+});
+
+test("a request from an agent says so", () => {
+  assert.equal(askedByAgent({ summary: { requester_kind: "agent" } }), true);
+  assert.equal(askedByAgent({ summary: {} }), false);
 });
 
 test("a transfer between nodes says where it goes and how much moves", () => {

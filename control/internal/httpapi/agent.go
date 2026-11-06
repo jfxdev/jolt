@@ -285,7 +285,11 @@ func (s *Server) serveAgent(next http.Handler, w http.ResponseWriter, r *http.Re
 		}
 	}()
 	ctx = context.WithValue(ctx, agentKey, agentContext{limits: limits, budget: budget})
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+	// A credential may be allowed to ask for a delete. That is all it can add:
+	// the request is kept for a person and the authorization below refuses a
+	// delete that no approval-marked rule covers.
+	asksDeletes := limits.RequestDeletes && r.Method == http.MethodDelete && s.config.Approvals
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && !asksDeletes {
 		writeError(limited, r, http.StatusForbidden, "agent_read_only", "Esta conta de agente permite apenas leitura.")
 		return
 	}

@@ -12,6 +12,11 @@ export function asPendingApproval(value: unknown): PendingApprovalNotice | null 
 
 const OPERATIONS: Record<string, string> = { delete: "Apagar", move: "Mover", copy: "Copiar" };
 
+/** True when the person's software, not a person, asked. */
+export function askedByAgent(op: Pick<PendingOperation, "summary">): boolean {
+  return op.summary.requester_kind === "agent";
+}
+
 export function operationLabel(operation: string | undefined): string {
   return (operation && OPERATIONS[operation]) || "Operação";
 }

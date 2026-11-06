@@ -26,6 +26,10 @@ func testUserHandler(t *testing.T, actor store.User) (http.Handler, *store.Store
 }
 
 func testUserHandlerWithClient(t *testing.T, actor store.User, client *http.Client) (http.Handler, *store.Store, string) {
+	return testUserHandlerConfigured(t, actor, client, nil)
+}
+
+func testUserHandlerConfigured(t *testing.T, actor store.User, client *http.Client, option func(*config.Config)) (http.Handler, *store.Store, string) {
 	t.Helper()
 	storage, err := store.Open(filepath.Join(t.TempDir(), "control.db"), make([]byte, 32))
 	if err != nil {
@@ -46,8 +50,11 @@ func testUserHandlerWithClient(t *testing.T, actor store.User, client *http.Clie
 	if err := storage.CreateSession(context.Background(), security.Digest(token), actor.ID, now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	handler := newHandler(config.Config{EncryptionKey: make([]byte, 32), StaticDir: t.TempDir()},
-		storage, slog.New(slog.NewTextHandler(io.Discard, nil)), client)
+	cfg := config.Config{EncryptionKey: make([]byte, 32), StaticDir: t.TempDir()}
+	if option != nil {
+		option(&cfg)
+	}
+	handler := newHandler(cfg, storage, slog.New(slog.NewTextHandler(io.Discard, nil)), client)
 	return handler, storage, token
 }
 

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jfxdev/jolt/control/internal/config"
 	"github.com/jfxdev/jolt/control/internal/rbac"
 	"github.com/jfxdev/jolt/control/internal/security"
 	"github.com/jfxdev/jolt/control/internal/store"
@@ -35,6 +36,16 @@ func setupAgent(t *testing.T, limits store.AgentLimits, client *http.Client) age
 }
 
 func setupAgentWithScanStub(t *testing.T, limits store.AgentLimits, client *http.Client, stubScan bool) agentFixture {
+	return setupAgentOptions(t, limits, client, stubScan, nil)
+}
+
+// setupAgentConfigured is setupAgent with changes to the Control Tower's
+// configuration.
+func setupAgentConfigured(t *testing.T, limits store.AgentLimits, client *http.Client, option func(*config.Config)) agentFixture {
+	return setupAgentOptions(t, limits, client, true, option)
+}
+
+func setupAgentOptions(t *testing.T, limits store.AgentLimits, client *http.Client, stubScan bool, option func(*config.Config)) agentFixture {
 	t.Helper()
 	if stubScan {
 		original := client
@@ -53,7 +64,7 @@ func setupAgentWithScanStub(t *testing.T, limits store.AgentLimits, client *http
 			return response, err
 		})}
 	}
-	handler, storage, admin := testUserHandlerWithClient(t, store.User{ID: "admin", Username: "admin", Role: "admin", Enabled: true}, client)
+	handler, storage, admin := testUserHandlerConfigured(t, store.User{ID: "admin", Username: "admin", Role: "admin", Enabled: true}, client, option)
 	ctx, now := context.Background(), time.Now().UTC()
 	encrypted, err := security.Encrypt(make([]byte, 32), "node-token")
 	if err != nil {

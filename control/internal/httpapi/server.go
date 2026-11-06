@@ -910,6 +910,7 @@ func (s *Server) exportAuditEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) evaluateAuthorization(r *http.Request, path, capability string) (rbac.Decision, error) {
+	asksForApproval := false
 	if agent, ok := r.Context().Value(agentKey).(agentContext); ok {
 		allowed := capability == "read" || capability == "list"
 		if allowed && agent.limits.Capabilities != nil {
@@ -919,7 +920,13 @@ func (s *Server) evaluateAuthorization(r *http.Request, path, capability string)
 			}
 		}
 		if !allowed {
-			return rbac.Decision{Path: rbac.NormalizePath(path), Capability: capability, Denied: true}, nil
+			// The one thing past the ceiling is asking a person to delete, and
+			// only where the request can be kept for one.
+			_, collecting := r.Context().Value(approvalCollectorKey{}).(*approvalCollector)
+			if !(agent.limits.RequestDeletes && capability == "delete" && collecting) {
+				return rbac.Decision{Path: rbac.NormalizePath(path), Capability: capability, Denied: true}, nil
+			}
+			asksForApproval = true
 		}
 	}
 	if currentUser(r).Role == "admin" && currentActorType(r) == "user" {
@@ -948,13 +955,20 @@ func (s *Server) evaluateAuthorization(r *http.Request, path, capability string)
 		return rbac.Decision{}, err
 	}
 	expanded := rbac.ExpandCompatibilityRules(policies)
-	if s.config.TypedPolicies {
-		if entryType, known := r.Context().Value(entryTypeKey{}).(string); known {
-			return s.applyApproval(r, rbac.EvaluateEntry(expanded, path, capability, entryType).Decision), nil
-		}
-		return s.applyApproval(r, rbac.EvaluateTyped(expanded, path, capability, s.entryMode(r))), nil
+	var decision rbac.Decision
+	switch {
+	case s.config.TypedPolicies && r.Context().Value(entryTypeKey{}) != nil:
+		decision = rbac.EvaluateEntry(expanded, path, capability, r.Context().Value(entryTypeKey{}).(string)).Decision
+	case s.config.TypedPolicies:
+		decision = rbac.EvaluateTyped(expanded, path, capability, s.entryMode(r))
+	default:
+		decision = rbac.Evaluate(expanded, path, capability)
 	}
-	return s.applyApproval(r, rbac.Evaluate(expanded, path, capability)), nil
+	if asksForApproval && !decision.NeedsApproval {
+		// A plain grant would be a direct write, which an agent never gets.
+		return rbac.Decision{Path: rbac.NormalizePath(path), Capability: capability, Denied: true}, nil
+	}
+	return s.applyApproval(r, decision), nil
 }
 
 type entryTypeKey struct{}

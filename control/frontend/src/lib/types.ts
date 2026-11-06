@@ -45,6 +45,8 @@ export interface AgentLimits {
   allowed_cidrs: string[];
   read_media_types?: string[];
   capabilities?: ("list" | "read")[];
+  // May ask a person to delete a file; a rule that needs approval must allow it.
+  request_deletes?: boolean;
 }
 
 export interface TemporaryPolicyAssignment {
@@ -152,6 +154,7 @@ export interface PendingOperation {
     tree?: boolean;
     // A transfer between nodes: where it goes and from which node.
     destination?: string;
+    requester_kind?: string;
     source_node?: string;
     files?: number;
     directories?: number;

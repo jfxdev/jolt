@@ -100,8 +100,15 @@ func approvalRoute(resource, method string) (operation string, ok bool) {
 // withApprovalCollector arms the gate for a request that may be kept. Agents
 // never get one: they have no write path to approve.
 func (s *Server) withApprovalCollector(r *http.Request, resource string) (*http.Request, *approvalCollector) {
-	if !s.config.Approvals || r.Context().Value(agentKey) != nil {
+	if !s.config.Approvals {
 		return r, nil
+	}
+	if agent, isAgent := r.Context().Value(agentKey).(agentContext); isAgent {
+		// An agent may only ask to delete a file, and only when its
+		// credential was allowed to.
+		if operation, ok := approvalRoute(resource, r.Method); !agent.limits.RequestDeletes || !ok || operation != "delete" {
+			return r, nil
+		}
 	}
 	// A replay is already approved: whatever it needs beyond what was approved
 	// is refused, not queued again under the approver's name.
@@ -111,14 +118,18 @@ func (s *Server) withApprovalCollector(r *http.Request, resource string) (*http.
 	if _, ok := approvalRoute(resource, r.Method); !ok {
 		return r, nil
 	}
-	return s.armApprovalCollector(r)
+	return s.arm(r, true)
 }
 
 // armApprovalCollector makes the authorization checks that follow collect, not
 // refuse, the grants that need a person's approval. Not for agents and not for
 // the replay of a request that was approved already.
 func (s *Server) armApprovalCollector(r *http.Request) (*http.Request, *approvalCollector) {
-	if !s.config.Approvals || r.Context().Value(agentKey) != nil {
+	return s.arm(r, false)
+}
+
+func (s *Server) arm(r *http.Request, agentsChecked bool) (*http.Request, *approvalCollector) {
+	if !s.config.Approvals || r.Context().Value(agentKey) != nil && !agentsChecked {
 		return r, nil
 	}
 	if _, replay := r.Context().Value(approvedKey{}).(approvedGrant); replay {
@@ -138,7 +149,14 @@ func (s *Server) keepForApproval(w http.ResponseWriter, r *http.Request, resourc
 	}
 	mountID := mountIDFromResource(resource)
 	summary, _ := json.Marshal(map[string]any{"operation": operation, "mount_id": mountID, "paths": targets.all()})
+	credential, _ := r.Context().Value(credentialKey).(string)
+	_, byAgent := r.Context().Value(agentKey).(agentContext)
+	if byAgent {
+		// The approver is told a person's software asked, not a person.
+		summary, _ = json.Marshal(map[string]any{"operation": operation, "mount_id": mountID, "paths": targets.all(), "requester_kind": "agent"})
+	}
 	op, existing, err := s.store.CreatePendingOperation(r.Context(), store.PendingOperation{
+		CredentialID:  credential,
 		RequesterType: currentActorType(r), RequesterID: currentUser(r).ID, Method: r.Method, NodeID: r.PathValue("nodeID"),
 		Resource: resource, RawQuery: r.URL.RawQuery, Body: body, Summary: summary, Requirements: collector.requirements,
 	}, maxPendingPerIdentity, time.Now())
@@ -699,7 +717,10 @@ func (s *Server) requesterStillAllowed(ctx context.Context, op store.PendingOper
 		if err != nil {
 			return false, err
 		}
-		if !account.Enabled || account.Kind == "agent" {
+		if !account.Enabled {
+			return false, nil
+		}
+		if account.Kind == "agent" && !s.agentMayStillAsk(ctx, account.ID, op) {
 			return false, nil
 		}
 		if groupIDs, err = s.store.ServiceAccountGroupIDs(ctx, account.ID, true); err != nil {
@@ -741,6 +762,24 @@ func (s *Server) requesterStillAllowed(ctx context.Context, op store.PendingOper
 		}
 	}
 	return true, nil
+}
+
+// agentMayStillAsk checks that the credential an agent asked with is still
+// valid and still allowed to ask, and that the ask is the one thing it may ask.
+func (s *Server) agentMayStillAsk(ctx context.Context, accountID string, op store.PendingOperation) bool {
+	if op.Kind != store.PendingKindReplay || op.Method != http.MethodDelete || !strings.HasPrefix(op.CredentialID, "token-") {
+		return false
+	}
+	token, err := s.store.GetActiveServiceAccountToken(ctx, accountID, strings.TrimPrefix(op.CredentialID, "token-"), time.Now())
+	if err != nil || token.AgentLimits == nil || !token.AgentLimits.RequestDeletes {
+		return false
+	}
+	for _, requirement := range op.Requirements {
+		if requirement.Capability != "delete" {
+			return false
+		}
+	}
+	return true
 }
 
 // replayApproved runs the stored request through the same pipeline as a fresh

@@ -80,6 +80,10 @@ type AgentLimits struct {
 	AllowedCIDRs      []string  `json:"allowed_cidrs,omitempty"`
 	ReadMediaTypes    []string  `json:"read_media_types,omitempty"`
 	Capabilities      *[]string `json:"capabilities,omitempty"`
+	// RequestDeletes lets the credential ask a person to delete a file. It
+	// still cannot delete: only a rule that needs approval can be asked, and a
+	// person decides.
+	RequestDeletes bool `json:"request_deletes,omitempty"`
 }
 
 func DefaultAgentLimits() AgentLimits {
@@ -424,6 +428,7 @@ WHERE path LIKE 'workers/%'`); err != nil {
 		`ALTER TABLE policy_rules ADD COLUMN visibility TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE policy_rules ADD COLUMN needs_approval TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE pending_operations ADD COLUMN kind TEXT NOT NULL DEFAULT 'replay'`,
+		`ALTER TABLE pending_operations ADD COLUMN credential_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE shares ADD COLUMN created_by_type TEXT NOT NULL DEFAULT 'user'`,
 		`ALTER TABLE shares ADD COLUMN created_credential_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE service_accounts ADD COLUMN kind TEXT NOT NULL DEFAULT 'automation'`,
@@ -644,6 +649,14 @@ func (s *Store) CreateServiceAccountToken(ctx context.Context, token ServiceAcco
 	if err != nil {
 		return err
 	}
+	if token.AgentLimits != nil && token.AgentLimits.RequestDeletes {
+		// An older binary would read the credential as read-only without
+		// noticing the field, which is the safe way to misread it; the marker
+		// still keeps it from opening a database that asks for approvals.
+		if _, err := tx.ExecContext(ctx, `INSERT INTO metadata(key,value) VALUES('minimum_security_version','8') ON CONFLICT(key) DO UPDATE SET value=CASE WHEN CAST(value AS INTEGER)<8 THEN '8' ELSE value END`); err != nil {
+			return err
+		}
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO service_account_tokens(
 id,service_account_id,name,token_hash,expires_at,last_used_at,revoked_at,created_at,agent_limits
 ) VALUES(?,?,?,?,?,?,?,?,?)`, token.ID, token.ServiceAccountID, token.Name, token.TokenHash,
@@ -683,7 +696,8 @@ FROM service_account_tokens t WHERE service_account_id=? AND NOT EXISTS (SELECT 
 // exposing or needing its secret. Callers must separately validate the account.
 func (s *Store) GetActiveServiceAccountToken(ctx context.Context, accountID, tokenID string, now time.Time) (ServiceAccountToken, error) {
 	var expiry, revoked sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT expires_at,revoked_at FROM service_account_tokens WHERE id=? AND service_account_id=?`, tokenID, accountID).Scan(&expiry, &revoked)
+	var limits string
+	err := s.db.QueryRowContext(ctx, `SELECT expires_at,revoked_at,agent_limits FROM service_account_tokens WHERE id=? AND service_account_id=?`, tokenID, accountID).Scan(&expiry, &revoked, &limits)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ServiceAccountToken{}, ErrNotFound
 	}
@@ -694,6 +708,9 @@ func (s *Store) GetActiveServiceAccountToken(ctx context.Context, accountID, tok
 		return ServiceAccountToken{}, ErrNotFound
 	}
 	token := ServiceAccountToken{ID: tokenID, ServiceAccountID: accountID}
+	if err := json.Unmarshal([]byte(limits), &token.AgentLimits); err != nil {
+		return ServiceAccountToken{}, err
+	}
 	if expiry.Valid {
 		parsed, err := time.Parse(time.RFC3339Nano, expiry.String)
 		if err != nil || !parsed.After(now) {

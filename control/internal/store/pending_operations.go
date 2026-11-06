@@ -53,7 +53,10 @@ const (
 )
 
 type PendingOperation struct {
-	Kind          string               `json:"kind"`
+	Kind string `json:"kind"`
+	// CredentialID is the credential the request was made with ("token-<id>" for
+	// an API key or agent credential); empty for a session.
+	CredentialID  string               `json:"-"`
 	ID            string               `json:"pending_operation_id"`
 	RequesterType string               `json:"requester_type"`
 	RequesterID   string               `json:"requester_id"`
@@ -76,7 +79,7 @@ type PendingOperation struct {
 	ResultBody    string               `json:"result_body,omitempty"`
 }
 
-const pendingColumns = `id,kind,requester_type,requester_id,method,node_id,resource,raw_query,body,body_sha256,summary,requirements,state,created_at,expires_at_ns,decided_by_type,decided_by_id,decided_at,note,result_status,result_body`
+const pendingColumns = `id,kind,credential_id,requester_type,requester_id,method,node_id,resource,raw_query,body,body_sha256,summary,requirements,state,created_at,expires_at_ns,decided_by_type,decided_by_id,decided_at,note,result_status,result_body`
 
 // IntegrityOK reports whether the stored body is the one the request was made
 // with. A replay refuses anything else.
@@ -89,7 +92,7 @@ func scanPending(row interface{ Scan(...any) error }) (PendingOperation, error) 
 	var op PendingOperation
 	var summary, requirements, created, decidedAt string
 	var expires int64
-	if err := row.Scan(&op.ID, &op.Kind, &op.RequesterType, &op.RequesterID, &op.Method, &op.NodeID, &op.Resource, &op.RawQuery, &op.Body, &op.BodySHA256, &summary, &requirements, &op.State, &created, &expires, &op.DecidedByType, &op.DecidedByID, &decidedAt, &op.Note, &op.ResultStatus, &op.ResultBody); err != nil {
+	if err := row.Scan(&op.ID, &op.Kind, &op.CredentialID, &op.RequesterType, &op.RequesterID, &op.Method, &op.NodeID, &op.Resource, &op.RawQuery, &op.Body, &op.BodySHA256, &summary, &requirements, &op.State, &created, &expires, &op.DecidedByType, &op.DecidedByID, &decidedAt, &op.Note, &op.ResultStatus, &op.ResultBody); err != nil {
 		return PendingOperation{}, err
 	}
 	op.Summary = json.RawMessage(summary)
@@ -166,8 +169,8 @@ func (s *Store) CreatePendingOperation(ctx context.Context, op PendingOperation,
 	if err != nil {
 		return PendingOperation{}, false, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO pending_operations(`+pendingColumns+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		op.ID, op.Kind, op.RequesterType, op.RequesterID, op.Method, op.NodeID, op.Resource, op.RawQuery, op.Body, op.BodySHA256, string(op.Summary), string(requirements), op.State,
+	if _, err := tx.ExecContext(ctx, `INSERT INTO pending_operations(`+pendingColumns+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		op.ID, op.Kind, op.CredentialID, op.RequesterType, op.RequesterID, op.Method, op.NodeID, op.Resource, op.RawQuery, op.Body, op.BodySHA256, string(op.Summary), string(requirements), op.State,
 		op.CreatedAt.Format(time.RFC3339Nano), op.ExpiresAt.UnixNano(), "", "", "", "", 0, ""); err != nil {
 		return PendingOperation{}, false, err
 	}

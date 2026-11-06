@@ -601,6 +601,18 @@ export function ServiceAccountsDialog({
                     </label>
                   ))}
                   <small className="text-muted-foreground">A policy da conta também precisa conceder a permissão.</small>
+                  <label className="mt-2 flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={form.limits.request_deletes === true}
+                      onCheckedChange={(checked) => setForm((current) => ({ ...current, limits: { ...current.limits, request_deletes: checked === true } }))}
+                      aria-label="Pode pedir para apagar arquivos"
+                    />
+                    Pode pedir para apagar arquivos
+                  </label>
+                  <small className="text-muted-foreground">
+                    O agente nunca apaga: o pedido espera uma pessoa decidir, e só vale onde uma regra da conta exige aprovação
+                    para apagar. Exige as aprovações habilitadas no Control Tower.
+                  </small>
                 </div>
                 {([
                   ["requests_per_minute", "Requisições por minuto", 1, 60000],
