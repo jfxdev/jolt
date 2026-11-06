@@ -74,7 +74,9 @@ export function remainingLabel(expiresAt: string, now: number): string {
 
 /** The toast a requester sees after asking for something that needs approval. */
 export function pendingToast(notice: PendingApprovalNotice, now = Date.now()): string {
-  const tree = notice.files === undefined ? "" : ` ${treeSize(notice)}`;
+  // A folder plan counts directories too; a transfer between nodes does not.
+  const size = notice.directories === undefined ? transferSize : treeSize;
+  const tree = notice.files === undefined ? "" : ` ${size(notice)}`;
   return `${operationLabel(notice.operation)}${tree} aguardando aprovação de uma pessoa (${remainingLabel(notice.expires_at, now)} para decidir).`;
 }
 

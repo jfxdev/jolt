@@ -55,6 +55,8 @@ test("the time left and the state read clearly", () => {
   assert.equal(remainingLabel("not a date", now), "expirado");
   assert.equal(stateLabel("indeterminate"), "Indeterminado");
   assert.match(pendingToast({ pending_operation_id: "p", state: "pending_approval", expires_at: "2026-11-05T12:05:00Z", operation: "move" }, now), /^Mover aguardando aprovação.*5 min 00 s/);
+  // A transfer between nodes counts files and bytes, never folders.
+  assert.match(pendingToast({ pending_operation_id: "p", state: "pending_approval", expires_at: "2026-11-05T12:05:00Z", operation: "move", files: 12, bytes: 4096 }, now), /^Mover 12 arquivos \(4\.0 KB\) aguardando aprovação/);
 });
 
 test("an approval that ran, did not run or was repeated says so", () => {
