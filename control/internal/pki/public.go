@@ -107,6 +107,7 @@ h1,h2{line-height:1.2}p,li{color:var(--muted)}h2{margin-top:2rem}
 <li><strong>Windows:</strong> em um terminal de administrador, <code>certutil -addstore -f ROOT jolt-root-ca.pem</code>.</li>
 <li><strong>Linux:</strong> copie para <code>/usr/local/share/ca-certificates/jolt-root-ca.crt</code> e execute <code>sudo update-ca-certificates</code>. O Firefox usa o repositório próprio dele.</li>
 <li><strong>Agentes e scripts:</strong> aponte o cliente para o arquivo, por exemplo <code>curl --cacert jolt-root-ca.pem</code>, e confira o fingerprint antes.</li>
+<li><strong>jolt-mcp:</strong> <code>jolt-mcp trust http://ESTE-ENDEREÇO --fingerprint FINGERPRINT-CONFERIDO</code>. Ele só guarda a raiz se o fingerprint bater.</li>
 </ul>
 <h2>Verificar sem confiar nesta página</h2>
 <pre>openssl x509 -in jolt-root-ca.pem -noout -fingerprint -sha256</pre>

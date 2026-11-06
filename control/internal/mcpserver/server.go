@@ -4,6 +4,8 @@ package mcpserver
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -28,7 +31,32 @@ type Server struct {
 	base           *url.URL
 	credentialFile string
 	client         *http.Client
+
+	// caFile, when set, is the only source of trust for the Control Tower's
+	// certificate. The client is rebuilt when the file changes, so a root
+	// stored by `jolt-mcp trust` applies without restarting the server.
+	caFile  string
+	mu      sync.Mutex
+	stamp   fileStamp
+	trusted *http.Client
 }
+
+// fileStamp tells a rewritten file from the one already loaded. `trust`
+// replaces the file by rename, so the identity changes even if size and time
+// do not.
+type fileStamp struct {
+	info os.FileInfo
+}
+
+func (f fileStamp) same(other fileStamp) bool {
+	return f.info != nil && other.info != nil && os.SameFile(f.info, other.info) && f.info.ModTime().Equal(other.info.ModTime()) && f.info.Size() == other.info.Size()
+}
+
+// Option changes how the server reaches the Control Tower.
+type Option func(*Server)
+
+// WithCAFile makes the server trust only the roots stored in filename.
+func WithCAFile(filename string) Option { return func(s *Server) { s.caFile = filename } }
 
 type fileArgs struct {
 	NodeID  string `json:"node_id" jsonschema:"Registered node ID"`
@@ -48,7 +76,7 @@ type searchArgs struct {
 
 // New refuses credentials in URLs and plaintext connections outside loopback.
 // Credentials are read from the file for every request to support rotation.
-func New(rawURL, credentialFile string) (*Server, error) {
+func New(rawURL, credentialFile string, options ...Option) (*Server, error) {
 	base, err := url.Parse(rawURL)
 	if err != nil || base == nil || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" || (base.Path != "" && base.Path != "/") || credentialFile == "" {
 		return nil, errors.New("invalid Control Tower URL or credential file")
@@ -58,10 +86,55 @@ func New(rawURL, credentialFile string) (*Server, error) {
 	if base.Scheme != "https" && !(base.Scheme == "http" && (strings.EqualFold(host, "localhost") || ip != nil && ip.IsLoopback())) {
 		return nil, errors.New("Control Tower must use HTTPS outside loopback")
 	}
-	return &Server{base: base, credentialFile: credentialFile, client: &http.Client{
+	server := &Server{base: base, credentialFile: credentialFile, client: newClient(nil)}
+	for _, option := range options {
+		option(server)
+	}
+	return server, nil
+}
+
+func newClient(roots *x509.CertPool) *http.Client {
+	client := &http.Client{
 		Timeout:       30 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}}, nil
+	}
+	if roots != nil {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}
+		client.Transport = transport
+	}
+	return client
+}
+
+// httpClient returns the client for the next request. Without a CA file it is
+// the system's trust; with one, only the roots in it.
+func (s *Server) httpClient() (*http.Client, error) {
+	if s.caFile == "" {
+		return s.client, nil
+	}
+	info, err := os.Stat(s.caFile)
+	if err != nil {
+		return nil, errors.New("CA file unavailable: run jolt-mcp trust")
+	}
+	stamp := fileStamp{info}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.trusted != nil && s.stamp.same(stamp) {
+		return s.trusted, nil
+	}
+	loaded, err := LoadRoots(s.caFile)
+	if err != nil {
+		return nil, errors.New("CA file invalid: run jolt-mcp trust")
+	}
+	pool := x509.NewCertPool()
+	for _, root := range loaded {
+		pool.AddCert(root)
+	}
+	if s.trusted != nil {
+		s.trusted.CloseIdleConnections()
+	}
+	s.trusted, s.stamp = newClient(pool), stamp
+	return s.trusted, nil
 }
 
 func (s *Server) MCP() *mcp.Server {
@@ -119,7 +192,11 @@ func (s *Server) run(ctx context.Context, args fileArgs, suffix string, query ur
 		return nil, nil, errors.New("could not create Control Tower request")
 	}
 	req.Header.Set("Authorization", "Bearer "+credential)
-	response, err := s.client.Do(req)
+	client, err := s.httpClient()
+	if err != nil {
+		return nil, nil, err
+	}
+	response, err := client.Do(req)
 	if err != nil {
 		return nil, nil, errors.New("Control Tower request failed")
 	}

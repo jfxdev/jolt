@@ -1,6 +1,6 @@
 # Proposta — Certificados e chaves com ciclo de vida gerenciado pelo Jolt
 
-> **Status:** proposta aprovada; **fases 1, 2 e 4 implementadas** (ver §12); a fase 3 só em parte (a página `/ca` e as telas existem, o `jolt-mcp trust` não) · **Data:** 6 de novembro de 2026 · **Origem:** o Jolt precisa funcionar **fechado**, sem depender de reverse proxy, ACME, CA externa ou operação manual de `openssl` · **Complementa:** [`plano-consolidado-seguranca.md`](plano-consolidado-seguranca.md) (contextos assinados) e [`../PRODUCTION.md`](../PRODUCTION.md) · **Código lido:** `node/backend/internal/infra/crypto/certificates.go`, `node/backend/internal/infra/config/config.go`, `control/internal/config/config.go`, `control/internal/store/store.go`, `docs/NODE_YAML.md`, `scripts/signed-read-smoke.py`.
+> **Status:** proposta aprovada; **fases 1 a 4 implementadas** (ver §12) · **Data:** 6 de novembro de 2026 · **Origem:** o Jolt precisa funcionar **fechado**, sem depender de reverse proxy, ACME, CA externa ou operação manual de `openssl` · **Complementa:** [`plano-consolidado-seguranca.md`](plano-consolidado-seguranca.md) (contextos assinados) e [`../PRODUCTION.md`](../PRODUCTION.md) · **Código lido:** `node/backend/internal/infra/crypto/certificates.go`, `node/backend/internal/infra/config/config.go`, `control/internal/config/config.go`, `control/internal/store/store.go`, `docs/NODE_YAML.md`, `scripts/signed-read-smoke.py`.
 
 ## 1. Resumo
 
@@ -186,7 +186,7 @@ Sem reverse proxy e sem CA pública, o certificado HTTPS do Control Tower só é
 
 - `GET /.well-known/jolt/ca.pem` e uma página `/ca` mostram o fingerprint e instruções por sistema. Nenhuma outra funcionalidade depende de a raiz estar instalada.
 - Quem já tem uma CA corporativa instalada nos dispositivos pode fornecer o certificado do Control Tower pelos arquivos manuais, como hoje.
-- Agentes e o MCP STDIO recebem o `ca.pem` e o hash por configuração. O `jolt-mcp` ganha `trust <url> --fingerprint <sha256>`, que baixa a raiz, confere o hash e a guarda; depois disso o agente não toca mais em certificados.
+- Agentes e o MCP STDIO recebem o `ca.pem` e o hash por configuração. O `jolt-mcp` ganha `trust <url> --fingerprint <sha256>`, que baixa a raiz, confere o hash e a guarda; depois disso o agente não toca mais em certificados (implementado: ver a fase 3 em §12).
 - Renovações do certificado HTTPS não pedem nada de ninguém: a raiz continua a mesma e o servidor recarrega o certificado novo a quente.
 
 ## 9. Modos e compatibilidade
@@ -239,7 +239,7 @@ O Control Tower comprometido já controlaria todos os nodes pelo token compartil
 - `managed` recusa `CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_*` em vez de ignorá-las em silêncio.
 - A métrica `jolt_certificate_expiry_seconds` tem um rótulo `kind` e conta só o que está em uso, para uma despedida planejada não parecer defeito.
 - Um defeito achado pelos testes e corrigido: uma raiz listada como intermediária passava na checagem do pacote, porque a raiz assina a si mesma.
-- Fica de fora desta fase, e continua previsto: `ca export-root`, seriais revogados, rotação de raiz, aprovação de enrollment, certificados de cliente e de API do node, `jolt-mcp trust`.
+- Fica de fora desta fase, e continua previsto: `ca export-root`, seriais revogados, rotação de raiz, aprovação de enrollment, certificados de cliente e de API do node (feitos nas fases 2 a 4) e `jolt-mcp trust` (fase 3).
 
 **Fase 2: enrollment e pacote no node.**
 - Token de adesão, endpoints de enrollment e de pacote, estado cifrado no node, certificado de servidor da API e renovação dirigida pelo Control Tower, certificado de cliente do Control Tower.
@@ -253,7 +253,7 @@ O Control Tower comprometido já controlaria todos os nodes pelo token compartil
 - Uma repetição do mesmo pedido de adesão recebe a mesma resposta (o token já gasto é reconhecido pelo hash do CSR); qualquer outro pedido sob o token gasto é recusado.
 - O certificado de cliente do Control Tower **não é exigido** nesta fase: o token operacional continua autenticando, e o certificado é conferido apenas se for oferecido. Exigi-lo é o `managed-only` da fase 4.
 - Defeito achado pelos testes e corrigido: a validação de serial revogado usava `hex.DecodeString`, que recusa tamanho ímpar, mas `big.Int.Text(16)` pode produzir um. Passou a aceitar hex minúsculo de qualquer comprimento.
-- Fica de fora: revogação de seriais, rotação de raiz, `ca export-root`, `jolt-mcp trust` e um node que expirou sem renovar (precisa de token novo).
+- Fica de fora: revogação de seriais, rotação de raiz, `ca export-root` e um node que expirou sem renovar (precisa de token novo).
 
 **Fase 3: ergonomia e agentes.**
 - Página `/ca`, `jolt-mcp trust`, hot reload do certificado HTTPS, UI de inventário e enrollment.
@@ -272,7 +272,15 @@ O Control Tower comprometido já controlaria todos os nodes pelo token compartil
 - **A rotação de raiz só avança pela confirmação dos nodes.** A promoção é explícita e o Control Tower a recusa (`409 nodes_behind`) enquanto um node não tiver o pacote com a raiz nova; a aposentadoria da antiga é automática quando todo node tem o pacote atual, sem erro e com certificado da cadeia nova. Um token criado antes da promoção deixa de servir. Os navegadores precisam instalar a raiz nova (`/ca/next.pem`): é o único caso em que mudam.
 - **`ca export-root` não faz sozinho a renovação.** Com a raiz fora do banco, `ca renew-intermediate --root-file` emite a intermediária com a chave do arquivo sem nunca gravá-la. Todos os comandos `ca` exigem o Control Tower parado, como `recover-admin`.
 - Defeitos achados pelos testes e corrigidos: `Ensure` não republicava o pacote quando uma revogação saía e outra entrava na mesma passagem (a lista mantinha o tamanho); o nome do endereço não era conferido para um node por IP, porque o estado TLS não o traz (a verificação passou a ser feita no discador); uma conexão aberta sobrevivia à revogação.
-- Fica de fora: `jolt-mcp trust` (fase 3), HSM, e restaurar um snapshot do Control Tower mais velho que a última troca de chave de assinatura (documentado em `DISASTER_RECOVERY.md`).
+- Fica de fora: HSM, e restaurar um snapshot do Control Tower mais velho que a última troca de chave de assinatura (documentado em `DISASTER_RECOVERY.md`).
+
+**Fase 3 — concluída em 6 de novembro de 2026.** A página `/ca`, o inventário e o enrollment já existiam (fases 1 e 2); faltava o `jolt-mcp trust`. Uso e regras em [`../MCP.md`](../MCP.md#confiar-na-raiz-do-jolt). Verificada com testes unitários, mutação nas checagens do download e do arquivo, um teste do binário real (`trust` e depois o servidor MCP sobre HTTPS com a raiz guardada) e `scripts/managed-mcp-smoke.py` (Control Tower real: fingerprint errado, raiz pela porta HTTP e pela HTTPS, e uma rotação de raiz em que o agente que pegou `--next` continua e o que não pegou é cortado). O que mudou em relação ao texto do §8:
+
+- **O servidor MCP confia só nas raízes guardadas**, não nelas somadas ao sistema. É o comportamento fechado; quem usa uma CA corporativa continua sem `trust` e sem arquivo, como antes.
+- **`trust` acrescenta** a raiz ao arquivo (até 8, descartando as expiradas) em vez de substituí-lo, para que uma troca de raiz nunca deixe o agente sem raiz válida. `--next` busca a raiz da rotação em curso e `--replace` descarta as anteriores.
+- O download não verifica TLS (o certificado do Control Tower ainda não é confiável), e o `--fingerprint` é obrigatório: é ele que autentica o conteúdo. A raiz também precisa ser um certificado de CA autoassinado e válido, e o arquivo guardado é recusado se outros usuários puderem escrevê-lo.
+- O arquivo é relido quando o servidor nota que ele mudou (inode, tamanho ou hora), sem reiniciar.
+- Fica de fora: instalar a raiz no repositório do sistema (o `trust` guarda só para o `jolt-mcp`) e outros clientes além dele.
 
 Cada fase é útil sozinha e reversível enquanto o modo `manual` existir.
 
@@ -285,4 +293,4 @@ Cada fase é útil sozinha e reversível enquanto o modo `manual` existir.
 
 ## 14. O que não está provado
 
-Exercitado com testes nos dois módulos, mutação nas verificações, jornadas Playwright e dois ensaios com processos reais em loopback (`scripts/managed-tls-smoke.py` e `scripts/managed-rotation-smoke.py`). Os pontos que dependem de ambiente real e que ficam para o aceite do mantenedor: renovação e rotação em hosts distintos com relógio divergente, expiração e retorno de um node real depois de semanas, recarga a quente do certificado HTTPS sob carga, comportamento dos navegadores e do `jolt-mcp` com a raiz instalada (e depois trocada) em cada sistema operacional, ensaio de refazer a autoridade do zero com vários nodes, e restore de um snapshot antigo do Control Tower.
+Exercitado com testes nos dois módulos, mutação nas verificações, jornadas Playwright e três ensaios com processos reais em loopback (`scripts/managed-tls-smoke.py`, `scripts/managed-rotation-smoke.py` e `scripts/managed-mcp-smoke.py`). Os pontos que dependem de ambiente real e que ficam para o aceite do mantenedor: renovação e rotação em hosts distintos com relógio divergente, expiração e retorno de um node real depois de semanas, recarga a quente do certificado HTTPS sob carga, comportamento dos navegadores e do `jolt-mcp` com a raiz instalada (e depois trocada) em cada sistema operacional, ensaio de refazer a autoridade do zero com vários nodes, e restore de um snapshot antigo do Control Tower.

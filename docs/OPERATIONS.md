@@ -416,7 +416,7 @@ Uma regra de policy pode conceder `delete` ou `update` **somente com a aprovaç�
 > pacote de confiança e o certificado da API e os renova sozinho. Um node pode ser posto em `managed-only` (só o
 > certificado do Control Tower o autentica), e há revogação, rotação da intermediária e da raiz e raiz fora do
 > banco. Validado com processos reais em loopback (`scripts/managed-tls-smoke.py` e
-> `scripts/managed-rotation-smoke.py`), não entre hosts nem sob carga. O `jolt-mcp trust` (fase 3) não existe.
+> `scripts/managed-rotation-smoke.py`), não entre hosts nem sob carga. O `jolt-mcp trust` guarda a raiz para os agentes.
 
 `CONTROL_TOWER_TLS_MODE=managed` faz o Control Tower manter uma autoridade própria e dispensa `openssl`,
 certificado externo e reverse proxy. O padrão, `manual`, não muda nada.
@@ -452,8 +452,19 @@ recusa `CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID` e `_FILE`: a chave de assina
 Num navegador novo, abra `http://HOST:8091/ca`: a página mostra o fingerprint SHA-256 e como instalar em cada
 sistema. **Compare o fingerprint com o de Access > Certificados** (ou com `GET /api/v1/control-tower/crypto/ca`)
 por outro canal, porque essa página chega por HTTP simples. A raiz também sai em
-`https://HOST:8090/.well-known/jolt/ca.pem`. Agentes e scripts usam o arquivo diretamente, por exemplo
+`https://HOST:8090/.well-known/jolt/ca.pem`. Scripts usam o arquivo diretamente, por exemplo
 `curl --cacert jolt-root-ca.pem`.
+
+Um agente que usa o `jolt-mcp` faz o mesmo uma vez, com o fingerprint conferido por outro canal:
+
+```sh
+jolt-mcp trust http://HOST:8091 --fingerprint AB:CD:...
+```
+
+O comando baixa a raiz, confere o SHA-256 e **não grava nada se ele não bater**. Depois disso o servidor MCP
+confia **só** nas raízes guardadas (nada do repositório do sistema) e relê o arquivo quando ele muda, então não há
+mais nada a configurar. Em [`MCP.md`](MCP.md#confiar-na-raiz-do-jolt) estão o local do arquivo, `--next` para uma
+troca de raiz e `--replace`.
 
 A raiz não muda quando a intermediária ou um certificado é renovado: o dispositivo que a instalou não precisa
 de nada depois.
@@ -693,7 +704,8 @@ A chave da raiz **nunca** volta ao banco em `renew-intermediate`. Um arquivo leg
 - O certificado de cliente do Control Tower fica na memória dele: um `managed-only` com o Control Tower fora do ar
   não deixa ninguém operar o node.
 - `ca export-root`, `import-root` e `renew-intermediate` exigem o Control Tower parado.
-- O `jolt-mcp trust` (fase 3) não existe: agentes recebem a raiz por configuração, como antes.
+- `jolt-mcp trust` baixa a raiz por HTTP simples e só a aceita se o fingerprint informado bater. Um fingerprint copiado da própria página `/ca` não prova nada: confira-o em Access > Certificados ou com o administrador.
+- Depois de uma troca de raiz, o agente precisa rodar `jolt-mcp trust --next` antes da promoção (ou `trust` de novo depois, pela porta HTTPS ou HTTP).
 - Exercitado com processos reais em loopback e com nodes simulados; **não** entre hosts, com relógios divergentes
   (a folga de `NotBefore` é de 5 minutos), sob carga nem com os navegadores de cada sistema.
 
