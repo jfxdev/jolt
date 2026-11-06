@@ -53,7 +53,9 @@ interface). Restoring puts the entry back at its old path and refuses if the nam
 taken, if the folder it was in is gone, or if the name has since become hidden. An empty folder
 deleted without `recursive` is removed for good. Records live in the encrypted state, which an older node
 refuses to open once it holds one; after a crash the node finishes or undoes whichever
-step was interrupted at startup. Trashed entries still use disk until purged, and a
+step was interrupted at startup. `max_bytes` (optional, 0 or omitted means no cap) bounds the bytes of file content the trash holds; a
+delete that would go over it fails with `trash_full` instead of purging anything early. Trashed entries
+still use disk until purged, and a
 hard-linked file frees no space until then. The trash is not a backup: host-side access
 is unaffected, and an entry purged or past its retention is gone.
 

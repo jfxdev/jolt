@@ -170,7 +170,7 @@ Referências para retomada:
 
 **Falta**
 
-- Lixeira: faltam cota de espaço, métricas e alertas de crescimento, e a validação em processo real de node (a lixeira foi exercitada em serviço, HTTP e Control Tower com node de mentira, e uma vez à mão com o binário do node, sem jornada automatizada pelo Control Tower).
+- Lixeira: a cota (`trash.max_bytes`, que recusa o delete em vez de purgar antes da hora), as métricas por mount e dois alertas de referência já existem; falta a validação em processo real de node (a lixeira foi exercitada em serviço, HTTP e Control Tower com node de mentira, e uma vez à mão com o binário do node, sem jornada automatizada pelo Control Tower).
 - Aprovação humana de um **plano de pasta** criado por outra credencial, e aprovação de transferências entre nodes; hoje uma concessão marcada com `needs_approval` é recusada nessas rotas. O plano do move entre nodes também não sobrevive a uma mudança entre a prévia e a confirmação, por desenho. Uma cópia verificada cuja limpeza da origem falha deixa os dois lados com os dados, sem rollback automático.
 - Solicitação de pequenas operações JSON **por agentes**, sem escrita direta: o perfil `agent` continua só leitura e ampliar isso é uma decisão separada. `needs_approval` com aprovação humana na UI, permissões atuais do aprovador, corpo guardado e conferido, expiração em cinco minutos, execução idempotente e webhook só de notificação já existem para delete, move e copy de arquivos (ver evidências).
 - Validar JIT contra todas as rotas, expiração e interação com a autorização renovável de jobs, hoje só de cópia local.

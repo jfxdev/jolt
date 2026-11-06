@@ -26,10 +26,13 @@ type Mount struct {
 type TrashConfig struct {
 	Enabled       bool `json:"enabled" yaml:"enabled"`
 	RetentionDays int  `json:"retention_days" yaml:"retention_days"`
+	// MaxBytes caps what the trash may hold; 0 means no cap. A delete that
+	// would go over it fails instead of purging anything early.
+	MaxBytes int64 `json:"max_bytes,omitempty" yaml:"max_bytes,omitempty"`
 }
 
 // TrashItem records one deleted entry kept in a mount's trash. Path is the
-// mount-relative path it had; Size is set for files only.
+// mount-relative path it had; Size is the bytes of file content it holds.
 type TrashItem struct {
 	ID        string    `json:"trash_id" yaml:"trash_id"`
 	MountID   string    `json:"mount_id" yaml:"mount_id"`

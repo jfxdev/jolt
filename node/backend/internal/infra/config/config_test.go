@@ -321,10 +321,19 @@ func TestTrashConfiguration(t *testing.T) {
 		"retention too long":  mount("read_write", "    trash: {enabled: true, retention_days: 366}\n"),
 		"negative retention":  mount("read_write", "    trash: {enabled: true, retention_days: -1}\n"),
 		"unknown trash field": mount("read_write", "    trash: {enabled: true, forever: true}\n"),
+		"negative cap":        mount("read_write", "    trash: {enabled: true, max_bytes: -1}\n"),
+		"absurd cap":          mount("read_write", "    trash: {enabled: true, max_bytes: 9007199254740993000}\n"),
 	} {
 		if _, err := Read(writeConfig(t, text)); err == nil {
 			t.Fatalf("%s accepted", name)
 		}
+	}
+	cfg, err = Read(writeConfig(t, mount("read_write", "    trash: {enabled: true, max_bytes: 1073741824}\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mounts, _ := cfg.Resources(); mounts[0].Trash.MaxBytes != 1<<30 {
+		t.Fatalf("cap: %+v", mounts[0].Trash)
 	}
 	// Turned off on a read-only mount is harmless.
 	if _, err := Read(writeConfig(t, mount("read_only", "    trash: {enabled: false}\n"))); err != nil {

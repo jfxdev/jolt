@@ -127,7 +127,8 @@ func main() {
 	} else if recovered > 0 {
 		logger.Warn("reconciled trash records after a restart", "count", recovered)
 	}
-	go sweepTrash(jobContext, fileService, logger)
+	registerTrashMetrics(registry, fileService)
+	go sweepTrash(jobContext, fileService, registry, logger)
 	recoveredJobs, err := jobService.Start(jobContext, cfg.MaxConcurrentJobs)
 	if err != nil {
 		logger.Error("start job workers", "error", err)
@@ -266,21 +267,62 @@ func registerNodeMetrics(registry *metrics.Registry, cfg config.Config, uploads 
 // sweepTrash purges what mounts kept past their retention. It runs often
 // enough that an entry does not outlive its retention by more than a few
 // minutes, and rarely enough to cost nothing.
-func sweepTrash(ctx context.Context, files *filesystem.Service, logger *slog.Logger) {
-	ticker := time.NewTicker(10 * time.Minute)
+func sweepTrash(ctx context.Context, files *filesystem.Service, registry *metrics.Registry, logger *slog.Logger) {
+	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
-	for {
+	for tick := 1; ; tick++ {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
-		purged, err := files.SweepTrash(ctx, time.Now().UTC())
-		if err != nil {
-			logger.Error("sweep trash", "error", err)
+		if tick%10 == 0 {
+			purged, err := files.SweepTrash(ctx, time.Now().UTC())
+			if err != nil {
+				logger.Error("sweep trash", "error", err)
+			}
+			if purged > 0 {
+				registry.Add("jolt_trash_purged_total", int64(purged))
+				logger.Info("purged expired trash", "count", purged)
+			}
 		}
-		if purged > 0 {
-			logger.Info("purged expired trash", "count", purged)
+		refreshTrashMetrics(ctx, registry, files, logger)
+	}
+}
+
+func registerTrashMetrics(registry *metrics.Registry, files *filesystem.Service) {
+	registry.Gauge("jolt_trash_entries", "Entries a mount's trash holds.", "mount")
+	registry.Gauge("jolt_trash_bytes", "Bytes of file content a mount's trash holds.", "mount")
+	registry.Gauge("jolt_trash_oldest_age_seconds", "Age of the oldest entry in a mount's trash.", "mount")
+	registry.Counter("jolt_trash_purged_total", "Trash entries purged after their retention.")
+	refreshTrashMetrics(context.Background(), registry, files, nil)
+}
+
+// refreshTrashMetrics sets the gauges from the stored records. A mount whose
+// trash emptied is set to zero rather than left at its last value.
+var trashMounts = map[string]bool{}
+
+func refreshTrashMetrics(ctx context.Context, registry *metrics.Registry, files *filesystem.Service, logger *slog.Logger) {
+	stats, err := files.TrashStats(ctx)
+	if err != nil {
+		if logger != nil {
+			logger.Error("trash statistics", "error", err)
+		}
+		return
+	}
+	seen := map[string]bool{}
+	for _, entry := range stats {
+		seen[entry.MountID] = true
+		trashMounts[entry.MountID] = true
+		registry.SetGauge("jolt_trash_entries", int64(entry.Entries), entry.MountID)
+		registry.SetGauge("jolt_trash_bytes", entry.Bytes, entry.MountID)
+		registry.SetGauge("jolt_trash_oldest_age_seconds", int64(time.Since(entry.Oldest).Seconds()), entry.MountID)
+	}
+	for mount := range trashMounts {
+		if !seen[mount] {
+			registry.SetGauge("jolt_trash_entries", 0, mount)
+			registry.SetGauge("jolt_trash_bytes", 0, mount)
+			registry.SetGauge("jolt_trash_oldest_age_seconds", 0, mount)
 		}
 	}
 }

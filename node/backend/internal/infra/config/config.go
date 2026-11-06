@@ -372,6 +372,9 @@ func Read(file string) (Config, error) {
 			if m.Trash.Enabled && m.Mode != "read_write" {
 				return c, fail(fmt.Sprintf("mounts[%d].trash", i), "requires a read_write mount")
 			}
+			if m.Trash.MaxBytes < 0 || m.Trash.MaxBytes > 1<<50 {
+				return c, fail(fmt.Sprintf("mounts[%d].trash.max_bytes", i), "must be between 0 and 1 PiB")
+			}
 			if m.Trash.RetentionDays == 0 {
 				c.Mounts[i].Trash.RetentionDays = DefaultTrashRetentionDays
 			} else if m.Trash.RetentionDays < 1 || m.Trash.RetentionDays > MaxTrashRetentionDays {

@@ -339,7 +339,12 @@ varredura a cada dez minutos).
   backup**: quem acessa o host a vê e a esvazia, e o que foi apagado de vez ou passou da retenção se foi.
 - Move entre nodes e a limpeza da origem depois de uma cópia também passam pelo delete do node e, portanto,
   pela lixeira da origem.
-- Não há cota de espaço da lixeira nem aviso quando ela cresce; acompanhe o disco do mount.
+- `trash.max_bytes` (opcional) limita o que a lixeira guarda. Passar do teto **recusa o delete**
+  (507 `trash_full`, e o job falha dizendo quanto caberia) em vez de apagar algo mais cedo: a retenção
+  prometida vale mesmo cheia, e quem precisa de espaço apaga de vez ou restaura. Uma pasta conta os bytes
+  dos arquivos dentro dela; o cálculo percorre a árvore uma vez ao apagar.
+- Métricas por mount e dois alertas de referência (perto do teto e item além da retenção) estão na
+  seção de métricas e na de alertas. Sem teto, a lixeira só é limitada pelo disco.
 
 ## Aprovação humana
 
@@ -470,8 +475,10 @@ Labels usam padrões de rota, não caminhos de arquivos ou tokens de share.
   `jolt_jobs_total`, `jolt_jobs_active`, `jolt_job_bytes_total`,
   `jolt_max_concurrent_jobs`, `jolt_uploads_started_total`,
   `jolt_uploads_completed_total`, `jolt_uploads_failed_total`,
-  `jolt_uploads_aborted_total`, `jolt_uploads_active` e
-  `jolt_upload_bytes_total`.
+  `jolt_uploads_aborted_total`, `jolt_uploads_active`,
+  `jolt_upload_bytes_total` e, da lixeira, `jolt_trash_entries`, `jolt_trash_bytes` e
+  `jolt_trash_oldest_age_seconds` (por `mount`, atualizados a cada minuto) e
+  `jolt_trash_purged_total`.
 - Ambos exportam métricas de runtime Go com prefixo `go_`/`process_` conforme o
   registro nativo. Counters só aumentam; use `rate()`/`increase()`.
 
@@ -506,6 +513,18 @@ groups:
       - alert: JoltLoginFailures
         expr: sum(rate(jolt_control_login_failures_total[5m])) > 0.2
         for: 10m
+        labels: {severity: warning}
+      - alert: JoltTrashNearCap
+        # Só faz sentido com `trash.max_bytes`; ajuste o teto ao do mount.
+        expr: jolt_trash_bytes > 0.8 * 50 * 1024 * 1024 * 1024
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "A lixeira de {{ $labels.mount }} passou de 80% do teto"
+      - alert: JoltTrashEntryPastRetention
+        # A varredura roda a cada 10 min; um item bem além da retenção indica falha ao purgar.
+        expr: jolt_trash_oldest_age_seconds > (30 * 86400) + 3600
+        for: 1h
         labels: {severity: warning}
       - alert: JoltSharePasswordFailures
         expr: sum(rate(jolt_control_share_unlock_failures_total[5m])) > 0.2

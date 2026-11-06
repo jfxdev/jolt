@@ -29,6 +29,7 @@ const trashFolder = ".jolt-trash"
 var (
 	ErrTrashUnavailable = errors.New("trash cannot hold this entry")
 	ErrTrashNotFound    = errors.New("trash entry not found")
+	ErrTrashFull        = errors.New("the trash is full")
 )
 
 // trashMu serializes every change to the trash. Deletes, restores and purges
@@ -98,8 +99,24 @@ func (s *Service) moveToTrash(ctx context.Context, mount entities.Mount, relativ
 	}
 	if info.IsDir() {
 		item.Type = "directory"
+		if item.Size, err = treeBytes(ctx, resolved); err != nil {
+			return err
+		}
 	} else {
 		item.Size = info.Size()
+	}
+	if limit := mount.Trash.MaxBytes; limit > 0 {
+		held, err := s.store.ListTrashItems(ctx, mount.ID)
+		if err != nil {
+			return err
+		}
+		total := item.Size
+		for _, other := range held {
+			total += other.Size
+		}
+		if total > limit {
+			return fmt.Errorf("%w: it would hold %d bytes of the %d allowed; purge something first", ErrTrashFull, total, limit)
+		}
 	}
 	if err := s.store.PutTrashItem(ctx, item); err != nil {
 		return err
@@ -334,4 +351,65 @@ func (s *Service) RecoverTrash(ctx context.Context) (int, error) {
 		changed++
 	}
 	return changed, failure
+}
+
+// treeBytes adds up the regular files under root. It follows no link.
+func treeBytes(ctx context.Context, root string) (int64, error) {
+	var total int64
+	err := safeWalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.Type().IsRegular() {
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			total += info.Size()
+		}
+		return nil
+	})
+	return total, err
+}
+
+// TrashStats is what a mount's trash holds right now.
+type TrashStats struct {
+	MountID string
+	Entries int
+	Bytes   int64
+	Oldest  time.Time
+}
+
+// TrashStats summarizes the stored entries per mount, for metrics.
+func (s *Service) TrashStats(ctx context.Context) ([]TrashStats, error) {
+	items, err := s.store.AllTrashItems(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byMount := map[string]*TrashStats{}
+	var order []string
+	for _, item := range items {
+		if item.State != "stored" {
+			continue
+		}
+		stats := byMount[item.MountID]
+		if stats == nil {
+			stats = &TrashStats{MountID: item.MountID}
+			byMount[item.MountID] = stats
+			order = append(order, item.MountID)
+		}
+		stats.Entries++
+		stats.Bytes += item.Size
+		if stats.Oldest.IsZero() || item.DeletedAt.Before(stats.Oldest) {
+			stats.Oldest = item.DeletedAt
+		}
+	}
+	result := make([]TrashStats, 0, len(order))
+	for _, id := range order {
+		result = append(result, *byMount[id])
+	}
+	return result, nil
 }

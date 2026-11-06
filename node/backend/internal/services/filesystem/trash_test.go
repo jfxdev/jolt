@@ -381,3 +381,65 @@ func TestRecoveryLeavesAnUnreachableMountAlone(t *testing.T) {
 		t.Fatalf("the records were lost with the disk: %+v", items)
 	}
 }
+
+func TestAFullTrashRefusesTheDeleteInsteadOfPurgingEarly(t *testing.T) {
+	ctx := context.Background()
+	f := newTrashFixture(t, 30, func(m *entities.Mount) { m.Trash.MaxBytes = 100 })
+	f.write(t, "a.bin", strings.Repeat("a", 60))
+	f.write(t, "dir/b.bin", strings.Repeat("b", 30))
+	f.write(t, "dir/sub/c.bin", strings.Repeat("c", 30))
+	f.write(t, "later.bin", strings.Repeat("d", 10))
+	if err := f.service.Delete(ctx, f.mountID, "a.bin", false); err != nil {
+		t.Fatal(err)
+	}
+	// 60 held; a 60 byte tree would make 120.
+	err := f.service.Delete(ctx, f.mountID, "dir", true)
+	if !errors.Is(err, ErrTrashFull) {
+		t.Fatalf("over the cap: %v", err)
+	}
+	if !f.exists("dir/sub/c.bin") {
+		t.Fatal("a refused delete lost the tree")
+	}
+	if items, _ := f.service.ListTrash(ctx, f.mountID); len(items) != 1 || items[0].Path != "a.bin" {
+		t.Fatalf("the refusal changed the trash: %+v", items)
+	}
+	// What fits still goes in, and a folder is sized by the files under it.
+	if err := f.service.Delete(ctx, f.mountID, "later.bin", false); err != nil {
+		t.Fatalf("a delete that fits: %v", err)
+	}
+	stats, err := f.service.TrashStats(ctx)
+	if err != nil || len(stats) != 1 || stats[0].Entries != 2 || stats[0].Bytes != 70 {
+		t.Fatalf("stats %+v %v", stats, err)
+	}
+	// Making room is enough.
+	items, _ := f.service.ListTrash(ctx, f.mountID)
+	for _, item := range items {
+		if item.Path == "a.bin" {
+			if _, err := f.service.PurgeTrash(ctx, f.mountID, item.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := f.service.Delete(ctx, f.mountID, "dir", true); err != nil {
+		t.Fatalf("after purging: %v", err)
+	}
+	moved, _ := f.service.ListTrash(ctx, f.mountID)
+	var dir *entities.TrashItem
+	for index := range moved {
+		if moved[index].Path == "dir" {
+			dir = &moved[index]
+		}
+	}
+	if dir == nil || dir.Size != 60 || dir.Type != "directory" {
+		t.Fatalf("directory entry %+v", dir)
+	}
+}
+
+func TestWithoutACapTheTrashIsNotBounded(t *testing.T) {
+	ctx := context.Background()
+	f := newTrashFixture(t, 30)
+	f.write(t, "big.bin", strings.Repeat("x", 5000))
+	if err := f.service.Delete(ctx, f.mountID, "big.bin", false); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -1743,6 +1743,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, code = http.StatusForbidden, "file_type_not_allowed"
 	case errors.Is(err, filesystem.ErrTrashNotFound):
 		status, code = http.StatusNotFound, "trash_not_found"
+	case errors.Is(err, filesystem.ErrTrashFull):
+		status, code = http.StatusInsufficientStorage, "trash_full"
 	case errors.Is(err, filesystem.ErrTrashUnavailable):
 		status, code = http.StatusConflict, "trash_unavailable"
 	case errors.Is(err, filesystem.ErrNotFound):
