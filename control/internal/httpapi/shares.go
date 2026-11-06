@@ -92,11 +92,14 @@ func (s *Server) createShare(w http.ResponseWriter, r *http.Request) {
 		"A policy atual não permite criar links públicos.") {
 		return
 	}
-	if !s.authorize(w, r, scope, "read", "permission_denied",
+	// The kind says what the entry is, so a typed rule is judged for that
+	// type; the node still decides by the real type on every public request.
+	typed := withEntryType(r, kind)
+	if !s.authorize(w, typed, scope, "read", "permission_denied",
 		"Você não pode compartilhar um caminho que não pode ler.") {
 		return
 	}
-	if kind == "directory" && !s.authorize(w, r, scope, "list", "permission_denied",
+	if kind == "directory" && !s.authorize(w, typed, scope, "list", "permission_denied",
 		"Você não pode compartilhar uma pasta que não pode listar.") {
 		return
 	}
@@ -525,18 +528,23 @@ func (s *Server) loadPublicShare(w http.ResponseWriter, r *http.Request, forCont
 // from storage rather than trusted from the share, so demoting an admin
 // likewise stops their links.
 func (s *Server) shareCreatorStillAuthorized(r *http.Request, share store.Share) bool {
-	return s.shareCreatorAuthorizedPath(r, share, share.Path, "read", share.Kind == "directory")
+	// The root of a share has a known type, so its answer is the exact one: a
+	// file the creator can no longer read stops being offered, instead of being
+	// offered and then answered as missing by the node.
+	return s.shareCreatorAuthorizedPath(r, share, share.Path, "read", share.Kind == "directory", share.Kind)
 }
 
 func (s *Server) authorizeSharePath(w http.ResponseWriter, r *http.Request, share store.Share, relative, capability string) bool {
-	if !s.shareCreatorAuthorizedPath(r, share, relative, capability, false) {
+	if !s.shareCreatorAuthorizedPath(r, share, relative, capability, false, "") {
 		writeError(w, r, http.StatusGone, "share_revoked", "Este link não está mais disponível.")
 		return false
 	}
 	return true
 }
 
-func (s *Server) shareCreatorAuthorizedPath(r *http.Request, share store.Share, relative, capability string, checkSubtree bool) bool {
+// entryType is the type of the entry when it is known (a share's own root) and
+// empty when the node must decide per entry.
+func (s *Server) shareCreatorAuthorizedPath(r *http.Request, share store.Share, relative, capability string, checkSubtree bool, entryType string) bool {
 	creator, actorType, _, err := s.currentShareCreator(r, share, time.Now())
 	if err != nil {
 		return false
@@ -562,6 +570,9 @@ func (s *Server) shareCreatorAuthorizedPath(r *http.Request, share store.Share, 
 	decision := rbac.Evaluate(expanded, scope, capability)
 	if s.config.TypedPolicies {
 		decision = rbac.EvaluateTyped(expanded, scope, capability, rbac.NodeFiltered)
+		if entryType == "file" || entryType == "directory" {
+			decision = rbac.EvaluateEntry(expanded, scope, capability, entryType).Decision
+		}
 	}
 	return decision.Allowed && !decision.Denied
 }

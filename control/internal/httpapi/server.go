@@ -946,9 +946,23 @@ func (s *Server) evaluateAuthorization(r *http.Request, path, capability string)
 	}
 	expanded := rbac.ExpandCompatibilityRules(policies)
 	if s.config.TypedPolicies {
+		if entryType, known := r.Context().Value(entryTypeKey{}).(string); known {
+			return s.applyApproval(r, rbac.EvaluateEntry(expanded, path, capability, entryType).Decision), nil
+		}
 		return s.applyApproval(r, rbac.EvaluateTyped(expanded, path, capability, s.entryMode(r))), nil
 	}
 	return s.applyApproval(r, rbac.Evaluate(expanded, path, capability)), nil
+}
+
+type entryTypeKey struct{}
+
+// withEntryType says what the path of a request is ("file" or "directory"), so
+// typed rules are judged for that type instead of for every type it could be.
+func withEntryType(r *http.Request, kind string) *http.Request {
+	if kind != "file" && kind != "directory" {
+		return r
+	}
+	return r.WithContext(context.WithValue(r.Context(), entryTypeKey{}, kind))
 }
 
 type nodeFilteredKey struct{}
