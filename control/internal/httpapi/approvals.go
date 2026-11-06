@@ -325,10 +325,6 @@ func (s *Server) approvePendingOperation(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, http.StatusConflict, "pending_operation_rejected", "O pedido já foi rejeitado.")
 		return
 	}
-	if !op.IntegrityOK() {
-		writeError(w, r, http.StatusConflict, "pending_operation_corrupt", "O pedido guardado não confere com o original e não será executado.")
-		return
-	}
 	self := op.RequesterType == currentActorType(r) && op.RequesterID == currentUser(r).ID
 	if self && !input.AcknowledgeSelfApproval {
 		writeError(w, r, http.StatusConflict, "self_approval_requires_acknowledgement", "Você pediu esta operação. Confirme que aprova o seu próprio pedido.")
@@ -346,6 +342,9 @@ func (s *Server) approvePendingOperation(w http.ResponseWriter, r *http.Request)
 	switch {
 	case errors.Is(err, store.ErrPendingExpired):
 		writeError(w, r, http.StatusGone, "pending_operation_expired", "O pedido expirou. Peça novamente.")
+		return
+	case errors.Is(err, store.ErrPendingCorrupt):
+		writeError(w, r, http.StatusConflict, "pending_operation_corrupt", "O pedido guardado não confere com o original e não será executado.")
 		return
 	case errors.Is(err, store.ErrConflict):
 		writeError(w, r, http.StatusConflict, "operation_in_progress", "Outro aprovador decidiu este pedido primeiro.")

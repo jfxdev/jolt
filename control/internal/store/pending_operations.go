@@ -33,6 +33,9 @@ const (
 var (
 	ErrPendingExpired = errors.New("pending operation expired")
 	ErrPendingTooMany = errors.New("too many pending operations")
+	// ErrPendingCorrupt means the stored request no longer matches the digest
+	// taken when it was made. It is never replayed.
+	ErrPendingCorrupt = errors.New("pending operation does not match its digest")
 )
 
 type PendingRequirement struct {
@@ -241,6 +244,9 @@ func (s *Store) ClaimPendingOperation(ctx context.Context, id, byType, byID stri
 			return PendingOperation{}, err
 		}
 		return PendingOperation{}, ErrPendingExpired
+	}
+	if !op.IntegrityOK() {
+		return op, ErrPendingCorrupt
 	}
 	stamp := now.UTC().Format(time.RFC3339Nano)
 	result, err := tx.ExecContext(ctx, `UPDATE pending_operations SET state=?,decided_by_type=?,decided_by_id=?,decided_at=? WHERE id=? AND state=?`, PendingExecuting, byType, byID, stamp, id, PendingState)

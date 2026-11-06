@@ -263,3 +263,24 @@ func TestPendingOperationIntegrity(t *testing.T) {
 		t.Fatal("a changed body passed the check")
 	}
 }
+
+func TestAClaimRefusesARequestThatNoLongerMatchesItsDigest(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openPendingStore(t)
+	now := time.Now().UTC()
+	op, _, err := s.CreatePendingOperation(ctx, sampleOperation(`{"path":"a.txt"}`), 3, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Someone with the database changes what will be replayed.
+	if _, err := s.db.ExecContext(ctx, `UPDATE pending_operations SET body=? WHERE id=?`, []byte(`{"path":"everything"}`), op.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimPendingOperation(ctx, op.ID, "user", "admin", now); !errors.Is(err, ErrPendingCorrupt) {
+		t.Fatalf("a tampered request was claimed: %v", err)
+	}
+	got, _ := s.GetPendingOperation(ctx, op.ID, now)
+	if got.State != PendingState {
+		t.Fatalf("a refused claim changed the state: %+v", got)
+	}
+}
