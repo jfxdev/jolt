@@ -88,8 +88,15 @@ func TestTreeScansDoNotExposeUnlistedReadableNames(t *testing.T) {
 	}
 	ctx := context.Background()
 	usage, err := service.DiskUsage(ctx, mountID, "folder", DiskUsageOptions{Filter: filter})
-	if err != nil || len(usage.Entries) != 0 || usage.TotalBytes != 0 || usage.Scanned != 0 {
-		t.Fatalf("unlisted file in usage: %+v %v", usage, err)
+	// What the folder itself allocates depends on the filesystem (nothing on
+	// APFS, a block on ext4), so the baseline is the same scan with no filter:
+	// the filtered total is that, less the file the filter hides.
+	full, fullErr := service.DiskUsage(ctx, mountID, "folder", DiskUsageOptions{})
+	if fullErr != nil || len(full.Entries) != 1 || full.Entries[0].Name != "private.txt" {
+		t.Fatalf("unfiltered usage: %+v %v", full, fullErr)
+	}
+	if err != nil || len(usage.Entries) != 0 || usage.TotalBytes != full.TotalBytes-full.Entries[0].DiskUsage || usage.Scanned != 0 {
+		t.Fatalf("unlisted file in usage: %+v (unfiltered %+v) %v", usage, full, err)
 	}
 	plan, err := service.PlanArchive(ctx, mountID, "folder", ArchiveOptions{Filter: filter})
 	if err != nil || plan.Entries != 0 || plan.Bytes != 0 {

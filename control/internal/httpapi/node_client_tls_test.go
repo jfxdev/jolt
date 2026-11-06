@@ -165,6 +165,14 @@ func issueAndServe(t *testing.T, authority *pki.Manager) issuedNode {
 	return issuedNode{server: server, fingerprint: pki.Fingerprint(leaf), serial: leaf.SerialNumber.Text(16)}
 }
 
+// drain reads the body to its end, so the connection goes back to the pool: a
+// body closed unread makes some Go versions drop the connection, and the tests
+// that follow an open connection need it kept.
+func drain(response *http.Response) {
+	_, _ = io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+}
+
 // reach calls the node the way the Control Tower does. host, when set, is the
 // name dialed in place of the node's IP address.
 func reach(authority *pki.Manager, node issuedNode, host string) error {
@@ -320,7 +328,7 @@ func TestAConnectionAlreadyOpenIsDroppedWhenTheBundleRevokesItsNode(t *testing.T
 		if err != nil {
 			return err
 		}
-		response.Body.Close()
+		drain(response)
 		return nil
 	}
 	if err := get(); err != nil {
@@ -356,7 +364,7 @@ func TestRecheckingKeepsConnectionsThatAreStillAcceptableAndTheOnesPinnedForARen
 		if err != nil {
 			t.Fatal(err)
 		}
-		response.Body.Close()
+		drain(response)
 	}
 	transport.connections.mu.Lock()
 	before := len(transport.connections.open)
