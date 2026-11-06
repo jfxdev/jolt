@@ -32,6 +32,9 @@ func registerControlMetrics(registry *metrics.Registry) {
 	registry.Counter("jolt_control_shares_revoked_total", "Public share links revoked.")
 	registry.Counter("jolt_control_share_downloads_total", "Downloads served through share links.")
 	registry.Counter("jolt_control_share_unlock_failures_total", "Wrong passwords on share links.")
+	registry.Gauge("jolt_certificate_expiry_seconds",
+		"Seconds until the soonest active certificate or key of each kind ends (managed TLS only).", "kind")
+	registry.Gauge("jolt_trust_bundle_version", "Version of the trust bundle nodes are told to adopt (managed TLS only).")
 	registry.GaugeFunc("jolt_control_info",
 		"Always 1; present so a scrape confirms the Control Tower is up.",
 		func() float64 { return 1 })

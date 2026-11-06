@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -70,7 +71,7 @@ func TestApprovalMarksPersistAndRaiseTheSecurityVersion(t *testing.T) {
 		t.Fatalf("rules=%+v err=%v", got.Rules, err)
 	}
 	// A binary that supports only the previous version must refuse this database.
-	if err := s.SetMetadata(ctx, "minimum_security_version", "9"); err != nil {
+	if err := s.SetMetadata(ctx, "minimum_security_version", strconv.Itoa(supportedSecurityVersion+1)); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()

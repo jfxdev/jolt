@@ -17,7 +17,7 @@ import (
 // issueSignedShareRead uses the current share and creator state, never a
 // browser session or a client-supplied authorization context.
 func (s *Server) issueSignedShareRead(r *http.Request, share store.Share, root, operation string, now time.Time) (string, error) {
-	if len(s.config.AuthorizationSigningKey) == 0 || !signedauth.ValidKeyID(s.config.AuthorizationSigningKeyID) || !validPathIdentifier(share.NodeID) || !validPathIdentifier(share.MountID) {
+	if len(s.signingKey()) == 0 || !signedauth.ValidKeyID(s.signingKeyID()) || !validPathIdentifier(share.NodeID) || !validPathIdentifier(share.MountID) {
 		return "", errSignedReadUnavailable
 	}
 	if root == "" {
@@ -115,10 +115,11 @@ func (s *Server) issueSignedShareRead(r *http.Request, share store.Share, root, 
 	if deadline, ok := r.Context().Deadline(); ok && deadline.Before(expires) {
 		expires = deadline
 	}
-	claims := signedauth.Claims{Version: signedauth.Version, KeyID: s.config.AuthorizationSigningKeyID, IssuedAt: now.Unix(), ExpiresAt: expires.Unix(), Context: encoded,
+	signingID, signingKey := s.signing()
+	claims := signedauth.Claims{Version: signedauth.Version, KeyID: signingID, IssuedAt: now.Unix(), ExpiresAt: expires.Unix(), Context: encoded,
 		Binding: signedauth.Binding{ActorID: owner.ID, CredentialID: "share-" + current.ID, Operation: operation, RequestID: "auth_" + hex.EncodeToString(nonce[:]), SourceNodeID: current.NodeID, SourceMountID: current.MountID, SourceRoot: root}}
 	if err := r.Context().Err(); err != nil {
 		return "", err
 	}
-	return signedauth.Sign(claims, s.config.AuthorizationSigningKey)
+	return signedauth.Sign(claims, signingKey)
 }

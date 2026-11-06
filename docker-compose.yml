@@ -69,6 +69,7 @@ services:
       # If configured, mount the key file read-only at this container path.
       CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_FILE: ${CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_FILE:-}
       CONTROL_TOWER_ADDRESS: :8090
+      CONTROL_HEALTHCHECK_URL: ${CONTROL_HEALTHCHECK_URL:-http://127.0.0.1:8090/health}
       CONTROL_TOWER_DATA_DIR: /var/lib/jolt-control
       CONTROL_TOWER_STATIC_DIR: /opt/jolt-control/frontend
       CONTROL_TOWER_ADMIN_USERNAME: ${CONTROL_TOWER_ADMIN_USERNAME:-admin}
@@ -103,7 +104,9 @@ services:
         limits:
           memory: ${JOLT_MEMORY_LIMIT:-1g}
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8090/health >/dev/null"]
+      # With CONTROL_TOWER_TLS_MODE=managed the listener is HTTPS: set
+      # CONTROL_HEALTHCHECK_URL=https://127.0.0.1:8090/health.
+      test: ["CMD-SHELL", "wget --no-check-certificate -qO- \"$${CONTROL_HEALTHCHECK_URL:-http://127.0.0.1:8090/health}\" >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 3

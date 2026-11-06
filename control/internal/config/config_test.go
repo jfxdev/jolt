@@ -318,3 +318,87 @@ func TestApprovalsAreOffByDefaultAndTheWebhookIsStrict(t *testing.T) {
 		t.Fatal("a webhook was accepted with approvals off")
 	}
 }
+
+func managedBase(t *testing.T) {
+	t.Helper()
+	t.Setenv("CONTROL_TOWER_ADMIN_PASSWORD", "a-secure-admin-password")
+	t.Setenv("CONTROL_TOWER_DB_ENCRYPTION_KEY", "a-secure-encryption-key-that-is-long-enough")
+	t.Setenv("CONTROL_TOWER_DATA_DIR", t.TempDir())
+}
+
+func TestManualTLSIsTheDefaultAndRefusesManagedOnlySettings(t *testing.T) {
+	managedBase(t)
+	cfg, err := Load()
+	if err != nil || cfg.TLSMode != TLSManual || cfg.CAAddress != "" || len(cfg.TLSNames) != 0 {
+		t.Fatalf("default: %+v %v", cfg, err)
+	}
+	for _, name := range []string{"CONTROL_TOWER_TLS_NAMES", "CONTROL_TOWER_CA_ADDRESS", "CONTROL_TOWER_CERTIFICATE_VALIDITY_DAYS"} {
+		t.Setenv(name, "30")
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), name) {
+			t.Errorf("%s was accepted without managed mode: %v", name, err)
+		}
+		t.Setenv(name, "")
+	}
+	t.Setenv("CONTROL_TOWER_TLS_MODE", "automatic")
+	if _, err := Load(); err == nil {
+		t.Fatal("an unknown mode was accepted")
+	}
+}
+
+func TestManagedTLSReadsItsSettings(t *testing.T) {
+	managedBase(t)
+	t.Setenv("CONTROL_TOWER_TLS_MODE", "managed")
+	t.Setenv("CONTROL_TOWER_PUBLIC_BASE_URL", "https://control.lan:8090")
+	t.Setenv("CONTROL_TOWER_TLS_NAMES", "10.0.0.5, control.internal")
+	t.Setenv("CONTROL_TOWER_CERTIFICATE_VALIDITY_DAYS", "30")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TLSMode != TLSManaged || cfg.CAAddress != ":8091" || cfg.CertificateValidity != 30*24*time.Hour {
+		t.Fatalf("%+v", cfg)
+	}
+	if strings.Join(cfg.TLSNames, ",") != "control.lan,10.0.0.5,control.internal" {
+		t.Fatalf("names %v", cfg.TLSNames)
+	}
+	t.Setenv("CONTROL_TOWER_CA_ADDRESS", "off")
+	if cfg, err = Load(); err != nil || cfg.CAAddress != "" {
+		t.Fatalf("off: %q %v", cfg.CAAddress, err)
+	}
+	for _, days := range []string{"6", "181", "x"} {
+		t.Setenv("CONTROL_TOWER_CERTIFICATE_VALIDITY_DAYS", days)
+		if _, err := Load(); err == nil {
+			t.Errorf("%s days accepted", days)
+		}
+	}
+	t.Setenv("CONTROL_TOWER_CERTIFICATE_VALIDITY_DAYS", "")
+	for _, name := range []string{"has space", "a/b", "a..b", ".lead", "trail.", "a:80", "user@host"} {
+		t.Setenv("CONTROL_TOWER_TLS_NAMES", name)
+		if _, err := Load(); err == nil {
+			t.Errorf("name %q accepted", name)
+		}
+	}
+}
+
+func TestManagedTLSGeneratesTheSigningKeyAndRefusesAFileForIt(t *testing.T) {
+	managedBase(t)
+	t.Setenv("CONTROL_TOWER_TLS_MODE", "managed")
+	// Signed flows need a key, and managed mode provides it later.
+	t.Setenv("CONTROL_TOWER_SIGNED_LOCAL_READS", "true")
+	t.Setenv("CONTROL_TOWER_SIGNED_UPLOADS", "true")
+	t.Setenv("CONTROL_TOWER_SIGNED_LOCAL_JOBS", "true")
+	t.Setenv("CONTROL_TOWER_TYPED_POLICIES", "true")
+	if _, err := Load(); err != nil {
+		t.Fatalf("typed policies under managed mode: %v", err)
+	}
+	t.Setenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID", "current")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "generates the authorization signing key") {
+		t.Fatalf("a key id beside managed mode: %v", err)
+	}
+	// Without managed mode the old rule still holds.
+	t.Setenv("CONTROL_TOWER_TLS_MODE", "")
+	t.Setenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("signed reads were accepted without any signing key")
+	}
+}

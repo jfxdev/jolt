@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"io"
@@ -54,7 +53,7 @@ func (s *Server) registerSignedLocalJobLease(r *http.Request, node store.Node, j
 	if err != nil {
 		return time.Time{}, errSignedJobRegistrationUnavailable
 	}
-	keys := map[string]ed25519.PublicKey{s.config.AuthorizationSigningKeyID: s.config.AuthorizationSigningKey.Public().(ed25519.PublicKey)}
+	keys := s.verificationKeys()
 	binding, err := signedauth.VerifiedJobLeaseBinding(envelope, keys, node.ID, now)
 	if err != nil {
 		return time.Time{}, errSignedJobRegistrationUnavailable

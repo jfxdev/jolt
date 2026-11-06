@@ -70,7 +70,7 @@ func (s *Server) prepareSignedTransfer(w http.ResponseWriter, r *http.Request, r
 	credential, _ := r.Context().Value(credentialKey).(string)
 	digest, _ := r.Context().Value(credentialDigestKey).(string)
 	idempotency := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
-	if !actor.Enabled || actor.ID == "" || credential == "" || digest == "" || (!preview && idempotency == "") || len(s.config.AuthorizationSigningKey) != ed25519.PrivateKeySize {
+	if !actor.Enabled || actor.ID == "" || credential == "" || digest == "" || (!preview && idempotency == "") || len(s.signingKey()) != ed25519.PrivateKeySize {
 		writeError(w, r, http.StatusServiceUnavailable, "signed_job_unavailable", "Não foi possível autorizar a transferência.")
 		return signedTransfer{}, false
 	}
@@ -147,7 +147,7 @@ func (s *Server) prepareSignedTransfer(w http.ResponseWriter, r *http.Request, r
 		writeError(w, r, http.StatusForbidden, "permission_denied", "A policy atual não permite esta transferência.")
 		return signedTransfer{}, false
 	}
-	keys := map[string]ed25519.PublicKey{s.config.AuthorizationSigningKeyID: s.config.AuthorizationSigningKey.Public().(ed25519.PublicKey)}
+	keys := s.verificationKeys()
 	binding, err := signedauth.VerifiedJobLeaseBinding(envelope, keys, destination.ID, now)
 	if err != nil || binding.JobOptionsDigest != *prepared.Digest {
 		return fail()

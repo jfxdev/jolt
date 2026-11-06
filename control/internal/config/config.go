@@ -9,18 +9,54 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/jfxdev/jolt/control/internal/pki"
 	"github.com/jfxdev/jolt/control/internal/signedauth"
 	"github.com/jfxdev/jolt/control/internal/workload"
 )
 
+// SigningSource supplies the key that signs authorization contexts and the
+// keys a context may have been signed with, when they are not fixed for the
+// life of the process. The Control Tower's own certificate authority rotates
+// them while it runs.
+type SigningSource interface {
+	Current() (id string, key ed25519.PrivateKey)
+	Public() map[string]ed25519.PublicKey
+}
+
+const (
+	// TLSManual is the default: the operator supplies keys and certificates.
+	TLSManual = "manual"
+	// TLSManaged lets the Control Tower run its own certificate authority.
+	TLSManaged = "managed"
+)
+
 type Config struct {
+	// TLSMode is TLSManual or TLSManaged.
+	TLSMode string
+	// TLSNames are the extra DNS names and IP addresses the managed HTTPS
+	// certificate covers, beside localhost and the host of the public URL.
+	TLSNames []string
+	// CertificateValidity is how long a managed leaf certificate lives; zero
+	// means the default.
+	CertificateValidity time.Duration
+	// CAAddress is where the plain-HTTP page with the public root certificate
+	// listens in managed mode.
+	CAAddress string
+	// SigningSource, when set, replaces AuthorizationSigningKey and its ID.
+	SigningSource SigningSource `json:"-"`
+	// Authority is the Control Tower's own certificate authority, built by the
+	// caller in managed mode.
+	Authority *pki.Manager `json:"-"`
+
 	WorkloadProviders         *workload.ProviderSet `json:"-"`
 	AuthorizationSigningKeyID string
 	AuthorizationSigningKey   ed25519.PrivateKey `json:"-"`
@@ -72,8 +108,40 @@ func Load() (Config, error) {
 			return Config{}, errors.New("CONTROL_TOWER_WORKLOAD_PROVIDERS_FILE is invalid")
 		}
 	}
+	cfg.TLSMode = strings.ToLower(value("CONTROL_TOWER_TLS_MODE", TLSManual))
+	if cfg.TLSMode != TLSManual && cfg.TLSMode != TLSManaged {
+		return Config{}, errors.New("CONTROL_TOWER_TLS_MODE must be manual or managed")
+	}
+	managed := cfg.TLSMode == TLSManaged
+	if managed {
+		cfg.CAAddress = value("CONTROL_TOWER_CA_ADDRESS", ":8091")
+		if cfg.CAAddress == "off" {
+			cfg.CAAddress = ""
+		}
+		if names, err := managedNames(cfg.PublicBaseURL, os.Getenv("CONTROL_TOWER_TLS_NAMES")); err != nil {
+			return Config{}, err
+		} else {
+			cfg.TLSNames = names
+		}
+		if raw := strings.TrimSpace(os.Getenv("CONTROL_TOWER_CERTIFICATE_VALIDITY_DAYS")); raw != "" {
+			days, err := strconv.Atoi(raw)
+			if err != nil || days < 7 || days > 180 {
+				return Config{}, errors.New("CONTROL_TOWER_CERTIFICATE_VALIDITY_DAYS must be between 7 and 180")
+			}
+			cfg.CertificateValidity = time.Duration(days) * 24 * time.Hour
+		}
+	} else {
+		for _, name := range []string{"CONTROL_TOWER_TLS_NAMES", "CONTROL_TOWER_CA_ADDRESS", "CONTROL_TOWER_CERTIFICATE_VALIDITY_DAYS"} {
+			if strings.TrimSpace(os.Getenv(name)) != "" {
+				return Config{}, errors.New(name + " requires CONTROL_TOWER_TLS_MODE=managed")
+			}
+		}
+	}
 	cfg.AuthorizationSigningKeyID = strings.TrimSpace(os.Getenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID"))
 	keyFile := strings.TrimSpace(os.Getenv("CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_FILE"))
+	if managed && (cfg.AuthorizationSigningKeyID != "" || keyFile != "") {
+		return Config{}, errors.New("CONTROL_TOWER_TLS_MODE=managed generates the authorization signing key; remove CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID and _FILE")
+	}
 	if cfg.AuthorizationSigningKeyID != "" || keyFile != "" {
 		cfg.AuthorizationSigningKey, err = readAuthorizationSigningKey(cfg.AuthorizationSigningKeyID, keyFile)
 		if err != nil {
@@ -86,7 +154,7 @@ func Load() (Config, error) {
 			return Config{}, errors.New("CONTROL_TOWER_SIGNED_LOCAL_READS must be a boolean")
 		}
 	}
-	if cfg.SignedLocalReads && len(cfg.AuthorizationSigningKey) != ed25519.PrivateKeySize {
+	if cfg.SignedLocalReads && !(managed || len(cfg.AuthorizationSigningKey) == ed25519.PrivateKeySize) {
 		return Config{}, errors.New("CONTROL_TOWER_SIGNED_LOCAL_READS requires an authorization signing key")
 	}
 	if raw := strings.TrimSpace(os.Getenv("CONTROL_TOWER_SIGNED_LOCAL_JOBS")); raw != "" {
@@ -95,7 +163,7 @@ func Load() (Config, error) {
 			return Config{}, errors.New("CONTROL_TOWER_SIGNED_LOCAL_JOBS must be a boolean")
 		}
 	}
-	if cfg.SignedLocalJobs && len(cfg.AuthorizationSigningKey) != ed25519.PrivateKeySize {
+	if cfg.SignedLocalJobs && !(managed || len(cfg.AuthorizationSigningKey) == ed25519.PrivateKeySize) {
 		return Config{}, errors.New("CONTROL_TOWER_SIGNED_LOCAL_JOBS requires an authorization signing key")
 	}
 	if raw := strings.TrimSpace(os.Getenv("CONTROL_TOWER_TYPED_POLICIES")); raw != "" {
@@ -127,13 +195,13 @@ func Load() (Config, error) {
 			return Config{}, errors.New("CONTROL_TOWER_SIGNED_UPLOADS must be a boolean")
 		}
 	}
-	if cfg.SignedUploads && len(cfg.AuthorizationSigningKey) != ed25519.PrivateKeySize {
+	if cfg.SignedUploads && !(managed || len(cfg.AuthorizationSigningKey) == ed25519.PrivateKeySize) {
 		return Config{}, errors.New("CONTROL_TOWER_SIGNED_UPLOADS requires an authorization signing key")
 	}
 	// A typed rule is enforced by the node on a signed context. Allow it only
 	// when every operation that reaches a file carries one, so no route can
 	// read, write or move what a typed rule hides.
-	if cfg.TypedPolicies && (!cfg.SignedLocalReads || !cfg.SignedUploads || !cfg.SignedLocalJobs || len(cfg.AuthorizationSigningKey) != ed25519.PrivateKeySize) {
+	if cfg.TypedPolicies && (!cfg.SignedLocalReads || !cfg.SignedUploads || !cfg.SignedLocalJobs || !(managed || len(cfg.AuthorizationSigningKey) == ed25519.PrivateKeySize)) {
 		return Config{}, errors.New("CONTROL_TOWER_TYPED_POLICIES requires CONTROL_TOWER_SIGNED_LOCAL_READS, CONTROL_TOWER_SIGNED_UPLOADS, CONTROL_TOWER_SIGNED_LOCAL_JOBS and an authorization signing key")
 	}
 	if raw := strings.TrimSpace(os.Getenv("CONTROL_TOWER_TRUSTED_PROXIES")); raw != "" {
@@ -198,6 +266,32 @@ func Load() (Config, error) {
 
 // readAuthorizationSigningKey accepts a single unencrypted Ed25519 PKCS#8
 // private key from a file; it never stores the key in the database.
+// managedNames lists the names the managed HTTPS certificate covers: the host
+// of the public URL and the comma-separated extra names, each a DNS name or an
+// IP address.
+func managedNames(publicBaseURL, extra string) ([]string, error) {
+	var names []string
+	if publicBaseURL != "" {
+		if parsed, err := url.Parse(publicBaseURL); err == nil && parsed.Hostname() != "" {
+			names = append(names, parsed.Hostname())
+		}
+	}
+	for _, part := range strings.Split(extra, ",") {
+		if name := strings.TrimSpace(part); name != "" {
+			names = append(names, name)
+		}
+	}
+	for _, name := range names {
+		if net.ParseIP(name) != nil {
+			continue
+		}
+		if len(name) > 253 || strings.ContainsAny(name, " /\\:@?#\x00") || strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") || strings.Contains(name, "..") {
+			return nil, errors.New("CONTROL_TOWER_TLS_NAMES must hold DNS names or IP addresses")
+		}
+	}
+	return names, nil
+}
+
 func readAuthorizationSigningKey(id, file string) (ed25519.PrivateKey, error) {
 	if !signedauth.ValidKeyID(id) || file == "" {
 		return nil, errors.New("authorization signing key ID and file are both required")

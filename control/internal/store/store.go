@@ -21,7 +21,7 @@ var (
 	ErrLastAdmin = errors.New("at least one enabled administrator is required")
 )
 
-const supportedSecurityVersion = 8
+const supportedSecurityVersion = 9
 
 type User struct {
 	ID           string    `json:"user_id"`
@@ -288,6 +288,11 @@ CREATE TABLE IF NOT EXISTS pending_operations (
  note TEXT NOT NULL DEFAULT '', result_status INTEGER NOT NULL DEFAULT 0, result_body TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS pending_operations_state ON pending_operations(state, expires_at_ns);
+CREATE TABLE IF NOT EXISTS pki_objects (
+ id TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, serial TEXT NOT NULL DEFAULT '',
+ fingerprint TEXT NOT NULL DEFAULT '', public TEXT NOT NULL, secret TEXT NOT NULL DEFAULT '',
+ not_before TEXT NOT NULL, not_after TEXT NOT NULL, created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS signed_copy_intents (
  node_id TEXT NOT NULL, job_id TEXT NOT NULL, actor_type TEXT NOT NULL, actor_id TEXT NOT NULL,
  credential_id TEXT NOT NULL, credential_digest TEXT NOT NULL, idempotency_key TEXT NOT NULL,

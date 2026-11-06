@@ -15,7 +15,7 @@ import (
 // binding alone neither modifies the node job nor enables execution.
 func (s *Server) bindSignedLocalJob(r *http.Request, nodeID, jobID string) error {
 	fail := func() error { return errSignedJobRegistrationUnavailable }
-	if !validPathIdentifier(nodeID) || !validPathIdentifier(jobID) || len(s.config.AuthorizationSigningKey) != ed25519.PrivateKeySize {
+	if !validPathIdentifier(nodeID) || !validPathIdentifier(jobID) || len(s.signingKey()) != ed25519.PrivateKeySize {
 		return fail()
 	}
 	node, err := s.store.GetNode(r.Context(), nodeID)
@@ -45,7 +45,7 @@ func (s *Server) bindSignedLocalJob(r *http.Request, nodeID, jobID string) error
 	if err != nil {
 		return fail()
 	}
-	keys := map[string]ed25519.PublicKey{s.config.AuthorizationSigningKeyID: s.config.AuthorizationSigningKey.Public().(ed25519.PublicKey)}
+	keys := s.verificationKeys()
 	binding, err := signedauth.VerifiedJobLeaseBinding(envelope, keys, nodeID, now)
 	if err != nil {
 		return fail()

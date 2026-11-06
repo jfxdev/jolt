@@ -70,7 +70,7 @@ func (s *Server) issueSignedTransferLease(r *http.Request, destinationNodeID str
 // must describe exactly that scope: a node that reports anything else gets no
 // lease.
 func (s *Server) issueSignedTransferLeaseFor(r *http.Request, destinationNodeID string, job signedLocalJob, scope transferScope, revision uint64, now time.Time) (string, error) {
-	if len(s.config.AuthorizationSigningKey) == 0 || !signedauth.ValidKeyID(s.config.AuthorizationSigningKeyID) || !validPathIdentifier(destinationNodeID) || !validPathIdentifier(job.ID) ||
+	if len(s.signingKey()) == 0 || !signedauth.ValidKeyID(s.signingKeyID()) || !validPathIdentifier(destinationNodeID) || !validPathIdentifier(job.ID) ||
 		!validPathIdentifier(job.MountID) || !validPathIdentifier(scope.SourceNodeID) || !validPathIdentifier(scope.SourceMountID) || len(scope.SourcePaths) == 0 || scope.SourceNodeID == destinationNodeID {
 		return "", errSignedReadUnavailable
 	}

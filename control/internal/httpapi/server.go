@@ -159,6 +159,9 @@ func newServerHandler(cfg config.Config, storage *store.Store, logger *slog.Logg
 	mux.Handle("GET /api/v1/control-tower/auth/me", s.auth(http.HandlerFunc(s.me)))
 	mux.Handle("GET /api/v1/control-tower/about", s.auth(http.HandlerFunc(s.about)))
 	mux.Handle("POST /api/v1/control-tower/auth/permissions", s.auth(http.HandlerFunc(s.permissions)))
+	mux.Handle("GET /api/v1/control-tower/crypto/ca", s.auth(http.HandlerFunc(s.listCertificates)))
+	mux.Handle("GET /api/v1/control-tower/crypto/trust-bundle", s.auth(http.HandlerFunc(s.trustBundle)))
+	mux.Handle("GET /api/v1/control-tower/crypto/authorization-keys", s.auth(http.HandlerFunc(s.authorizationKeysSnippet)))
 	mux.Handle("GET /api/v1/control-tower/pending-operations", s.auth(http.HandlerFunc(s.listPendingOperations)))
 	mux.Handle("GET /api/v1/control-tower/pending-operations/{operationID}", s.auth(http.HandlerFunc(s.getPendingOperation)))
 	mux.Handle("POST /api/v1/control-tower/pending-operations/{operationID}/approve", s.auth(http.HandlerFunc(s.approvePendingOperation)))
@@ -250,6 +253,9 @@ func newServerHandler(cfg config.Config, storage *store.Store, logger *slog.Logg
 
 // background runs the work that outlives requests until ctx ends.
 func (s *Server) background(ctx context.Context) {
+	if s.config.Authority != nil {
+		go s.runCertificateMetrics(ctx.Done())
+	}
 	if s.config.SignedLocalJobs {
 		s.runSignedJobRenewal(ctx)
 		return
@@ -401,12 +407,13 @@ type aboutResponse struct {
 type aboutFeatures struct {
 	TypedPolicies bool `json:"typed_policies"`
 	Approvals     bool `json:"approvals"`
+	ManagedTLS    bool `json:"managed_tls"`
 }
 
 func (s *Server) about(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, aboutResponse{
 		Info:     buildinfo.Current(),
-		Features: aboutFeatures{TypedPolicies: s.config.TypedPolicies, Approvals: s.config.Approvals},
+		Features: aboutFeatures{TypedPolicies: s.config.TypedPolicies, Approvals: s.config.Approvals, ManagedTLS: s.config.Authority != nil},
 	})
 }
 

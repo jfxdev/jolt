@@ -160,6 +160,45 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/crypto/ca:
+    get:
+      tags: [Administration]
+      summary: Inventory of the Control Tower's own certificates and keys
+      description: >-
+        Needs `sudo` on `control-tower`. Lists the root, the intermediates, the HTTPS certificate and the
+        context-signing keys with their issuer state and dates, plus the root fingerprint a person compares
+        before installing the root. Never carries a private key. Answers 404 `managed_tls_disabled` unless
+        CONTROL_TOWER_TLS_MODE=managed.
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/crypto/trust-bundle:
+    get:
+      tags: [Administration]
+      summary: The signed trust bundle nodes adopt
+      description: >-
+        Needs `sudo` on `control-tower`. Roots, intermediates, signing keys and revoked serials, signed by a
+        key the previous bundle listed. A node accepts a bundle only if its version is higher and the signer
+        was already trusted.
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/crypto/authorization-keys:
+    get:
+      tags: [Administration]
+      summary: Public signing keys, ready for a node's YAML
+      description: >-
+        Needs `sudo` on `control-tower`. Returns the public keys that sign authorization contexts and the
+        `authorization_public_keys` block a node configured by hand takes.
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/pending-operations:
     get:
       tags: [Administration]
@@ -1476,6 +1515,7 @@ components:
           properties:
             typed_policies: {type: boolean, description: 'True when policy rules may restrict by file type (CONTROL_TOWER_TYPED_POLICIES).'}
             approvals: {type: boolean, description: 'True when rules may require human approval (CONTROL_TOWER_APPROVALS).'}
+            managed_tls: {type: boolean, description: 'True when the Control Tower runs its own certificate authority (CONTROL_TOWER_TLS_MODE=managed).'}
     Health:
       type: object
       required: [status]

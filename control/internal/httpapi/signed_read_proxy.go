@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"crypto/ed25519"
 	"net/http"
 	"strings"
 	"time"
@@ -75,8 +74,7 @@ func (s *Server) prepareSignedProxyRead(w http.ResponseWriter, r *http.Request, 
 		writeError(w, r, http.StatusForbidden, "signed_authorization_unavailable", "Não foi possível autorizar esta leitura com as permissões atuais.")
 		return "", time.Time{}, false
 	}
-	key := s.config.AuthorizationSigningKey.Public().(ed25519.PublicKey)
-	claims, _, err := signedauth.VerifyLocalRead(token, map[string]ed25519.PublicKey{s.config.AuthorizationSigningKeyID: key}, node.ID, operation, mount, root, now)
+	claims, _, err := signedauth.VerifyLocalRead(token, s.verificationKeys(), node.ID, operation, mount, root, now)
 	if err != nil {
 		writeError(w, r, http.StatusServiceUnavailable, "signed_authorization_unavailable", "Não foi possível validar a autorização desta leitura.")
 		return "", time.Time{}, false

@@ -153,6 +153,11 @@ func main() {
 	})
 	go sweepRunner.Start(sweepCtx)
 
+	authority, err := startAuthority(sweepCtx, &cfg, storage, logger)
+	if err != nil {
+		logger.Error("start managed certificate authority", "error", err)
+		os.Exit(1)
+	}
 	handler, background, err := httpapi.NewWithBackground(cfg, storage, logger)
 	if err != nil {
 		logger.Error("build control tower handler", "error", err)
@@ -165,14 +170,37 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+	var rootServer *http.Server
+	if authority != nil {
+		// The Control Tower terminates its own TLS with a certificate its own
+		// authority issued and renews without a restart.
+		server.Handler = withRootDownload(authority, handler)
+		server.TLSConfig = authority.TLSConfig()
+		if cfg.CAAddress != "" {
+			rootServer = publicRootServer(authority, cfg.CAAddress)
+			go func() {
+				logger.Info("public root certificate page started", "address", cfg.CAAddress)
+				if err := rootServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					logger.Error("public root certificate page stopped", "error", err)
+					os.Exit(1)
+				}
+			}()
+		}
+	}
 	go func() {
-		logger.Info("jolt control tower started", "address", cfg.Address, "secure_cookies", cfg.SecureCookies)
+		logger.Info("jolt control tower started", "address", cfg.Address, "secure_cookies", cfg.SecureCookies, "tls", cfg.TLSMode)
 		if !cfg.SecureCookies {
 			logger.Warn("CONTROL_TOWER_SECURE_COOKIES is disabled; the session cookie will travel " +
 				"over plaintext HTTP. Enable it once the Control Tower is served over HTTPS")
 		}
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("server stopped", "error", err)
+		var serveErr error
+		if authority != nil {
+			serveErr = server.ListenAndServeTLS("", "")
+		} else {
+			serveErr = server.ListenAndServe()
+		}
+		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			logger.Error("server stopped", "error", serveErr)
 			os.Exit(1)
 		}
 	}()
@@ -184,6 +212,9 @@ func main() {
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
 		logger.Error("graceful shutdown failed", "error", err)
+	}
+	if rootServer != nil {
+		_ = rootServer.Shutdown(ctx)
 	}
 }
 

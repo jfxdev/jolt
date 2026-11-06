@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"io"
 	"net/http"
 	"strings"
@@ -96,8 +95,7 @@ func (s *Server) prepareSignedProxyUpload(w http.ResponseWriter, r *http.Request
 		writeError(w, r, http.StatusForbidden, "signed_authorization_unavailable", "Não foi possível autorizar o upload com as permissões atuais.")
 		return "", time.Time{}, false
 	}
-	key := s.config.AuthorizationSigningKey.Public().(ed25519.PublicKey)
-	keys := map[string]ed25519.PublicKey{s.config.AuthorizationSigningKeyID: key}
+	keys := s.verificationKeys()
 	var claims signedauth.Claims
 	if operation == "upload_create" {
 		claims, _, err = signedauth.VerifyUploadAdmission(token, keys, node.ID, mount, root, body, now)

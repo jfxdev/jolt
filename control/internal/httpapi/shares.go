@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -704,8 +703,7 @@ func (s *Server) streamShareResource(w http.ResponseWriter, r *http.Request, sha
 			writeError(w, r, http.StatusGone, "share_revoked", "Este link não está mais disponível.")
 			return
 		}
-		publicKey := s.config.AuthorizationSigningKey.Public().(ed25519.PublicKey)
-		claims, _, err := signedauth.VerifyLocalRead(signedToken, map[string]ed25519.PublicKey{s.config.AuthorizationSigningKeyID: publicKey}, node.ID, operation, share.MountID, root, now)
+		claims, _, err := signedauth.VerifyLocalRead(signedToken, s.verificationKeys(), node.ID, operation, share.MountID, root, now)
 		if err != nil {
 			writeError(w, r, http.StatusServiceUnavailable, "signed_authorization_unavailable", "Não foi possível validar a autorização do link.")
 			return

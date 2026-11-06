@@ -114,7 +114,7 @@ func (s *Server) prepareSignedCopy(r *http.Request, node store.Node, input store
 // first lease is delivered by the caller or the renewal loop.
 func (s *Server) createSignedLocalCopy(r *http.Request, nodeID, idempotency string, input store.SignedCopyRequest) (string, error) {
 	fail := func() (string, error) { return "", errSignedJobRegistrationUnavailable }
-	if !validPathIdentifier(nodeID) || !signedauth.ValidKeyID(idempotency) || len(s.config.AuthorizationSigningKey) != ed25519.PrivateKeySize {
+	if !validPathIdentifier(nodeID) || !signedauth.ValidKeyID(idempotency) || len(s.signingKey()) != ed25519.PrivateKeySize {
 		return fail()
 	}
 	node, err := s.store.GetNode(r.Context(), nodeID)
@@ -127,7 +127,7 @@ func (s *Server) createSignedLocalCopy(r *http.Request, nodeID, idempotency stri
 	if !actor.Enabled || actor.ID == "" || credential == "" || digest == "" {
 		return fail()
 	}
-	keys := map[string]ed25519.PublicKey{s.config.AuthorizationSigningKeyID: s.config.AuthorizationSigningKey.Public().(ed25519.PublicKey)}
+	keys := s.verificationKeys()
 	now := time.Now().UTC()
 	intent, err := s.store.LoadSignedCopyIntent(r.Context(), nodeID, actorType, actor.ID, credential, digest, idempotency, keys, now)
 	if errors.Is(err, store.ErrNotFound) {

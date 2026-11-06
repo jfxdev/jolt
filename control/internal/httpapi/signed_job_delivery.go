@@ -29,7 +29,7 @@ func (s *Server) deliverPendingSignedJobLease(r *http.Request, nodeID, jobID str
 	}
 	credential, _ := r.Context().Value(credentialKey).(string)
 	digest, _ := r.Context().Value(credentialDigestKey).(string)
-	if credential != link.CredentialID || digest != link.CredentialDigest || len(s.config.AuthorizationSigningKey) != ed25519.PrivateKeySize {
+	if credential != link.CredentialID || digest != link.CredentialDigest || len(s.signingKey()) != ed25519.PrivateKeySize {
 		return fail()
 	}
 	state, err := s.reconcileSignedJobAuthorization(r, node, jobID)
@@ -62,7 +62,7 @@ func (s *Server) deliverPendingSignedJobLease(r *http.Request, nodeID, jobID str
 	if err != nil {
 		return fail()
 	}
-	keys := map[string]ed25519.PublicKey{s.config.AuthorizationSigningKeyID: s.config.AuthorizationSigningKey.Public().(ed25519.PublicKey)}
+	keys := s.verificationKeys()
 	pendingClaims, _, err := signedauth.VerifyJobLease(link.PendingEnvelope, keys, link.Binding, node.ID, link.PendingRevision, now)
 	if err != nil || !time.Unix(pendingClaims.ExpiresAt, 0).Equal(link.PendingExpiry) {
 		return fail()

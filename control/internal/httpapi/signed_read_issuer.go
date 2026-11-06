@@ -25,7 +25,7 @@ func (s *Server) issueSignedLocalRead(r *http.Request, nodeID, mountID, root, op
 }
 
 func (s *Server) issueSignedAccess(r *http.Request, nodeID, mountID, root, operation, planID, previousCredential string, revision uint64, now time.Time) (string, error) {
-	if len(s.config.AuthorizationSigningKey) == 0 || !signedauth.ValidKeyID(s.config.AuthorizationSigningKeyID) || !validPathIdentifier(nodeID) || !validPathIdentifier(mountID) {
+	if len(s.signingKey()) == 0 || !signedauth.ValidKeyID(s.signingKeyID()) || !validPathIdentifier(nodeID) || !validPathIdentifier(mountID) {
 		return "", errSignedReadUnavailable
 	}
 	if root == "" {
@@ -228,13 +228,14 @@ func (s *Server) issueSignedAccess(r *http.Request, nodeID, mountID, root, opera
 	} else {
 		binding.SourceNodeID, binding.SourceMountID, binding.SourceRoot = nodeID, mountID, root
 	}
-	claims := signedauth.Claims{Version: signedauth.Version, KeyID: s.config.AuthorizationSigningKeyID,
+	signingID, signingKey := s.signing()
+	claims := signedauth.Claims{Version: signedauth.Version, KeyID: signingID,
 		Binding:  binding,
 		IssuedAt: now.Unix(), ExpiresAt: expires.Unix(), Context: contextJSON}
 	if err := r.Context().Err(); err != nil {
 		return "", err
 	}
-	token, err := signedauth.Sign(claims, s.config.AuthorizationSigningKey)
+	token, err := signedauth.Sign(claims, signingKey)
 	if err != nil {
 		return "", errSignedReadUnavailable
 	}
