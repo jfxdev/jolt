@@ -1,7 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { daysLeft, expiryLabel, expiryTone, kindLabel, needsAttention, shortFingerprint, sortCertificates, stateLabel } from "../src/lib/certificates.ts";
-import type { CertificateItem } from "../src/lib/types.ts";
+import {
+  authModeLabel,
+  daysLeft,
+  expiryLabel,
+  expiryTone,
+  kindLabel,
+  needsAttention,
+  nodeStatus,
+  nodesOnToken,
+  rotationSummary,
+  shortFingerprint,
+  sortCertificates,
+  stateLabel,
+} from "../src/lib/certificates.ts";
+import type { CertificateItem, NodeCertificate } from "../src/lib/types.ts";
 
 const now = Date.parse("2026-11-06T12:00:00Z");
 const day = 24 * 60 * 60 * 1000;
@@ -83,4 +96,49 @@ test("attention is raised for anything in use that is near its end, and only the
   assert.equal(needsAttention([ending(60), ending(5)], now), true);
   assert.equal(needsAttention([ending(1, { state: "retired" })], now), false);
   assert.equal(needsAttention([], now), false);
+});
+
+const node = (extra: Partial<NodeCertificate> = {}): NodeCertificate => ({
+  node_id: "n1",
+  name: "alpha",
+  bundle_version: 4,
+  bundle_behind: 0,
+  cert_serial: "aa",
+  cert_not_after: new Date(now + 60 * day).toISOString(),
+  auth_mode: "certificate",
+  ...extra,
+});
+
+test("a node's row names the first thing wrong, in order of how bad it is", () => {
+  assert.deepEqual(nodeStatus(node(), now), { tone: "ok", label: "Em dia" });
+  assert.deepEqual(nodeStatus(node({ last_error: "send the trust bundle: node unavailable", bundle_behind: 2 }), now), {
+    tone: "critical",
+    label: "send the trust bundle: node unavailable",
+  });
+  assert.deepEqual(nodeStatus(node({ bundle_behind: 1 }), now), { tone: "warning", label: "Pacote atrasado em 1 versão" });
+  assert.deepEqual(nodeStatus(node({ bundle_behind: 3 }), now), { tone: "warning", label: "Pacote atrasado em 3 versões" });
+  assert.equal(nodeStatus(node({ cert_not_after: new Date(now + 5 * day).toISOString() }), now).label, "Certificado vence em 5 dias");
+  assert.equal(nodeStatus(node({ cert_not_after: new Date(now + 0.2 * day).toISOString() }), now).label, "Certificado vence em 1 dia");
+  assert.deepEqual(nodeStatus(node({ cert_not_after: new Date(now - day).toISOString() }), now), { tone: "critical", label: "Certificado expirado" });
+  assert.equal(nodeStatus(node({ cert_not_after: "garbage" }), now).tone, "critical");
+});
+
+test("the way a node authenticates the Control Tower is named, and the ones still on the token are counted", () => {
+  assert.equal(authModeLabel("certificate"), "Certificado");
+  assert.equal(authModeLabel("token"), "Token compartilhado");
+  assert.equal(authModeLabel(undefined), "Ainda não informado");
+  assert.equal(nodesOnToken([node(), node({ auth_mode: "token" }), node({ auth_mode: undefined }), node({ auth_mode: "token" })]), 2);
+});
+
+test("a root rotation is only described while one is under way", () => {
+  assert.equal(rotationSummary(undefined), undefined);
+  assert.equal(rotationSummary({ phase: "none" }), undefined);
+  assert.match(rotationSummary({ phase: "prepared" })?.detail ?? "", /promova/);
+  assert.equal(rotationSummary({ phase: "promoted" })?.title, "Raiz nova em uso");
+  assert.equal(stateLabel("next"), "Raiz nova, ainda não assina");
+});
+
+test("the next root is listed right after the active one", () => {
+  const sorted = sortCertificates([item({ kind: "root", state: "retired" }), item({ kind: "root", state: "next" }), item({ kind: "root", state: "active" })]);
+  assert.deepEqual(sorted.map((entry) => entry.state), ["active", "next", "retired"]);
 });

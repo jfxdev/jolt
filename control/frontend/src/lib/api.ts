@@ -12,6 +12,7 @@ import type {
   PendingApprovalNotice,
   PendingOperation,
   CertificateInventory,
+  Revocation,
   AuthorizationKeys,
   CreatedJoinToken,
   Enrollment,
@@ -151,6 +152,14 @@ export const api = {
     request<Enrollment>(`/api/v1/control-tower/enrollments/${encodeURIComponent(id)}/reject`, { method: "POST", body: JSON.stringify({ note }) }),
   certificateInventory: () => request<CertificateInventory>("/api/v1/control-tower/crypto/ca"),
   authorizationKeys: () => request<AuthorizationKeys>("/api/v1/control-tower/crypto/authorization-keys"),
+  revocations: () => request<ListResponse<Revocation>>("/api/v1/control-tower/crypto/revocations"),
+  revokeCertificate: (body: { serial?: string; node_id?: string; reason?: string }) =>
+    request<{ serial: string; bundle_version: number }>("/api/v1/control-tower/crypto/revocations", { method: "POST", body: JSON.stringify(body) }),
+  rotateIntermediate: (body: { revoke_previous: boolean; reason?: string }) =>
+    request<{ bundle_version: number }>("/api/v1/control-tower/crypto/ca/intermediate/rotate", { method: "POST", body: JSON.stringify(body) }),
+  beginRootRotation: () => request<{ bundle_version: number }>("/api/v1/control-tower/crypto/ca/root/rotate", { method: "POST" }),
+  promoteRoot: (force = false) =>
+    request<{ bundle_version: number }>("/api/v1/control-tower/crypto/ca/root/promote", { method: "POST", body: JSON.stringify({ force }) }),
   pendingOperations: (options: { state?: string; mine?: boolean } = {}) => {
     const query = new URLSearchParams();
     if (options.state) query.set("state", options.state);

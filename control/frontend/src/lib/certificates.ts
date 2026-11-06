@@ -1,4 +1,4 @@
-import type { CertificateItem, CertificateKind } from "./types.ts";
+import type { CertificateItem, CertificateKind, NodeCertificate, RootRotation } from "./types.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -14,6 +14,7 @@ const STATES: Record<CertificateItem["state"], string> = {
   active: "Em uso",
   pending: "Publicada, ainda não assina",
   retired: "Em despedida",
+  next: "Raiz nova, ainda não assina",
 };
 
 export function kindLabel(kind: CertificateKind): string {
@@ -58,7 +59,7 @@ export function expiryLabel(item: CertificateItem, now: number): string {
 }
 
 const ORDER: Record<CertificateKind, number> = { root: 0, intermediate: 1, https: 2, client: 3, signing_key: 4 };
-const STATE_ORDER: Record<CertificateItem["state"], number> = { active: 0, pending: 1, retired: 2 };
+const STATE_ORDER: Record<CertificateItem["state"], number> = { active: 0, next: 1, pending: 2, retired: 3 };
 
 /** Root first, then the issuers, then what they issued; what is in use before what is leaving. */
 export function sortCertificates(items: CertificateItem[]): CertificateItem[] {
@@ -78,4 +79,45 @@ export function needsAttention(items: CertificateItem[], now: number): boolean {
     const tone = expiryTone(item, now);
     return tone === "warning" || tone === "critical";
   });
+}
+
+export function authModeLabel(mode: NodeCertificate["auth_mode"]): string {
+  if (mode === "certificate") return "Certificado";
+  if (mode === "token") return "Token compartilhado";
+  return "Ainda não informado";
+}
+
+/** How many enrolled nodes still take the shared token, which managed-only would refuse. */
+export function nodesOnToken(nodes: NodeCertificate[]): number {
+  return nodes.filter((node) => node.auth_mode === "token").length;
+}
+
+/** What a node's row should say besides its name: the first thing wrong, or that nothing is. */
+export function nodeStatus(node: NodeCertificate, now: number): { tone: Tone; label: string } {
+  if (node.last_error) return { tone: "critical", label: node.last_error };
+  if (node.bundle_behind > 0) return { tone: "warning", label: `Pacote atrasado em ${node.bundle_behind} ${node.bundle_behind === 1 ? "versão" : "versões"}` };
+  const left = Date.parse(node.cert_not_after) - now;
+  if (!Number.isFinite(left) || left <= 0) return { tone: "critical", label: "Certificado expirado" };
+  if (left / DAY <= 14) {
+    const days = Math.max(1, Math.floor(left / DAY));
+    return { tone: "warning", label: `Certificado vence em ${days} ${days === 1 ? "dia" : "dias"}` };
+  }
+  return { tone: "ok", label: "Em dia" };
+}
+
+export function rotationSummary(rotation: RootRotation | undefined): { title: string; detail: string } | undefined {
+  if (rotation?.phase === "prepared") {
+    return {
+      title: "Raiz nova publicada",
+      detail:
+        "Os nodes já recebem a raiz nova no pacote e ela está em /ca para instalar nos dispositivos. Quando todos tiverem confirmado, promova-a: o Control Tower passa a assinar com ela.",
+    };
+  }
+  if (rotation?.phase === "promoted") {
+    return {
+      title: "Raiz nova em uso",
+      detail: "A raiz antiga sai do pacote sozinha quando todos os nodes tiverem o pacote e um certificado da cadeia nova.",
+    };
+  }
+  return undefined;
 }

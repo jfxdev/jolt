@@ -7,6 +7,7 @@ import { formatDate } from "@/lib/format";
 import { useApiError } from "@/hooks/useApiError";
 import { Badge } from "@/components/ui/badge";
 import { usePermissions } from "@/context/PermissionsContext";
+import { CertificateOperations } from "@/components/admin/CertificateOperations";
 import { EnrollmentsPanel } from "@/components/admin/EnrollmentsPanel";
 import { Button, buttonVariants } from "@/components/ui/button";
 
@@ -120,6 +121,7 @@ export function CertificatesPanel({ active }: { active: boolean }) {
           );
         })}
       </ul>
+      {inventory && <CertificateOperations inventory={inventory} now={now} onChanged={load} />}
       {canEnroll && <EnrollmentsPanel />}
       {keys && (
         <div className="grid gap-2" data-testid="node-yaml">

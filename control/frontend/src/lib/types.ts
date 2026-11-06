@@ -682,11 +682,31 @@ export type CertificateKind = "root" | "intermediate" | "https" | "client" | "si
 export interface CertificateItem {
   kind: CertificateKind;
   subject: string;
-  state: "active" | "pending" | "retired";
+  state: "active" | "pending" | "retired" | "next";
   serial?: string;
   fingerprint: string;
   not_before: string;
   not_after: string;
+}
+
+/** Where a root rotation stands: nothing under way, the next root published, or promoted and the old one still in the bundle. */
+export interface RootRotation {
+  phase: "none" | "prepared" | "promoted";
+  next_root_fingerprint?: string;
+  previous_root_fingerprint?: string;
+}
+
+/** An enrolled node as the inventory describes it. */
+export interface NodeCertificate {
+  node_id: string;
+  name: string;
+  bundle_version: number;
+  bundle_behind: number;
+  cert_serial: string;
+  cert_not_after: string;
+  auth_mode?: "token" | "certificate";
+  last_error?: string;
+  last_error_at?: string;
 }
 
 export interface CertificateInventory {
@@ -695,6 +715,17 @@ export interface CertificateInventory {
   root_fingerprint_display: string;
   bundle_version: number;
   items: CertificateItem[];
+  rotation: RootRotation;
+  next_root_fingerprint_display?: string;
+  nodes: NodeCertificate[];
+}
+
+export interface Revocation {
+  serial: string;
+  subject: string;
+  reason: string;
+  revoked_at: string;
+  not_after: string;
 }
 
 export interface AuthorizationKeys {
