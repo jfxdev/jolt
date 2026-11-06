@@ -114,6 +114,7 @@ type Manager struct {
 	// retiredIssuers are the intermediates a retired root signed.
 	retiredIssuers map[string]bool
 	pins           map[string]bool
+	rootKeyStored  bool
 	httpsLeaf      *tls.Certificate
 	httpsParsed    *x509.Certificate
 	issuer         *Authority
@@ -284,7 +285,7 @@ func (m *Manager) ensureLocked(ctx context.Context) error {
 			// the end.
 			renewalBlocked = true
 		} else {
-			created, err := m.newIntermediateObject(*rootObject, now)
+			created, err := m.newIntermediateObject(*rootObject, nil, now)
 			if err != nil {
 				return err
 			}
@@ -651,6 +652,7 @@ func (m *Manager) publish(rootObjects []store.PKIObject, rootCert *x509.Certific
 	m.signing, m.signingID, m.verifying = signing, signingID, verifying
 	m.bundle, m.bundleJSON, m.root, m.roots = bundle, encoded, rootCert, roots
 	m.rotation, m.retiredIssuers = rotation, retiredIssuers
+	m.rootKeyStored = rootObjects[0].Secret != ""
 	m.httpsLeaf, m.httpsParsed, m.inventory = leaf, parsed, inventory
 	m.issuer, m.clientLeaf = issuer, client
 	m.mu.Unlock()

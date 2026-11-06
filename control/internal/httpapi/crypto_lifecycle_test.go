@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -226,5 +228,83 @@ func TestTheInventoryShowsTheRotationAndEveryEnrolledNode(t *testing.T) {
 	}
 	if len(inventory.Nodes) != 1 || inventory.Nodes[0].Name != "n1-name" || inventory.Nodes[0].BundleBehind != h.authority.Bundle().Version-1 || inventory.Nodes[0].CertSerial != "aa01" {
 		t.Fatalf("nodes: %+v", inventory.Nodes)
+	}
+}
+
+func TestTheMetricSaysWhenTheRootKeyLeftTheDatabase(t *testing.T) {
+	pkiStore, err := store.Open(filepath.Join(t.TempDir(), "pki.db"), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pkiStore.Close() })
+	full, _ := pki.NewManager(pkiStore, pki.Options{Key: make([]byte, 32)})
+	if err := full.Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	exported, _ := pki.NewManager(withoutRootKey{pkiStore}, pki.Options{Key: make([]byte, 32)})
+	if err := exported.Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := store.Open(filepath.Join(t.TempDir(), "control.db"), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+	cfg := config.Config{EncryptionKey: make([]byte, 32), StaticDir: t.TempDir(), Authority: exported, SigningSource: exported, MetricsToken: "0123456789abcdef-token"}
+	server, handler := newServerHandler(cfg, storage, slog.New(slog.NewTextHandler(io.Discard, nil)), &http.Client{})
+	server.refreshCertificateMetrics(time.Now())
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	request.Header.Set("Authorization", "Bearer "+cfg.MetricsToken)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, request)
+	if !strings.Contains(w.Body.String(), "jolt_root_key_in_database 0") {
+		t.Fatalf("metrics:\n%s", w.Body)
+	}
+}
+
+// Open connections to nodes are judged again whenever the bundle changes what
+// the Control Tower trusts, which is what makes a revocation take effect now.
+func TestWhatChangesTheBundleMakesTheControlTowerJudgeItsOpenConnectionsAgain(t *testing.T) {
+	h := newEnrollHarness(t)
+	managedRecord(t, h, "n1", "beef01", 1)
+	rechecks := 0
+	h.server.recheckNodes = func() { rechecks++ }
+	step := func(name string, call func()) {
+		before := rechecks
+		call()
+		if rechecks != before+1 {
+			t.Errorf("%s: %d rechecks", name, rechecks-before)
+		}
+	}
+	step("a revocation", func() {
+		if w := h.do("admin", "POST", cryptoBase+"revocations", map[string]any{"node_id": "n1"}); w.Code != http.StatusOK {
+			t.Fatalf("%d %s", w.Code, w.Body)
+		}
+	})
+	step("an intermediate rotation", func() {
+		if w := h.do("admin", "POST", cryptoBase+"ca/intermediate/rotate", map[string]any{"revoke_previous": true}); w.Code != http.StatusOK {
+			t.Fatalf("%d %s", w.Code, w.Body)
+		}
+	})
+	// A request that is refused changes nothing, so it judges nothing again.
+	before := rechecks
+	h.do("admin", "POST", cryptoBase+"revocations", map[string]any{"serial": "deadbeef"})
+	if rechecks != before {
+		t.Error("a refused revocation rechecked the connections")
+	}
+}
+
+func TestANodeWhoseCertificateWasRevokedDoesNotHoldARootRotationBack(t *testing.T) {
+	h := newEnrollHarness(t)
+	current := h.authority.Bundle().Version
+	managedRecord(t, h, "gone", "aa01", current-5)
+	if w := h.do("admin", "POST", cryptoBase+"revocations", map[string]any{"node_id": "gone"}); w.Code != http.StatusOK {
+		t.Fatalf("revoke: %d %s", w.Code, w.Body)
+	}
+	if w := h.do("admin", "POST", cryptoBase+"ca/root/rotate", nil); w.Code != http.StatusAccepted {
+		t.Fatalf("begin: %d %s", w.Code, w.Body)
+	}
+	if w := h.do("admin", "POST", cryptoBase+"ca/root/promote", map[string]any{}); w.Code != http.StatusOK {
+		t.Fatalf("a revoked node blocked the promotion: %d %s", w.Code, w.Body)
 	}
 }

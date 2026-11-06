@@ -53,6 +53,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "ca" {
+		if err := runCA(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "certificate authority command failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "recover-admin" {
 		if err := runRecoverAdmin(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "administrator recovery failed:", err)

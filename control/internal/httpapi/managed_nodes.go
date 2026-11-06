@@ -56,6 +56,7 @@ func (s *Server) syncManagedNodes(ctx context.Context, now time.Time) {
 	if authority == nil {
 		return
 	}
+	s.recheckNodeConnections()
 	if _, err := s.store.ExpireEnrollments(ctx, now); err != nil {
 		s.log.Error("expire enrollments", "error", err)
 	}
@@ -163,7 +164,8 @@ func (s *Server) syncManagedNode(ctx context.Context, authority *pki.Manager, re
 
 // retireRootWhenUnused removes the root a rotation retired once every enrolled
 // node holds the current bundle and a certificate signed under the new chain.
-// With no node enrolled nothing depends on it. A node that has failed its last
+// With no node enrolled nothing depends on it, and neither does a node whose
+// certificate was revoked. A node that has failed its last
 // sync, or has not yet said who signed its certificate, keeps the old root in
 // the bundle.
 func (s *Server) retireRootWhenUnused(ctx context.Context, authority *pki.Manager, managed []store.ManagedNode) {
@@ -172,6 +174,9 @@ func (s *Server) retireRootWhenUnused(ctx context.Context, authority *pki.Manage
 	}
 	current := authority.Bundle().Version
 	for _, record := range managed {
+		if authority.Revoked(record.CertSerial) {
+			continue // not reached any more: nothing of it depends on the old root
+		}
 		if record.BundleVersion < current || record.LastError != "" || record.CertIssuer == "" || authority.UnderRetiredRoot(record.CertIssuer) {
 			return
 		}
@@ -180,5 +185,6 @@ func (s *Server) retireRootWhenUnused(ctx context.Context, authority *pki.Manage
 		s.log.Error("retire the previous root", "error", err)
 		return
 	}
+	s.recheckNodeConnections()
 	s.store.Audit(ctx, "", "rotate", certificateResource+"/root/retire", "allowed", "")
 }

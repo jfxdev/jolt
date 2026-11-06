@@ -21,6 +21,7 @@ import (
 )
 
 type typedHarness struct {
+	server   *Server
 	handler  http.Handler
 	storage  *store.Store
 	sessions map[string]string
@@ -68,7 +69,7 @@ func newTypedHarness(t *testing.T, typed bool, nodeHandler func(*http.Request) (
 	for _, option := range options {
 		option(&cfg)
 	}
-	h.handler = newHandler(cfg, storage, slog.New(slog.NewTextHandler(io.Discard, nil)), client)
+	h.server, h.handler = newServerHandler(cfg, storage, slog.New(slog.NewTextHandler(io.Discard, nil)), client)
 	return h
 }
 

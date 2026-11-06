@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/jfxdev/jolt/control/internal/config"
@@ -57,13 +58,76 @@ func withAuthority(cfg config.Config, base *tls.Config) *tls.Config {
 	return out
 }
 
-// newNodeTransport is the transport the Control Tower reaches nodes with. With
-// an authority, the certificate of a node is checked here and not by the TLS
-// stack, so that the bundle's revocations apply and so that a node the
-// authority itself issued can still be reached to renew a certificate that ran
-// out. The check needs the name that was dialed, which the TLS state does not
-// carry for an IP address, so the handshake is made by the dialer.
-func newNodeTransport(cfg config.Config, tlsConfig *tls.Config) *http.Transport {
+// nodeTransport is the transport the Control Tower reaches nodes with.
+type nodeTransport struct {
+	*http.Transport
+	connections *nodeConnections
+}
+
+// RecheckConnections closes every open connection whose node certificate would
+// no longer be accepted, because the bundle revoked something in its chain or
+// the authority changed, and every one that still presents a client certificate
+// the Control Tower has since replaced. A handshake is judged once, and a node
+// judges the client certificate again on every request, so a connection left
+// open across a revocation would be refused by the node for as long as it is
+// used, and would outlive the revocation of a node's certificate.
+func (t *nodeTransport) RecheckConnections() {
+	if t.connections != nil {
+		t.connections.recheck()
+	}
+}
+
+// nodeConnections remembers the TLS connections to nodes, to judge them again.
+type nodeConnections struct {
+	mu   sync.Mutex
+	open map[*trackedConn]struct{}
+	// clientSerial is the serial of the client certificate the Control Tower
+	// presents now.
+	clientSerial func() string
+}
+
+type trackedConn struct {
+	*tls.Conn
+	owner  *nodeConnections
+	verify func(tls.ConnectionState) error
+	// presented is the serial of the client certificate this connection was
+	// opened with, which the node keeps judging on every request.
+	presented string
+}
+
+func (c *trackedConn) Close() error {
+	c.owner.mu.Lock()
+	delete(c.owner.open, c)
+	c.owner.mu.Unlock()
+	return c.Conn.Close()
+}
+
+func (n *nodeConnections) recheck() {
+	current := ""
+	if n.clientSerial != nil {
+		current = n.clientSerial()
+	}
+	n.mu.Lock()
+	var stale []*trackedConn
+	for conn := range n.open {
+		replaced := current != "" && conn.presented != "" && conn.presented != current
+		if replaced || conn.verify(conn.ConnectionState()) != nil {
+			stale = append(stale, conn)
+		}
+	}
+	n.mu.Unlock()
+	for _, conn := range stale {
+		_ = conn.Close()
+	}
+}
+
+// newNodeTransport builds the transport. With an authority, the certificate of a
+// node is checked here and not by the TLS stack, so that the bundle's
+// revocations apply and so that a node the authority itself issued can still be
+// reached to renew a certificate that ran out. The check needs the name that
+// was dialed, which the TLS state does not carry for an IP address, so the
+// handshake is made by the dialer. Connections are then HTTP/1.1.
+func newNodeTransport(cfg config.Config, tlsConfig *tls.Config) *nodeTransport {
 	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
 		DialContext:           dialer.DialContext,
@@ -76,9 +140,16 @@ func newNodeTransport(cfg config.Config, tlsConfig *tls.Config) *http.Transport 
 	transport.TLSClientConfig = withAuthority(cfg, tlsConfig)
 	authority := cfg.Authority
 	if authority == nil {
-		return transport
+		return &nodeTransport{Transport: transport}
 	}
+	connections := &nodeConnections{open: map[*trackedConn]struct{}{}, clientSerial: func() string {
+		if pair, err := authority.ClientCertificate(); err == nil && pair.Leaf != nil {
+			return pair.Leaf.SerialNumber.Text(16)
+		}
+		return ""
+	}}
 	base := transport.TLSClientConfig
+	transport.ForceAttemptHTTP2 = false
 	transport.DialTLSContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, _, err := net.SplitHostPort(address)
 		if err != nil {
@@ -88,11 +159,22 @@ func newNodeTransport(cfg config.Config, tlsConfig *tls.Config) *http.Transport 
 		if err != nil {
 			return nil, err
 		}
+		verify := verifyNode(authority, base.RootCAs, host, base.InsecureSkipVerify)
 		perConnection := base.Clone()
 		perConnection.ServerName = host
-		perConnection.NextProtos = []string{"h2", "http/1.1"}
+		perConnection.NextProtos = []string{"http/1.1"}
 		perConnection.InsecureSkipVerify = true
-		perConnection.VerifyConnection = verifyNode(authority, base.RootCAs, host, base.InsecureSkipVerify)
+		perConnection.VerifyConnection = verify
+		presented := ""
+		if inner := base.GetClientCertificate; inner != nil {
+			perConnection.GetClientCertificate = func(request *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				pair, err := inner(request)
+				if err == nil && pair != nil && pair.Leaf != nil {
+					presented = pair.Leaf.SerialNumber.Text(16)
+				}
+				return pair, err
+			}
+		}
 		conn := tls.Client(raw, perConnection)
 		handshake, cancel := context.WithTimeout(ctx, transport.TLSHandshakeTimeout)
 		defer cancel()
@@ -100,9 +182,13 @@ func newNodeTransport(cfg config.Config, tlsConfig *tls.Config) *http.Transport 
 			_ = raw.Close()
 			return nil, err
 		}
-		return conn, nil
+		tracked := &trackedConn{Conn: conn, owner: connections, verify: verify, presented: presented}
+		connections.mu.Lock()
+		connections.open[tracked] = struct{}{}
+		connections.mu.Unlock()
+		return tracked, nil
 	}
-	return transport
+	return &nodeTransport{Transport: transport, connections: connections}
 }
 
 // verifyNode is how the Control Tower decides to talk to a node's API.

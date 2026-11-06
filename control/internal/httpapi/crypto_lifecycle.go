@@ -100,6 +100,7 @@ func (s *Server) revokeCertificate(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	s.recheckNodeConnections()
 	s.audit(r, "revoke", certificateResource+"/"+serial, "allowed")
 	writeJSON(w, http.StatusOK, map[string]any{"serial": serial, "bundle_version": authority.Bundle().Version})
 }
@@ -144,6 +145,7 @@ func (s *Server) rotateIntermediate(w http.ResponseWriter, r *http.Request) {
 		s.lifecycleError(w, r, err)
 		return
 	}
+	s.recheckNodeConnections()
 	s.audit(r, "rotate", certificateResource+"/intermediate", "allowed")
 	writeJSON(w, http.StatusOK, map[string]any{"bundle_version": authority.Bundle().Version})
 }
@@ -200,7 +202,9 @@ func (s *Server) promoteRoot(w http.ResponseWriter, r *http.Request) {
 		var behind []string
 		current := authority.Bundle().Version
 		for _, record := range managed {
-			if record.BundleVersion < current {
+			// A node whose certificate was revoked is not reached any more and
+			// cannot hold a root rotation back.
+			if !authority.Revoked(record.CertSerial) && record.BundleVersion < current {
 				behind = append(behind, record.NodeID)
 			}
 		}
@@ -215,6 +219,14 @@ func (s *Server) promoteRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r, "rotate", certificateResource+"/root/promote", "allowed")
 	writeJSON(w, http.StatusOK, map[string]any{"rotation": authority.Rotation(), "bundle_version": authority.Bundle().Version})
+}
+
+// recheckNodeConnections drops the connections to nodes that the bundle no
+// longer lets the Control Tower trust.
+func (s *Server) recheckNodeConnections() {
+	if s.recheckNodes != nil {
+		s.recheckNodes()
+	}
 }
 
 func (s *Server) lifecycleError(w http.ResponseWriter, r *http.Request, err error) {

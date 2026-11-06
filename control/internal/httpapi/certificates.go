@@ -166,6 +166,11 @@ func (s *Server) refreshCertificateMetrics(now time.Time) {
 		}
 	}
 	s.registry.SetGauge("jolt_trust_bundle_version", s.config.Authority.Bundle().Version)
+	stored := int64(0)
+	if s.config.Authority.RootKeyInDatabase() {
+		stored = 1
+	}
+	s.registry.SetGauge("jolt_root_key_in_database", stored)
 }
 
 // runCertificateMetrics keeps the gauges current until ctx ends.

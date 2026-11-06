@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -306,4 +307,153 @@ func TestAnOperatorWhoTurnedVerificationOffKeepsItOff(t *testing.T) {
 		t.Fatalf("the operator's choice not to verify was overridden: %v", err)
 	}
 	response.Body.Close()
+}
+
+func TestAConnectionAlreadyOpenIsDroppedWhenTheBundleRevokesItsNode(t *testing.T) {
+	clock := &testClock{now: time.Now().UTC()}
+	authority := clockedAuthority(t, clock)
+	node := issueAndServe(t, authority)
+	transport := newNodeTransport(config.Config{Authority: authority}, nil)
+	client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
+	get := func() error {
+		response, err := client.Get(node.server.URL)
+		if err != nil {
+			return err
+		}
+		response.Body.Close()
+		return nil
+	}
+	if err := get(); err != nil {
+		t.Fatal(err)
+	}
+	if err := authority.Revoke(context.Background(), pki.Revocation{Serial: node.serial}); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing was judged again: the connection the client holds still works.
+	if err := get(); err != nil {
+		t.Fatalf("setup: the open connection should still be in use: %v", err)
+	}
+	transport.RecheckConnections()
+	if err := get(); err == nil {
+		t.Fatal("the open connection to a revoked node survived the recheck")
+	}
+}
+
+func TestRecheckingKeepsConnectionsThatAreStillAcceptableAndTheOnesPinnedForARenewal(t *testing.T) {
+	clock := &testClock{now: time.Now().UTC().Add(-100 * 24 * time.Hour)}
+	authority := clockedAuthority(t, clock)
+	expired := issueAndServe(t, authority)
+	clock.now = time.Now().UTC()
+	if err := authority.Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	healthy := issueAndServe(t, authority)
+	authority.Pin([]string{expired.fingerprint})
+	transport := newNodeTransport(config.Config{Authority: authority}, nil)
+	client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
+	for _, node := range []issuedNode{expired, healthy} {
+		response, err := client.Get(node.server.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+	}
+	transport.connections.mu.Lock()
+	before := len(transport.connections.open)
+	transport.connections.mu.Unlock()
+	transport.RecheckConnections()
+	transport.connections.mu.Lock()
+	after := len(transport.connections.open)
+	transport.connections.mu.Unlock()
+	if before != 2 || after != 2 {
+		t.Fatalf("connections before %d, after %d", before, after)
+	}
+	// A pinned certificate that was then unpinned is no longer acceptable.
+	authority.Pin(nil)
+	transport.RecheckConnections()
+	transport.connections.mu.Lock()
+	left := len(transport.connections.open)
+	transport.connections.mu.Unlock()
+	if left != 1 {
+		t.Fatalf("after unpinning, %d connections remain", left)
+	}
+}
+
+func TestClosedConnectionsAreForgotten(t *testing.T) {
+	authority := clockedAuthority(t, &testClock{now: time.Now().UTC()})
+	node := issueAndServe(t, authority)
+	transport := newNodeTransport(config.Config{Authority: authority}, nil)
+	client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
+	response, err := client.Get(node.server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	transport.CloseIdleConnections()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		transport.connections.mu.Lock()
+		remaining := len(transport.connections.open)
+		transport.connections.mu.Unlock()
+		if remaining == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("a closed connection is still remembered")
+}
+
+// A node judges the client certificate again on every request. A connection
+// that was opened with a certificate the Control Tower has since replaced must
+// therefore be closed, or the node refuses it for as long as it is used.
+func TestAConnectionOpenedWithAReplacedClientCertificateIsClosedByTheRecheck(t *testing.T) {
+	authority := clockedAuthority(t, &testClock{now: time.Now().UTC()})
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	request, _ := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "n1"}}, key)
+	chain, leaf, err := authority.IssueServerCertificate(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: request}), "n1", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate := tls.Certificate{PrivateKey: key, Leaf: leaf}
+	for rest := []byte(chain); ; {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		certificate.Certificate = append(certificate.Certificate, block.Bytes)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(r.TLS.PeerCertificates[0].SerialNumber.Text(16)))
+	}))
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{certificate}, ClientAuth: tls.RequireAnyClientCert}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	authority.Pin([]string{pki.Fingerprint(leaf)})
+	transport := newNodeTransport(config.Config{Authority: authority}, nil)
+	client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
+	seen := func() string {
+		response, err := client.Get(server.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		body, _ := io.ReadAll(response.Body)
+		return string(body)
+	}
+	first := seen()
+	if err := authority.RotateIntermediate(context.Background(), true, "leaked"); err != nil {
+		t.Fatal(err)
+	}
+	current, _ := authority.ClientCertificate()
+	if current.Leaf.SerialNumber.Text(16) == first {
+		t.Fatal("setup: the client certificate was not replaced")
+	}
+	if got := seen(); got != first {
+		t.Fatalf("setup: the open connection should still carry the old certificate, got %s", got)
+	}
+	transport.RecheckConnections()
+	if got := seen(); got != current.Leaf.SerialNumber.Text(16) {
+		t.Fatalf("after the recheck the connection carries %s, want the new certificate %s", got, current.Leaf.SerialNumber.Text(16))
+	}
 }

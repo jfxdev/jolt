@@ -47,15 +47,18 @@ const (
 )
 
 type Server struct {
-	agentMu     sync.Mutex
-	agentTokens map[string]*agentTokenState
-	agentActors map[string]struct{}
-	rotations   sync.Map
-	config      config.Config
-	store       *store.Store
-	client      *http.Client
-	registry    *metrics.Registry
-	log         *slog.Logger
+	// recheckNodes judges the open connections to nodes again; nil when the
+	// transport keeps no such list.
+	recheckNodes func()
+	agentMu      sync.Mutex
+	agentTokens  map[string]*agentTokenState
+	agentActors  map[string]struct{}
+	rotations    sync.Map
+	config       config.Config
+	store        *store.Store
+	client       *http.Client
+	registry     *metrics.Registry
+	log          *slog.Logger
 }
 
 // New builds the Control Tower handler. It fails when the configured node TLS
@@ -76,6 +79,7 @@ func NewWithBackground(cfg config.Config, storage *store.Store, logger *slog.Log
 	}
 	transport := newNodeTransport(cfg, tlsConfig)
 	server, handler := newServerHandler(cfg, storage, logger, &http.Client{Transport: transport})
+	server.recheckNodes = transport.RecheckConnections
 	return handler, server.background, nil
 }
 

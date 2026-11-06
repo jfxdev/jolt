@@ -78,3 +78,33 @@ func TestThePublicPageSaysSoWhenTheAuthorityIsNotReady(t *testing.T) {
 		t.Fatalf("not ready: %d", w.Code)
 	}
 }
+
+func TestTheNextRootIsOfferedOnlyWhileARotationIsUnderWay(t *testing.T) {
+	h, m := publicHandler(t)
+	if w := get(h, http.MethodGet, "/ca/next.pem"); w.Code != http.StatusNotFound {
+		t.Fatalf("no rotation: %d", w.Code)
+	}
+	if page := get(h, http.MethodGet, "/ca"); strings.Contains(page.Body.String(), "next.pem") {
+		t.Fatal("the page offers a next root with none prepared")
+	}
+	if err := m.BeginRootRotation(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	next := get(h, http.MethodGet, "/ca/next.pem")
+	if next.Code != 200 || next.Body.String() != string(m.NextRootPEM()) || next.Body.String() == string(m.RootPEM()) {
+		t.Fatalf("next root: %d", next.Code)
+	}
+	page := get(h, http.MethodGet, "/ca")
+	if !strings.Contains(page.Body.String(), "/ca/next.pem") || !strings.Contains(page.Body.String(), DisplayFingerprint(m.Rotation().Next)) {
+		t.Fatal("the page does not show the next root and its fingerprint")
+	}
+	if w := get(h, http.MethodPost, "/ca/next.pem"); w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("post: %d", w.Code)
+	}
+	if err := m.PromoteRoot(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if w := get(h, http.MethodGet, "/ca/next.pem"); w.Code != http.StatusNotFound {
+		t.Fatalf("after promotion: %d", w.Code)
+	}
+}

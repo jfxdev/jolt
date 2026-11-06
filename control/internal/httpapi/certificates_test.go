@@ -185,6 +185,9 @@ func TestCertificateMetricsReportOnlyWhatIsInUse(t *testing.T) {
 	if !strings.Contains(body, "jolt_trust_bundle_version 1") {
 		t.Errorf("no bundle version:\n%s", body)
 	}
+	if !strings.Contains(body, "jolt_root_key_in_database 1") {
+		t.Errorf("the root key is stored and the gauge does not say so:\n%s", body)
+	}
 	// The root outlives the intermediate, which outlives the HTTPS leaf.
 	var root, issuer, leaf float64
 	for _, line := range strings.Split(body, "\n") {

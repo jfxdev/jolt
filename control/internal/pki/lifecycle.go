@@ -2,6 +2,7 @@ package pki
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -68,13 +69,30 @@ func (m *Manager) newRootObject(now time.Time, state string) (store.PKIObject, e
 		NotBefore: root.Cert.NotBefore, NotAfter: root.Cert.NotAfter, CreatedAt: now}, nil
 }
 
-func (m *Manager) newIntermediateObject(root store.PKIObject, now time.Time) (store.PKIObject, error) {
-	if root.Secret == "" {
+// newIntermediateObject issues an intermediate under a root. The root key is
+// the one in the database, or override when a person brings it back from a file
+// for the occasion.
+func (m *Manager) newIntermediateObject(root store.PKIObject, override *ecdsa.PrivateKey, now time.Time) (store.PKIObject, error) {
+	var authority *Authority
+	switch {
+	case override != nil:
+		cert, err := ParseCertificate([]byte(root.Public))
+		if err != nil {
+			return store.PKIObject{}, err
+		}
+		public, ok := cert.PublicKey.(*ecdsa.PublicKey)
+		if !ok || !public.Equal(&override.PublicKey) {
+			return store.PKIObject{}, errors.New("that key is not the key of this root")
+		}
+		authority = &Authority{Cert: cert, Key: override}
+	case root.Secret == "":
 		return store.PKIObject{}, ErrRootUnavailable
-	}
-	authority, err := m.authority(store.PKIRoot, root)
-	if err != nil {
-		return store.PKIObject{}, err
+	default:
+		loaded, err := m.authority(store.PKIRoot, root)
+		if err != nil {
+			return store.PKIObject{}, err
+		}
+		authority = loaded
 	}
 	next, err := authority.NewIntermediate(now)
 	if err != nil {
@@ -229,6 +247,10 @@ func (m *Manager) Revoked(serial string) bool {
 // the same pass. Without it the previous one stays in the bundle until it
 // expires, as in a planned renewal. The root key must be in the database.
 func (m *Manager) RotateIntermediate(ctx context.Context, revokePrevious bool, reason string) error {
+	return m.rotateIntermediate(ctx, nil, revokePrevious, reason)
+}
+
+func (m *Manager) rotateIntermediate(ctx context.Context, override *ecdsa.PrivateKey, revokePrevious bool, reason string) error {
 	m.ensure.Lock()
 	defer m.ensure.Unlock()
 	v, err := m.load(ctx)
@@ -245,7 +267,7 @@ func (m *Manager) RotateIntermediate(ctx context.Context, revokePrevious bool, r
 		return ErrTooManyIssuers
 	}
 	now := m.opts.Now().UTC()
-	created, err := m.newIntermediateObject(*v.active, now)
+	created, err := m.newIntermediateObject(*v.active, override, now)
 	if err != nil {
 		return err
 	}
@@ -331,7 +353,7 @@ func (m *Manager) PromoteRoot(ctx context.Context) error {
 	now := m.opts.Now().UTC()
 	promoted := *v.next
 	promoted.State = stateActive
-	created, err := m.newIntermediateObject(promoted, now)
+	created, err := m.newIntermediateObject(promoted, nil, now)
 	if err != nil {
 		return err
 	}

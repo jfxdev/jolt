@@ -558,3 +558,49 @@ func TestANodeThatDoesNotSayWhoSignedItsCertificateKeepsTheOldRootInTheBundle(t 
 		t.Fatal("the old root left while one node's chain is unknown")
 	}
 }
+
+func TestEverySyncPassJudgesTheOpenConnectionsAgain(t *testing.T) {
+	h := newSyncHarness(t, "n1")
+	h.enrolledForReal(t, "n1")
+	rechecks := 0
+	h.server.recheckNodes = func() { rechecks++ }
+	h.server.syncManagedNodes(context.Background(), h.clock.now)
+	h.server.syncManagedNodes(context.Background(), h.clock.now.Add(time.Minute))
+	if rechecks != 2 {
+		t.Fatalf("%d rechecks in two passes", rechecks)
+	}
+}
+
+func TestRetiringTheOldRootJudgesTheOpenConnectionsAgain(t *testing.T) {
+	ctx := context.Background()
+	h := newSyncHarness(t)
+	rechecks := 0
+	h.server.recheckNodes = func() { rechecks++ }
+	_ = h.authority.BeginRootRotation(ctx)
+	_ = h.authority.PromoteRoot(ctx)
+	before := rechecks
+	h.server.retireRootWhenUnused(ctx, h.authority, nil)
+	// One for the pass that retires it is made by the caller; retiring itself
+	// must also judge them, since the roots that verified them changed.
+	if rechecks != before+1 || h.authority.Rotation().Phase != "none" {
+		t.Fatalf("rechecks %d→%d, phase %s", before, rechecks, h.authority.Rotation().Phase)
+	}
+}
+
+func TestTheOldRootLeavesEvenIfARevokedNodeNeverMoved(t *testing.T) {
+	ctx := context.Background()
+	h := newSyncHarness(t, "gone", "stays")
+	h.enrolledForReal(t, "gone")
+	h.enrolledForReal(t, "stays")
+	if err := h.authority.Revoke(ctx, pki.Revocation{Serial: h.nodes["gone"].serial}); err != nil {
+		t.Fatal(err)
+	}
+	h.nodes["gone"].down = true // a revoked node is not reached
+	_ = h.authority.BeginRootRotation(ctx)
+	h.settle(t)
+	_ = h.authority.PromoteRoot(ctx)
+	h.settle(t)
+	if h.authority.Rotation().Phase != "none" {
+		t.Fatalf("a revoked node kept the old root: %+v", h.authority.Rotation())
+	}
+}

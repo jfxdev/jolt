@@ -45,10 +45,28 @@ func PublicHandler(m *Manager) http.Handler {
 			_, _ = w.Write([]byte(m.RootFingerprint() + "\n"))
 		})
 	})
+	// During a root rotation the next root is offered beside the current one, so
+	// a device can trust it before the Control Tower starts to use it.
+	mux.HandleFunc("/ca/next.pem", func(w http.ResponseWriter, r *http.Request) {
+		serve(w, r, func(w http.ResponseWriter) {
+			next := m.NextRootPEM()
+			if next == nil {
+				http.Error(w, "there is no root rotation under way", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/x-pem-file")
+			w.Header().Set("Content-Disposition", `attachment; filename="jolt-next-root-ca.pem"`)
+			_, _ = w.Write(next)
+		})
+	})
 	mux.HandleFunc("/ca", func(w http.ResponseWriter, r *http.Request) {
 		serve(w, r, func(w http.ResponseWriter) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_ = page.Execute(w, struct{ Fingerprint, Plain string }{DisplayFingerprint(m.RootFingerprint()), m.RootFingerprint()})
+			next := ""
+			if m.NextRootPEM() != nil {
+				next = DisplayFingerprint(m.Rotation().Next)
+			}
+			_ = page.Execute(w, struct{ Fingerprint, Plain, Next string }{DisplayFingerprint(m.RootFingerprint()), m.RootFingerprint(), next})
 		})
 	})
 	return mux
@@ -79,7 +97,11 @@ h1,h2{line-height:1.2}p,li{color:var(--muted)}h2{margin-top:2rem}
 <h2>Confira antes de instalar</h2>
 <p>O fingerprint SHA-256 precisa ser o mesmo que o administrador vê no Control Tower, em Segurança. Compare por outro canal; esta página chegou por HTTP simples.</p>
 <p class="fingerprint">{{.Fingerprint}}</p>
-<h2>Como instalar</h2>
+{{if .Next}}<h2>Raiz nova a caminho</h2>
+<p>O Control Tower vai passar a usar uma raiz nova. Instale-a agora, do mesmo modo, e o navegador continua sem avisos quando a troca acontecer. A raiz atual segue valendo até lá.</p>
+<p><a class="button" href="/ca/next.pem" download>Baixar jolt-next-root-ca.pem</a></p>
+<p class="fingerprint">{{.Next}}</p>
+{{end}}<h2>Como instalar</h2>
 <ul>
 <li><strong>macOS:</strong> abra o arquivo, adicione ao chaveiro Sistema, abra o item e defina Confiar como <em>Sempre confiar</em>.</li>
 <li><strong>Windows:</strong> em um terminal de administrador, <code>certutil -addstore -f ROOT jolt-root-ca.pem</code>.</li>
