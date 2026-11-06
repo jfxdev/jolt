@@ -50,8 +50,8 @@ node purges what is older, checking every ten minutes. The folder is invisible t
 listings, searches, archives, disk usage and direct reads, and the entries are restored
 or purged through `/api/v1/mounts/{id}/trash` (the Control Tower exposes them in the
 interface). Restoring puts the entry back at its old path and refuses if the name is
-taken, if the folder it was in is gone, or if the name has since become hidden. Empty
-folders are removed for good. Records live in the encrypted state, which an older node
+taken, if the folder it was in is gone, or if the name has since become hidden. An empty folder
+deleted without `recursive` is removed for good. Records live in the encrypted state, which an older node
 refuses to open once it holds one; after a crash the node finishes or undoes whichever
 step was interrupted at startup. Trashed entries still use disk until purged, and a
 hard-linked file frees no space until then. The trash is not a backup: host-side access

@@ -239,6 +239,19 @@ export interface Mount {
   published?: boolean;
   enabled?: boolean;
   state?: "available" | "unavailable" | "degraded";
+  // Present when deleting here moves the entry to a trash kept for retention_days.
+  trash?: { enabled: boolean; retention_days: number };
+}
+
+export interface TrashEntry {
+  trash_id: string;
+  mount_id: string;
+  path: string;
+  type: "file" | "directory";
+  size?: number;
+  state: string;
+  deleted_at: string;
+  expires_at: string;
 }
 
 export type FileEntryType = "directory" | "file" | "symlink";

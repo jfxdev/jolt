@@ -10,6 +10,7 @@ import type {
   ApprovalDecision,
   BuildInfo,
   PendingOperation,
+  TrashEntry,
   EffectiveAccessCheck,
   EffectiveAccessResponse,
   Grant,
@@ -117,6 +118,20 @@ async function requestText(path: string): Promise<string> {
 export const api = {
   me: () =>
     request<{ user: AuthUser }>("/api/v1/control-tower/auth/me"),
+  trashEntries: (nodeId: string, mountId: string) =>
+    request<ListResponse<TrashEntry>>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/trash`,
+    ),
+  restoreTrashEntry: (nodeId: string, mountId: string, trashId: string) =>
+    request<TrashEntry>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/trash/${encodeURIComponent(trashId)}/restore`,
+      { method: "POST" },
+    ),
+  purgeTrashEntry: (nodeId: string, mountId: string, trashId: string) =>
+    request<TrashEntry>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/trash/${encodeURIComponent(trashId)}`,
+      { method: "DELETE" },
+    ),
   pendingOperations: (options: { state?: string; mine?: boolean } = {}) => {
     const query = new URLSearchParams();
     if (options.state) query.set("state", options.state);

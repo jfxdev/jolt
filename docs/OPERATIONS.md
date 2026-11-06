@@ -302,6 +302,45 @@ Cada conjunto foi conferido por mutação: enfraquecer a verificação de assina
   capabilities por token, CIDR): a matriz abaixo não os considera.
 - Não houve validação sob carga nem entre hosts. Trate o recurso como experimental.
 
+## Lixeira
+
+Com `trash: {enabled: true, retention_days: 30}` em um mount `read_write` do `node.yaml` (ver
+[`NODE_YAML.md`](NODE_YAML.md)), apagar um arquivo ou uma pasta (`recursive`) **move** a entrada para
+`.jolt-trash` dentro do mount, com um único `rename` atômico no mesmo filesystem, em vez de remover. O
+node guarda um registro no estado cifrado e a apaga sozinho depois da retenção (padrão 30 dias, até 365;
+varredura a cada dez minutos).
+
+**Uso**
+
+- No navegador de arquivos, o botão **Lixeira** lista o que foi apagado no mount, com a pasta de origem e
+  o tempo restante. **Restaurar** devolve a entrada ao caminho original e **nunca sobrescreve**: recusa se
+  o nome foi ocupado (409), se a pasta onde ela estava não existe mais (404) ou se o nome passou a ser
+  oculto por configuração (422). **Apagar de vez** remove na hora, depois de uma confirmação.
+- A confirmação de apagar diz se o item vai para a lixeira e por quantos dias, ou que a ação não pode ser
+  desfeita. Uma pasta vazia apagada sem `recursive` é removida de verdade; apagada com `recursive`, como faz a interface, vai para a lixeira.
+- Quem pode ver, restaurar ou apagar de vez é decidido pelo **caminho que a entrada tinha**, com as mesmas
+  regras do arquivo: `read` para listar, `create` para restaurar, `delete` para apagar de vez, inclusive
+  regras por tipo. Uma entrada que o chamador não poderia ler responde como se não existisse. Agentes não
+  acessam a lixeira. Uma concessão de `delete` que exige aprovação humana é recusada ao apagar de vez.
+
+**Garantias e limites**
+
+- A pasta é interna: não aparece em listagens, buscas, ZIPs, uso de disco nem em leitura direta pelo nome.
+- Um registro é gravado **antes** do `rename` e removido **depois** que a entrada some. Após uma queda, o
+  node termina ou desfaz o passo interrompido na inicialização. Um mount que não pode ser lido (disco
+  desmontado) mantém seus registros intactos até voltar.
+- Uma entrada que o `rename` não consegue mover (outro filesystem, como um mount point aninhado) faz o
+  delete **falhar**; nunca apaga de verdade em silêncio. Uma pasta `.jolt-trash` que não seja um diretório
+  comum (um link plantado no host) também faz falhar, sem seguir o link.
+- O estado cifrado do node sobe para a versão 7 ao gravar o primeiro registro; um node anterior se recusa a
+  abri-lo. Faça rollback só com backup anterior à ativação. O Control Tower exige a capacidade `trash_v1`
+  do node e responde 409 `node_upgrade_required` sem ela.
+- A lixeira ocupa disco até a retenção, e um arquivo com hardlinks não libera espaço até lá. **Não é
+  backup**: quem acessa o host a vê e a esvazia, e o que foi apagado de vez ou passou da retenção se foi.
+- Move entre nodes e a limpeza da origem depois de uma cópia também passam pelo delete do node e, portanto,
+  pela lixeira da origem.
+- Não há cota de espaço da lixeira nem aviso quando ela cresce; acompanhe o disco do mount.
+
 ## Aprovação humana
 
 Uma regra de policy pode conceder `delete` ou `update` **somente com a aprovação de uma pessoa**

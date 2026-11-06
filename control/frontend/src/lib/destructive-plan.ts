@@ -25,11 +25,15 @@ function plural(count: number, singular: string, many: string): string {
 
 // destructivePlanDescription spells out exactly what will be lost, so the
 // confirmation is about this tree and not a generic "are you sure".
-export function destructivePlanDescription(plan: DestructivePlan): string {
+export function destructivePlanDescription(plan: DestructivePlan, trashDays?: number): string {
   const tree = `${plural(plan.files, "arquivo", "arquivos")} em ${plural(plan.directories, "pasta", "pastas")} (${formatBytes(plan.bytes)})`;
   const parts =
     plan.operation === "delete"
-      ? [`Serão removidos permanentemente ${tree}.`]
+      ? [
+          trashDays
+            ? `Serão movidos para a lixeira ${tree}, que poderão ser restaurados por ${plural(trashDays, "dia", "dias")}.`
+            : `Serão removidos permanentemente ${tree}.`,
+        ]
       : [`Serão movidos ${tree}.`];
   if (plan.operation === "move" && plan.destination_exists) {
     parts.push(
