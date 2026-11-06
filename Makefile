@@ -21,6 +21,7 @@ build:
 	cd node && CGO_ENABLED=0 go build -o ../bin/jolt-node ./backend/cmd/jolt-node
 	cd control/frontend && npm run build
 	cd control && CGO_ENABLED=1 go build -o ../bin/jolt-control ./cmd/jolt-control
+	cd control && CGO_ENABLED=0 go build -o ../bin/jolt-mcp ./cmd/jolt-mcp
 
 test:
 	cd node && CGO_ENABLED=0 go test ./...

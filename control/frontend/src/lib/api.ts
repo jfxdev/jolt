@@ -1,3 +1,4 @@
+import type { DestructivePlan } from "./destructive-plan";
 import type {
   ApiError,
   AccessGroup,
@@ -6,7 +7,19 @@ import type {
   AuditEvent,
   AuditResponse,
   AuthUser,
+  ApprovalDecision,
   BuildInfo,
+  PendingApprovalNotice,
+  PendingOperation,
+  CertificateInventory,
+  Revocation,
+  AuthorizationKeys,
+  CreatedJoinToken,
+  Enrollment,
+  JoinToken,
+  TrashEntry,
+  EffectiveAccessCheck,
+  EffectiveAccessResponse,
   Grant,
   IdentityState,
   Job,
@@ -30,6 +43,8 @@ import type {
 	TransferTargetsResponse,
   TrustView,
   User,
+  WorkloadIdentity,
+  WorkloadIdentityInput,
 } from "./types";
 
 interface RequestOptions extends RequestInit {}
@@ -110,6 +125,69 @@ async function requestText(path: string): Promise<string> {
 export const api = {
   me: () =>
     request<{ user: AuthUser }>("/api/v1/control-tower/auth/me"),
+  trashEntries: (nodeId: string, mountId: string) =>
+    request<ListResponse<TrashEntry>>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/trash`,
+    ),
+  restoreTrashEntry: (nodeId: string, mountId: string, trashId: string) =>
+    request<TrashEntry>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/trash/${encodeURIComponent(trashId)}/restore`,
+      { method: "POST" },
+    ),
+  purgeTrashEntry: (nodeId: string, mountId: string, trashId: string) =>
+    request<TrashEntry>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/trash/${encodeURIComponent(trashId)}`,
+      { method: "DELETE" },
+    ),
+  createJoinToken: (body: { node_name: string; approval?: "auto" | "manual"; valid_minutes?: number }) =>
+    request<CreatedJoinToken>("/api/v1/control-tower/enrollments/tokens", { method: "POST", body: JSON.stringify(body) }),
+  joinTokens: () => request<ListResponse<JoinToken>>("/api/v1/control-tower/enrollments/tokens"),
+  revokeJoinToken: (id: string) =>
+    request<void>(`/api/v1/control-tower/enrollments/tokens/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  enrollments: (state?: string) =>
+    request<ListResponse<Enrollment>>(`/api/v1/control-tower/enrollments${state ? `?state=${encodeURIComponent(state)}` : ""}`),
+  approveEnrollment: (id: string) =>
+    request<Enrollment>(`/api/v1/control-tower/enrollments/${encodeURIComponent(id)}/approve`, { method: "POST" }),
+  rejectEnrollment: (id: string, note: string) =>
+    request<Enrollment>(`/api/v1/control-tower/enrollments/${encodeURIComponent(id)}/reject`, { method: "POST", body: JSON.stringify({ note }) }),
+  certificateInventory: () => request<CertificateInventory>("/api/v1/control-tower/crypto/ca"),
+  authorizationKeys: () => request<AuthorizationKeys>("/api/v1/control-tower/crypto/authorization-keys"),
+  revocations: () => request<ListResponse<Revocation>>("/api/v1/control-tower/crypto/revocations"),
+  revokeCertificate: (body: { serial?: string; node_id?: string; reason?: string }) =>
+    request<{ serial: string; bundle_version: number }>("/api/v1/control-tower/crypto/revocations", { method: "POST", body: JSON.stringify(body) }),
+  rotateIntermediate: (body: { revoke_previous: boolean; reason?: string }) =>
+    request<{ bundle_version: number }>("/api/v1/control-tower/crypto/ca/intermediate/rotate", { method: "POST", body: JSON.stringify(body) }),
+  beginRootRotation: () => request<{ bundle_version: number }>("/api/v1/control-tower/crypto/ca/root/rotate", { method: "POST" }),
+  promoteRoot: (force = false) =>
+    request<{ bundle_version: number }>("/api/v1/control-tower/crypto/ca/root/promote", { method: "POST", body: JSON.stringify({ force }) }),
+  pendingOperations: (options: { state?: string; mine?: boolean } = {}) => {
+    const query = new URLSearchParams();
+    if (options.state) query.set("state", options.state);
+    if (options.mine) query.set("mine", "true");
+    const text = query.toString();
+    return request<ListResponse<PendingOperation>>(
+      `/api/v1/control-tower/pending-operations${text ? `?${text}` : ""}`,
+    );
+  },
+  approvePendingOperation: (id: string, acknowledgeSelfApproval: boolean) =>
+    request<ApprovalDecision>(
+      `/api/v1/control-tower/pending-operations/${encodeURIComponent(id)}/approve`,
+      { method: "POST", body: JSON.stringify({ acknowledge_self_approval: acknowledgeSelfApproval }) },
+    ),
+  rejectPendingOperation: (id: string, note: string) =>
+    request<PendingOperation>(
+      `/api/v1/control-tower/pending-operations/${encodeURIComponent(id)}/reject`,
+      { method: "POST", body: JSON.stringify({ note }) },
+    ),
+  effectiveAccess: (
+    actorType: "user" | "service_account",
+    subjectId: string,
+    checks: EffectiveAccessCheck[],
+  ) =>
+    request<EffectiveAccessResponse>(
+      `/api/v1/control-tower/subjects/${encodeURIComponent(actorType)}/${encodeURIComponent(subjectId)}/effective-access`,
+      { method: "POST", body: JSON.stringify({ checks }) },
+    ),
   about: () =>
     request<BuildInfo>("/api/v1/control-tower/about"),
   permissions: (paths: string[]) =>
@@ -151,6 +229,8 @@ export const api = {
     request<ListResponse<ServiceAccount>>(
       withSearch("/api/v1/control-tower/service-accounts", query),
     ),
+  disableAgentAccounts: () =>
+    request<{ disabled: number }>("/api/v1/control-tower/service-accounts/disable?kind=agent", { method: "POST" }),
   createServiceAccount: (account: object) =>
     request<{
       service_account: ServiceAccount;
@@ -179,6 +259,12 @@ export const api = {
     request<ListResponse<ServiceAccountToken>>(
       `/api/v1/control-tower/service-accounts/${encodeURIComponent(accountId)}/tokens`,
     ),
+  workloadIdentities: (accountId: string) =>
+    request<ListResponse<WorkloadIdentity>>(`/api/v1/control-tower/service-accounts/${encodeURIComponent(accountId)}/workload-identities`),
+  createWorkloadIdentity: (accountId: string, identity: WorkloadIdentityInput) =>
+    request<WorkloadIdentity>(`/api/v1/control-tower/service-accounts/${encodeURIComponent(accountId)}/workload-identities`, { method: "POST", body: JSON.stringify(identity) }),
+  setWorkloadIdentityEnabled: (accountId: string, credentialId: string, enabled: boolean) =>
+    request<null>(`/api/v1/control-tower/service-accounts/${encodeURIComponent(accountId)}/workload-identities/${encodeURIComponent(credentialId)}`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
   rotateServiceAccountToken: (
     accountId: string,
     credential: object,
@@ -195,6 +281,8 @@ export const api = {
       `/api/v1/control-tower/service-accounts/${encodeURIComponent(accountId)}/tokens/${encodeURIComponent(tokenId)}`,
       { method: "DELETE" },
     ),
+  updateAgentTokenLimits: (accountId: string, tokenId: string, limits: object) =>
+    request<null>(`/api/v1/control-tower/service-accounts/${encodeURIComponent(accountId)}/tokens/${encodeURIComponent(tokenId)}`, { method: "PATCH", body: JSON.stringify({ agent_limits: limits }) }),
   accessGroups: (query = "") =>
     request<ListResponse<AccessGroup>>(
       withSearch("/api/v1/control-tower/access-groups", query),
@@ -290,6 +378,12 @@ export const api = {
     request<{ policy_ids: string[] }>(
       `/api/v1/control-tower/users/${encodeURIComponent(userId)}/policies`,
     ),
+  temporaryPolicies: (subject: "users" | "service-accounts", id: string) =>
+    request<{ items: import("./types").TemporaryPolicyAssignment[] }>(`/api/v1/control-tower/${subject}/${encodeURIComponent(id)}/policies/temporary`),
+  grantTemporaryPolicy: (subject: "users" | "service-accounts", id: string, policyId: string, durationSeconds: number) =>
+    request<import("./types").TemporaryPolicyAssignment>(`/api/v1/control-tower/${subject}/${encodeURIComponent(id)}/policies/temporary`, { method: "POST", body: JSON.stringify({ policy_id: policyId, duration_seconds: durationSeconds }) }),
+  revokeTemporaryPolicy: (subject: "users" | "service-accounts", id: string, policyId: string) =>
+    request<null>(`/api/v1/control-tower/${subject}/${encodeURIComponent(id)}/policies/temporary/${encodeURIComponent(policyId)}`, { method: "DELETE" }),
   setUserPolicies: (userId: string, policyIds: string[]) =>
     request<null>(
       `/api/v1/control-tower/users/${encodeURIComponent(userId)}/policies`,
@@ -390,7 +484,7 @@ export const api = {
       { method: "POST", body: JSON.stringify(transfer) },
     ),
   createTransfer: (destinationNodeId: string, transfer: LogicalTransferRequest) =>
-    request<Job>(
+    request<Job | PendingApprovalNotice>(
       `/api/v1/nodes/${encodeURIComponent(destinationNodeId)}/transfers`,
       {
         method: "POST",
@@ -485,6 +579,34 @@ export const api = {
       {
         method: "DELETE",
         headers: { "Idempotency-Key": crypto.randomUUID() },
+      },
+    ),
+  planDestructive: (
+    nodeId: string,
+    mountId: string,
+    plan: {
+      operation: "delete" | "move";
+      source_path: string;
+      destination_path?: string;
+      overwrite?: boolean;
+    },
+  ) =>
+    request<DestructivePlan | PendingApprovalNotice>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/files/destructive-plans`,
+      { method: "POST", body: JSON.stringify(plan) },
+    ),
+  confirmDestructive: (
+    nodeId: string,
+    mountId: string,
+    planId: string,
+    token: string,
+  ) =>
+    request<unknown>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/files/destructive-plans/${encodeURIComponent(planId)}/confirm`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({ token }),
       },
     ),
   pairingInvites: (nodeId: string) =>
@@ -728,6 +850,11 @@ export const api = {
   uploadSession: (nodeId: string, mountId: string, uploadId: string) =>
     request<import("./types").UploadSession>(
       `${mountFilesPath(nodeId, mountId)}/uploads/${encodeURIComponent(uploadId)}`,
+    ),
+  authorizeUpload: (nodeId: string, mountId: string, uploadId: string) =>
+    request<null>(
+      `${mountFilesPath(nodeId, mountId)}/uploads/${encodeURIComponent(uploadId)}/authorize`,
+      { method: "POST", body: JSON.stringify({}) },
     ),
   uploadVerification: (nodeId: string, mountId: string, uploadId: string, after = 0, signal?: AbortSignal) =>
     request<import("./types").UploadVerification>(`${mountFilesPath(nodeId, mountId)}/uploads/${encodeURIComponent(uploadId)}/verification?after=${after}`, { signal }),

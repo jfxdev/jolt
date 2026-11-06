@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Folder, Home, ArrowUp, File, Link2, Check } from "lucide-react";
 import { api } from "@/lib/api";
+import { fileEntryDisplayName, safeDisplayPath } from "@/lib/display-name";
 import type { FileEntry } from "@/lib/types";
 import { useApiError } from "@/hooks/useApiError";
 import { Button } from "@/components/ui/button";
@@ -103,7 +104,7 @@ export function NodeFileBrowserDialog({
             <ArrowUp className="h-4 w-4" />
           </Button>
           <p className="truncate font-mono text-xs text-muted-foreground">
-            {path ?? "…"}
+            {path === null ? "…" : safeDisplayPath(path)}
           </p>
         </div>
 
@@ -135,7 +136,7 @@ export function NodeFileBrowserDialog({
                   {item.type === "symlink" && (
                     <Link2 className="h-4 w-4 shrink-0" />
                   )}
-                  <span className="truncate">{item.name}</span>
+                  <span className="truncate">{fileEntryDisplayName(item)}</span>
                 </button>
                 {item.type === "directory" && (
                   <Button

@@ -316,6 +316,11 @@ test("reload restores pending upload and rejects an equal-size different prefix"
   page,
 }) => {
   const state = await fixture(page, { recover: true });
+  let authorizations = 0;
+  await page.route("**/files/uploads/*/authorize", (route) => {
+    authorizations++;
+    return route.fulfill({ status: 204 });
+  });
   await page.goto("/nodes/a/mounts/media");
   await page.reload();
   const input = page.getByLabel("Selecionar arquivo para retomar resume.txt", {
@@ -329,6 +334,7 @@ test("reload restores pending upload and rejects an equal-size different prefix"
   });
   await expect(page.getByText(/conteúdo do arquivo é diferente/)).toBeVisible();
   expect(state.appendBodies).toEqual([]);
+  expect(authorizations).toBe(0);
   await input.setInputFiles({
     name: "resume.txt",
     mimeType: "text/plain",
@@ -336,7 +342,47 @@ test("reload restores pending upload and rejects an equal-size different prefix"
   });
   await expect(page.getByText("Concluído", { exact: true })).toBeVisible();
   expect(state.appendBodies).toEqual(["load"]);
+  expect(authorizations).toBe(1);
   expect(state.completeCalls).toBe(2);
+});
+
+test("a denied reauthorization keeps the recovered upload without sending bytes", async ({ page }) => {
+  const state = await fixture(page, { recover: true });
+  await page.route("**/files/uploads/*/authorize", (route) => route.fulfill({
+    status: 403,
+    contentType: "application/json",
+    body: JSON.stringify({ error: { code: "permission_denied", message: "Permissão revogada." } }),
+  }));
+  await page.goto("/nodes/a/mounts/media");
+  await page.getByLabel("Selecionar arquivo para retomar resume.txt", { exact: true }).setInputFiles({
+    name: "resume.txt", mimeType: "text/plain", buffer: Buffer.from("payload"),
+  });
+  await expect(page.getByText("Permissão revogada.", { exact: true })).toBeVisible();
+  expect(state.appendBodies).toEqual([]);
+  expect(state.completeCalls).toBe(0);
+});
+
+test("a rejected upload retries with a fresh session", async ({ page }) => {
+  const state = await fixture(page);
+  let attempts = 0;
+  await page.route("**/files/uploads/*/complete", (route) => {
+    attempts++;
+    if (attempts === 1) {
+      state.offset = 0;
+      return route.fulfill({ status: 422, contentType: "application/json", body: JSON.stringify({ error: { code: "upload_content_rejected", message: "O conteúdo enviado foi recusado pela inspeção." } }) });
+    }
+    state.completed = true;
+    return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ upload_id: "pending", destination_path: "resume.txt", size: 7, checksum: "" }) });
+  });
+  await page.goto("/nodes/a/mounts/media");
+  await page.locator('input[type="file"][multiple]').setInputFiles({ name: "resume.txt", mimeType: "text/plain", buffer: Buffer.from("payload") });
+  const retry = page.getByRole("button", { name: "Tentar de novo", exact: true });
+  await expect(retry).toBeVisible();
+  await expect(page.getByText("O conteúdo enviado foi recusado pela inspeção.").first()).toBeVisible();
+  await retry.click();
+  await expect(page.getByText("Concluído", { exact: true })).toBeVisible();
+  expect(state.createTargets).toHaveLength(2);
+  expect(attempts).toBe(2);
 });
 
 test("retry after navigating to another node keeps its original destination", async ({

@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { usePermissions } from "@/context/PermissionsContext";
 import { AccessGroupsDialog } from "@/components/admin/AccessGroupsDialog";
+import { CertificatesPanel } from "@/components/admin/CertificatesPanel";
+import { ApprovalsPanel } from "@/components/admin/ApprovalsPanel";
+import { EffectiveAccessPanel } from "@/components/admin/EffectiveAccessPanel";
 import { PoliciesDialog } from "@/components/admin/PoliciesDialog";
 import { RolesDialog } from "@/components/admin/RolesDialog";
 import { SharesPanel } from "@/components/admin/SharesPanel";
@@ -12,12 +15,13 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs";
 
-type AccessTab = "policies" | "roles" | "groups" | "shares";
+type AccessTab = "policies" | "effective" | "approvals" | "roles" | "groups" | "shares" | "certificates";
 
 export default function AccessPage() {
   const { hasPermission } = usePermissions();
   const [activeTab, setActiveTab] = useState<AccessTab | null>(null);
   const canManagePolicies = hasPermission("control-tower/policies", "sudo");
+  const canSeeApprovals = hasPermission("control-tower/approvals", "list");
   const canManageRoles = hasPermission("control-tower/roles", "sudo");
   const canManageGroups = hasPermission(
     "control-tower/access-groups",
@@ -26,20 +30,28 @@ export default function AccessPage() {
   // Listing links needs only the shares capability, so an operator who may
   // publish links can also audit and revoke their own.
   const canManageShares = hasPermission("control-tower/shares", "list");
+  const canSeeCertificates = hasPermission("control-tower/crypto", "sudo");
   const firstTab = canManagePolicies
     ? "policies"
-    : canManageRoles
+    : canSeeApprovals
+      ? "approvals"
+      : canManageRoles
       ? "roles"
       : canManageGroups
         ? "groups"
         : canManageShares
           ? "shares"
-          : null;
+          : canSeeCertificates
+            ? "certificates"
+            : null;
   const currentTab =
     (activeTab === "policies" && canManagePolicies) ||
+    (activeTab === "effective" && canManagePolicies) ||
+    (activeTab === "approvals" && canSeeApprovals) ||
     (activeTab === "roles" && canManageRoles) ||
     (activeTab === "groups" && canManageGroups) ||
-    (activeTab === "shares" && canManageShares)
+    (activeTab === "shares" && canManageShares) ||
+    (activeTab === "certificates" && canSeeCertificates)
       ? activeTab
       : firstTab;
 
@@ -67,10 +79,19 @@ export default function AccessPage() {
             {canManagePolicies && (
               <TabsTrigger value="policies">Policies</TabsTrigger>
             )}
+            {canManagePolicies && (
+              <TabsTrigger value="effective">Acesso efetivo</TabsTrigger>
+            )}
+            {canSeeApprovals && (
+              <TabsTrigger value="approvals">Aprovações</TabsTrigger>
+            )}
             {canManageRoles && <TabsTrigger value="roles">Roles</TabsTrigger>}
             {canManageGroups && <TabsTrigger value="groups">Grupos</TabsTrigger>}
             {canManageShares && (
               <TabsTrigger value="shares">Links públicos</TabsTrigger>
+            )}
+            {canSeeCertificates && (
+              <TabsTrigger value="certificates">Certificados</TabsTrigger>
             )}
           </TabsList>
 
@@ -81,6 +102,16 @@ export default function AccessPage() {
                 inline
                 onOpenChange={() => undefined}
               />
+            </TabsContent>
+          )}
+          {canManagePolicies && (
+            <TabsContent value="effective" className="pt-2">
+              <EffectiveAccessPanel active={currentTab === "effective"} />
+            </TabsContent>
+          )}
+          {canSeeApprovals && (
+            <TabsContent value="approvals" className="pt-2">
+              <ApprovalsPanel active={currentTab === "approvals"} />
             </TabsContent>
           )}
           {canManageRoles && (
@@ -104,6 +135,11 @@ export default function AccessPage() {
           {canManageShares && (
             <TabsContent value="shares" className="pt-2">
               <SharesPanel />
+            </TabsContent>
+          )}
+          {canSeeCertificates && (
+            <TabsContent value="certificates" className="pt-2">
+              <CertificatesPanel active={currentTab === "certificates"} />
             </TabsContent>
           )}
         </Tabs>

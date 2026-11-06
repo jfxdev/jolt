@@ -3,22 +3,49 @@ package entities
 import "time"
 
 type Mount struct {
-	ID         string    `json:"mount_id" yaml:"mount_id"`
-	Name       string    `json:"name" yaml:"name"`
-	LocalPath  string    `json:"-" yaml:"local_path"`
-	TargetType string    `json:"target_type" yaml:"target_type"`
-	Mode       string    `json:"mode" yaml:"mode"`
-	Published  bool      `json:"published" yaml:"published"`
-	Enabled    bool      `json:"enabled" yaml:"enabled"`
-	State      string    `json:"state" yaml:"state"`
-	Readable   bool      `json:"readable" yaml:"readable"`
-	Writable   bool      `json:"writable" yaml:"writable"`
-	ModeBits   string    `json:"mode_bits,omitempty" yaml:"mode_bits"`
-	CreatedAt  time.Time `json:"created_at" yaml:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at" yaml:"updated_at"`
+	CanaryPaths    []string     `json:"-" yaml:"canary_paths,omitempty"`
+	HiddenPatterns []string     `json:"-" yaml:"hidden_patterns,omitempty"`
+	Trash          *TrashConfig `json:"trash,omitempty" yaml:"trash,omitempty"`
+	ID             string       `json:"mount_id" yaml:"mount_id"`
+	Name           string       `json:"name" yaml:"name"`
+	LocalPath      string       `json:"-" yaml:"local_path"`
+	TargetType     string       `json:"target_type" yaml:"target_type"`
+	Mode           string       `json:"mode" yaml:"mode"`
+	Published      bool         `json:"published" yaml:"published"`
+	Enabled        bool         `json:"enabled" yaml:"enabled"`
+	State          string       `json:"state" yaml:"state"`
+	Readable       bool         `json:"readable" yaml:"readable"`
+	Writable       bool         `json:"writable" yaml:"writable"`
+	ModeBits       string       `json:"mode_bits,omitempty" yaml:"mode_bits"`
+	CreatedAt      time.Time    `json:"created_at" yaml:"created_at"`
+	UpdatedAt      time.Time    `json:"updated_at" yaml:"updated_at"`
+}
+
+// TrashConfig turns deletes on a writable mount into moves to a hidden folder
+// inside the mount, kept for RetentionDays before they are purged.
+type TrashConfig struct {
+	Enabled       bool `json:"enabled" yaml:"enabled"`
+	RetentionDays int  `json:"retention_days" yaml:"retention_days"`
+	// MaxBytes caps what the trash may hold; 0 means no cap. A delete that
+	// would go over it fails instead of purging anything early.
+	MaxBytes int64 `json:"max_bytes,omitempty" yaml:"max_bytes,omitempty"`
+}
+
+// TrashItem records one deleted entry kept in a mount's trash. Path is the
+// mount-relative path it had; Size is the bytes of file content it holds.
+type TrashItem struct {
+	ID        string    `json:"trash_id" yaml:"trash_id"`
+	MountID   string    `json:"mount_id" yaml:"mount_id"`
+	Path      string    `json:"path" yaml:"path"`
+	Type      string    `json:"type" yaml:"type"`
+	Size      int64     `json:"size,omitempty" yaml:"size,omitempty"`
+	State     string    `json:"state" yaml:"state"`
+	DeletedAt time.Time `json:"deleted_at" yaml:"deleted_at"`
+	ExpiresAt time.Time `json:"expires_at" yaml:"expires_at"`
 }
 
 type FileEntry struct {
+	Blocked    bool      `json:"blocked,omitempty" yaml:"blocked,omitempty"`
 	Name       string    `json:"name" yaml:"name"`
 	Path       string    `json:"path" yaml:"path"`
 	Type       string    `json:"type" yaml:"type"`
@@ -29,43 +56,49 @@ type FileEntry struct {
 }
 
 type Job struct {
-	ParentJobID        string     `json:"-"`
-	ID                 string     `json:"job_id" yaml:"job_id"`
-	Type               string     `json:"type" yaml:"type"`
-	State              string     `json:"state" yaml:"state"`
-	Phase              string     `json:"phase" yaml:"phase"`
-	MountID            string     `json:"mount_id" yaml:"mount_id"`
-	PeerNodeID         string     `json:"peer_node_id,omitempty" yaml:"peer_node_id"`
-	SourceGrantID      string     `json:"source_grant_id,omitempty" yaml:"source_grant_id"`
-	DestinationGrantID string     `json:"destination_grant_id,omitempty" yaml:"destination_grant_id"`
-	SourceETag         string     `json:"source_etag,omitempty" yaml:"source_etag"`
-	SourcePath         string     `json:"source_path,omitempty" yaml:"source_path"`
-	Destination        string     `json:"destination_path,omitempty" yaml:"destination_path"`
-	BytesTotal         int64      `json:"bytes_total" yaml:"bytes_total"`
-	BytesCompleted     int64      `json:"bytes_completed" yaml:"bytes_completed"`
-	BytesPerSecond     float64    `json:"bytes_per_second,omitempty" yaml:"bytes_per_second"`
-	ETASeconds         *int64     `json:"eta_seconds,omitempty" yaml:"eta_seconds"`
-	ETAConfidence      string     `json:"eta_confidence,omitempty" yaml:"eta_confidence"`
-	FilesTotal         int        `json:"files_total" yaml:"files_total"`
-	FilesCompleted     int        `json:"files_completed" yaml:"files_completed"`
-	FilesFailed        int        `json:"files_failed" yaml:"files_failed"`
-	ConflictPolicy     string     `json:"conflict_policy,omitempty" yaml:"conflict_policy"`
-	SourceChangePolicy string     `json:"source_change_policy,omitempty" yaml:"source_change_policy"`
-	VerifyChecksum     bool       `json:"verify_checksum,omitempty" yaml:"verify_checksum"`
-	BandwidthLimit     int64      `json:"bandwidth_limit_bytes_per_second,omitempty" yaml:"bandwidth_limit_bytes_per_second"`
-	MaxParallelFiles   int        `json:"max_parallel_files,omitempty" yaml:"max_parallel_files"`
-	MaxParallelChunks  int        `json:"max_parallel_chunks,omitempty" yaml:"max_parallel_chunks"`
-	Overwrite          bool       `json:"overwrite,omitempty" yaml:"overwrite"`
-	Recursive          bool       `json:"recursive,omitempty" yaml:"recursive"`
-	Attempt            int        `json:"attempt" yaml:"attempt"`
-	MaxAttempts        int        `json:"max_attempts" yaml:"max_attempts"`
-	Error              string     `json:"error,omitempty" yaml:"error"`
-	CorrelationID      string     `json:"correlation_id" yaml:"correlation_id"`
-	CreatedAt          time.Time  `json:"created_at" yaml:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at" yaml:"updated_at"`
-	StartedAt          *time.Time `json:"started_at,omitempty" yaml:"started_at"`
-	NextAttemptAt      *time.Time `json:"next_attempt_at,omitempty" yaml:"next_attempt_at"`
-	CompletedAt        *time.Time `json:"completed_at,omitempty" yaml:"completed_at"`
+	ParentJobID            string     `json:"-"`
+	DestructivePlanID      string     `json:"-" yaml:"destructive_plan_id,omitempty"`
+	SignedAuthBound        bool       `json:"-" yaml:"has_signed_authorization,omitempty"`
+	RequiresSignedAuth     bool       `json:"-" yaml:"requires_signed_authorization,omitempty"`
+	SignedAuthActorID      string     `json:"-" yaml:"signed_authorization_actor_id,omitempty"`
+	SignedAuthCredentialID string     `json:"-" yaml:"signed_authorization_credential_id,omitempty"`
+	SourcesOmitted         int        `json:"-" yaml:"sources_omitted,omitempty"`
+	ID                     string     `json:"job_id" yaml:"job_id"`
+	Type                   string     `json:"type" yaml:"type"`
+	State                  string     `json:"state" yaml:"state"`
+	Phase                  string     `json:"phase" yaml:"phase"`
+	MountID                string     `json:"mount_id" yaml:"mount_id"`
+	PeerNodeID             string     `json:"peer_node_id,omitempty" yaml:"peer_node_id"`
+	SourceGrantID          string     `json:"source_grant_id,omitempty" yaml:"source_grant_id"`
+	DestinationGrantID     string     `json:"destination_grant_id,omitempty" yaml:"destination_grant_id"`
+	SourceETag             string     `json:"source_etag,omitempty" yaml:"source_etag"`
+	SourcePath             string     `json:"source_path,omitempty" yaml:"source_path"`
+	Destination            string     `json:"destination_path,omitempty" yaml:"destination_path"`
+	BytesTotal             int64      `json:"bytes_total" yaml:"bytes_total"`
+	BytesCompleted         int64      `json:"bytes_completed" yaml:"bytes_completed"`
+	BytesPerSecond         float64    `json:"bytes_per_second,omitempty" yaml:"bytes_per_second"`
+	ETASeconds             *int64     `json:"eta_seconds,omitempty" yaml:"eta_seconds"`
+	ETAConfidence          string     `json:"eta_confidence,omitempty" yaml:"eta_confidence"`
+	FilesTotal             int        `json:"files_total" yaml:"files_total"`
+	FilesCompleted         int        `json:"files_completed" yaml:"files_completed"`
+	FilesFailed            int        `json:"files_failed" yaml:"files_failed"`
+	ConflictPolicy         string     `json:"conflict_policy,omitempty" yaml:"conflict_policy"`
+	SourceChangePolicy     string     `json:"source_change_policy,omitempty" yaml:"source_change_policy"`
+	VerifyChecksum         bool       `json:"verify_checksum,omitempty" yaml:"verify_checksum"`
+	BandwidthLimit         int64      `json:"bandwidth_limit_bytes_per_second,omitempty" yaml:"bandwidth_limit_bytes_per_second"`
+	MaxParallelFiles       int        `json:"max_parallel_files,omitempty" yaml:"max_parallel_files"`
+	MaxParallelChunks      int        `json:"max_parallel_chunks,omitempty" yaml:"max_parallel_chunks"`
+	Overwrite              bool       `json:"overwrite,omitempty" yaml:"overwrite"`
+	Recursive              bool       `json:"recursive,omitempty" yaml:"recursive"`
+	Attempt                int        `json:"attempt" yaml:"attempt"`
+	MaxAttempts            int        `json:"max_attempts" yaml:"max_attempts"`
+	Error                  string     `json:"error,omitempty" yaml:"error"`
+	CorrelationID          string     `json:"correlation_id" yaml:"correlation_id"`
+	CreatedAt              time.Time  `json:"created_at" yaml:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at" yaml:"updated_at"`
+	StartedAt              *time.Time `json:"started_at,omitempty" yaml:"started_at"`
+	NextAttemptAt          *time.Time `json:"next_attempt_at,omitempty" yaml:"next_attempt_at"`
+	CompletedAt            *time.Time `json:"completed_at,omitempty" yaml:"completed_at"`
 }
 
 type JobItem struct {
@@ -103,6 +136,17 @@ type CopyPlan struct {
 	ConflictCount   int       `json:"conflict_count" yaml:"conflict_count"`
 	Items           []JobItem `json:"items" yaml:"items"`
 	Truncated       bool      `json:"truncated,omitempty" yaml:"truncated"`
+	SourcesOmitted  int       `json:"sources_omitted,omitempty" yaml:"sources_omitted"`
+	// MovePlan is the one-use confirmation of a node-to-node move.
+	MovePlan *MovePlanInfo `json:"move_plan,omitempty" yaml:"-"`
+}
+
+// MovePlanInfo is returned once, when a move is planned; the token is never
+// stored in clear.
+type MovePlanInfo struct {
+	PlanID    string    `json:"plan_id"`
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 type JobEvent struct {
@@ -228,6 +272,7 @@ type TransferPathGrant struct {
 	Direction         string           `json:"direction" yaml:"direction"`
 	Permissions       GrantPermissions `json:"permissions" yaml:"permissions"`
 	ConflictPolicies  []string         `json:"conflict_policies" yaml:"conflict_policies"`
+	Exclude           []string         `json:"exclude,omitempty" yaml:"exclude,omitempty"`
 	VisibleToPeer     bool             `json:"visible_to_peer" yaml:"visible_to_peer"`
 	Enabled           bool             `json:"enabled" yaml:"enabled"`
 	CorrelationID     string           `json:"correlation_id" yaml:"correlation_id"`
@@ -263,19 +308,77 @@ type UploadVerification struct {
 }
 
 type UploadSession struct {
-	State           string     `json:"state" yaml:"state"`
-	CompletedAt     *time.Time `json:"completed_at,omitempty" yaml:"completed_at,omitempty"`
-	PublishChecksum string     `json:"-" yaml:"publish_checksum,omitempty"`
-	ID              string     `json:"upload_id" yaml:"upload_id"`
-	MountID         string     `json:"mount_id" yaml:"mount_id"`
-	Destination     string     `json:"destination_path" yaml:"destination_path"`
-	Size            int64      `json:"size" yaml:"size"`
-	Offset          int64      `json:"offset" yaml:"offset"`
-	Overwrite       bool       `json:"overwrite" yaml:"overwrite"`
-	Checksum        string     `json:"checksum,omitempty" yaml:"checksum"`
-	ChunkSize       int64      `json:"chunk_size" yaml:"chunk_size"`
-	CorrelationID   string     `json:"correlation_id,omitempty" yaml:"correlation_id"`
-	CreatedAt       time.Time  `json:"created_at" yaml:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at" yaml:"updated_at"`
-	ExpiresAt       time.Time  `json:"expires_at" yaml:"expires_at"`
+	// Populated only by verified admission; never exposed in ordinary HTTP responses.
+	AuthorizationActorID      string     `json:"-" yaml:"authorization_actor_id,omitempty"`
+	AuthorizationCredentialID string     `json:"-" yaml:"authorization_credential_id,omitempty"`
+	AuthorizationRevision     uint64     `json:"-" yaml:"authorization_revision,omitempty"`
+	State                     string     `json:"state" yaml:"state"`
+	CompletedAt               *time.Time `json:"completed_at,omitempty" yaml:"completed_at,omitempty"`
+	PublishChecksum           string     `json:"-" yaml:"publish_checksum,omitempty"`
+	ID                        string     `json:"upload_id" yaml:"upload_id"`
+	MountID                   string     `json:"mount_id" yaml:"mount_id"`
+	Destination               string     `json:"destination_path" yaml:"destination_path"`
+	Size                      int64      `json:"size" yaml:"size"`
+	Offset                    int64      `json:"offset" yaml:"offset"`
+	Overwrite                 bool       `json:"overwrite" yaml:"overwrite"`
+	Checksum                  string     `json:"checksum,omitempty" yaml:"checksum"`
+	ChunkSize                 int64      `json:"chunk_size" yaml:"chunk_size"`
+	CorrelationID             string     `json:"correlation_id,omitempty" yaml:"correlation_id"`
+	CreatedAt                 time.Time  `json:"created_at" yaml:"created_at"`
+	UpdatedAt                 time.Time  `json:"updated_at" yaml:"updated_at"`
+	ExpiresAt                 time.Time  `json:"expires_at" yaml:"expires_at"`
+}
+
+// DestructivePlan is the persisted confirmation of a destructive tree
+// operation. The caller derives the subject from verified authorization and
+// independently inspects both the source tree and any existing destination.
+// The token is stored only as a hash.
+type DestructivePlan struct {
+	ID                string    `yaml:"id" json:"-"`
+	TokenHash         string    `yaml:"token_hash" json:"-"`
+	SubjectType       string    `yaml:"subject_type" json:"-"`
+	SubjectID         string    `yaml:"subject_id" json:"-"`
+	Operation         string    `yaml:"operation" json:"-"`
+	MountID           string    `yaml:"mount_id" json:"-"`
+	Source            string    `yaml:"source" json:"-"`
+	Destination       string    `yaml:"destination,omitempty" json:"-"`
+	Overwrite         bool      `yaml:"overwrite,omitempty" json:"-"`
+	DestinationExists bool      `yaml:"destination_exists,omitempty" json:"-"`
+	TreeDigest        string    `yaml:"tree_digest" json:"-"`
+	DestinationDigest string    `yaml:"destination_digest,omitempty" json:"-"`
+	CreatedAt         time.Time `yaml:"created_at" json:"-"`
+	ExpiresAt         time.Time `yaml:"expires_at" json:"-"`
+	ConsumedJobID     string    `yaml:"consumed_job_id,omitempty" json:"-"`
+	IdempotencyKey    string    `yaml:"idempotency_key,omitempty" json:"-"`
+	RequestHash       string    `yaml:"request_hash,omitempty" json:"-"`
+}
+
+// MovePlanBinding names the confirmed plan a node-to-node move consumes when it
+// is created, and the digest of the planned entries it must still match.
+type MovePlanBinding struct {
+	PlanID, SubjectType, TokenHash, Digest string
+	Now                                    time.Time
+}
+
+// ManagedTrust is what a node keeps once the Control Tower's own certificate
+// authority has enrolled it: the trust bundle it last verified, the root it
+// pinned, and the certificate and key of its API listener.
+type ManagedTrust struct {
+	// RootPin is the SHA-256 of the root the join token pinned.
+	RootPin string `json:"root_pin" yaml:"root_pin"`
+	// Bundle is the last trust bundle that passed verification, as JSON.
+	Bundle string `json:"bundle" yaml:"bundle"`
+	// APICertPEM is the API listener's certificate followed by its issuer.
+	APICertPEM string `json:"api_cert_pem" yaml:"api_cert_pem"`
+	// APIKey is the matching private key, PKCS#8 DER in base64.
+	APIKey string `json:"api_key" yaml:"api_key"`
+	// OperationalHash is the SHA-256 of the operational token the node chose
+	// when it was enrolled and told the Control Tower. It is written with the
+	// rest of the enrollment so a crash cannot leave the node without a token.
+	OperationalHash string `json:"operational_hash" yaml:"operational_hash"`
+	// PendingKey is a key generated for a renewal whose certificate has not
+	// arrived yet, PKCS#8 DER in base64.
+	PendingKey string    `json:"pending_key,omitempty" yaml:"pending_key,omitempty"`
+	EnrolledAt time.Time `json:"enrolled_at" yaml:"enrolled_at"`
+	UpdatedAt  time.Time `json:"updated_at" yaml:"updated_at"`
 }

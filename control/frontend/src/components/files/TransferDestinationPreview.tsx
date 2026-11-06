@@ -2,6 +2,7 @@ import { Copy, FolderPlus, FolderSync, MoveRight, PenLine, Replace, SkipForward,
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { FileEntryIcon } from "@/components/files/FileEntryIcon";
 import { formatBytes } from "@/lib/format";
+import { safeDisplayName, safeDisplayPath } from "@/lib/display-name";
 import { transferPreviewEntries } from "@/lib/transfer-preview";
 import type { FileEntry, TransferPlan } from "@/lib/types";
 
@@ -38,15 +39,15 @@ export function TransferDestinationPreview({ entries, destinationPath, operation
           <FileEntryIcon entry={item} className="mt-0.5" />
           <div className="grid min-w-0 flex-1 gap-0.5">
             <Tooltip>
-              <TooltipTrigger render={<span tabIndex={0} />} className={`block w-fit max-w-full break-all text-xs text-muted-foreground focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-ring ${inactiveText}`}>/{item.path}</TooltipTrigger>
-              <TooltipContent>Nome original: {item.originalName}</TooltipContent>
+              <TooltipTrigger render={<span tabIndex={0} />} className={`block w-fit max-w-full break-all text-xs text-muted-foreground focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-ring ${inactiveText}`}>/{safeDisplayPath(item.path)}</TooltipTrigger>
+              <TooltipContent>Nome original: {safeDisplayName(item.originalName)}</TooltipContent>
             </Tooltip>
             {!plan && item.type === "directory" && <p className="text-xs text-muted-foreground">Conteúdo incluído ao gerar a prévia.</p>}
           </div>
           <div className="flex h-5 shrink-0 items-center gap-2">
             {item.type === "file" && item.size !== undefined && <span className={`text-xs text-muted-foreground ${inactiveText}`}>{formatBytes(item.size)}</span>}
             {action && ActionIcon && <Tooltip>
-              <TooltipTrigger type="button" aria-label={`${label}: ${item.name}`} className={`inline-flex size-6 items-center justify-center rounded-sm hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring ${action.className}`}><ActionIcon aria-hidden="true" className="size-4" /></TooltipTrigger>
+              <TooltipTrigger type="button" aria-label={`${label}: ${safeDisplayName(item.name)}`} className={`inline-flex size-6 items-center justify-center rounded-sm hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring ${action.className}`}><ActionIcon aria-hidden="true" className="size-4" /></TooltipTrigger>
               <TooltipContent>{label}</TooltipContent>
             </Tooltip>}
           </div>

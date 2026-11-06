@@ -204,6 +204,56 @@ contains only its own database, node endpoints, encrypted operational
 credentials, sessions, policies, roles, and audit data. The external encryption
 key remains a separate backup item.
 
+## Managed certificate authority
+
+With `CONTROL_TOWER_TLS_MODE=managed` the Control Tower's database also holds the
+root, the intermediate and the signing keys, each sealed under a key derived from
+`CONTROL_TOWER_DB_ENCRYPTION_KEY`. The snapshot above therefore covers the authority;
+the encryption key remains a separate backup item, and **without it the authority is
+lost**. If the root key was moved out of the database (`jolt-control ca export-root`),
+its file and its password are two more items: keep them off the Control Tower host and
+apart from each other. A node's own backup holds its encrypted trust state (bundle,
+API certificate and key); it needs no extra step.
+
+Every operation below is described in [OPERATIONS.md](OPERATIONS.md#certificados-e-chaves-gerenciados).
+This table says what to do when something is lost or leaked, from least to most
+serious:
+
+| What happened | Effect | Recovery |
+| --- | --- | --- |
+| A node's API key leaked, or the node was stolen | The holder can impersonate that node's API | Revoke the node's certificate (`POST /api/v1/control-tower/crypto/revocations` with `node_id`). The Control Tower stops talking to it and every other node refuses it. Enroll the host again with a new token and an empty `data_dir`. |
+| The Control Tower's client certificate leaked | The holder can call a node that still accepts the client certificate | Revoke its serial. The Control Tower replaces it in the same pass. |
+| A node was away past its certificate's end | None lost. The Control Tower still reaches it by the exact certificate it issued, and renews it | Bring the node back; nothing else. |
+| The intermediate's key leaked | The holder can issue certificates the nodes trust | Rotate the intermediate with `revoke_previous`. The old one leaves the bundle at once, the Control Tower reissues its own certificates and replaces every node's at the next sync. No node is enrolled again and no browser changes. Needs the root key. |
+| The root key is exported and the file or its password is lost | The intermediate cannot be renewed (due at two thirds of two years) | Until then everything works. Before that date start a root rotation (the new root's key stays in the database): it needs no key of the old root. |
+| The root's key leaked | The whole authority is compromised, as if `CONTROL_TOWER_DB_ENCRYPTION_KEY` had leaked | Rebuild the authority: stop the Control Tower, move `control.db` aside, start it in managed mode with a new database and enroll every node again with new tokens (empty `data_dir` on each). Every browser and agent installs the new root. |
+| The database or `CONTROL_TOWER_DB_ENCRYPTION_KEY` is lost with no backup | Same as above: nodes cannot validate a new Control Tower, which is the intended behaviour | Same as above. |
+
+### Restoring an older Control Tower snapshot
+
+A node never adopts a trust bundle that is not newer than its own, and that is the
+protection against rollback. The consequence for a restore: if the restored database
+is **older than the last bundle the nodes took**, the Control Tower no longer holds the
+latest signing keys, and a context it signs with the restored key is refused by a node
+once that key has left the node's bundle. A signing key is created at day 60 of its
+life and the previous one leaves the bundle at day 74, so a snapshot taken within 14
+days of the last rotation (before day 74 of the older key) is always inside the
+overlap. Take a Control Tower snapshot at least weekly, and always after a root
+rotation, a revocation or an intermediate rotation. A restore older than that leaves
+the nodes that moved on unable to verify signed contexts, and the remedy is to enroll
+them again.
+
+A restore during a root rotation resumes it where the snapshot was: `prepared` or
+`promoted` is stored in the database. If the snapshot predates the promotion but the
+nodes already hold bundles from after it, the nodes keep working with the bundle they
+have and the Control Tower catches up as it publishes newer ones.
+
+### What each phase of recovery proves
+
+`scripts/managed-rotation-smoke.py` plays the revocation, the intermediate rotation and
+the root rotation with real binaries on loopback. It is not a substitute for rehearsing
+a rebuild of the authority on your own hosts: do that once, before relying on it.
+
 ## Emergency credential recovery
 
 All emergency credential commands are offline-only. They acquire the same

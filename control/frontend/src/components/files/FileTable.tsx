@@ -6,10 +6,12 @@ import {
   FolderArchive,
   FolderOpen,
   Link2,
+  Lock,
   MoveRight,
   Trash2,
 } from "lucide-react";
 import { mediaInfoForFilename } from "@/lib/media";
+import { fileEntryDisplayName } from "@/lib/display-name";
 import { FileEntryIcon } from "@/components/files/FileEntryIcon";
 import {
   isEditableTextFilename,
@@ -35,6 +37,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+
+const BLOCKED_MESSAGE = "Bloqueado pela política de acesso: o arquivo aparece, mas não pode ser aberto, baixado nem alterado.";
 
 interface Props {
   files: FileEntry[];
@@ -82,11 +86,11 @@ export function FileTable({
   const canTransferCopy = canRead;
   const canTransferMove = canRead && canRemove;
   const selected = new Set(selectedPaths);
-  const selectable = files.filter((entry) => entry.type !== "symlink");
+  const selectable = files.filter((entry) => entry.type !== "symlink" && !entry.blocked);
   const allSelected = selectable.length > 0 && selectable.every((entry) => selected.has(entry.path));
 
   function setSelected(entry: FileEntry, checked: boolean) {
-    if (entry.type === "symlink") return;
+    if (entry.type === "symlink" || entry.blocked) return;
     const next = new Set(selectedPaths);
     if (checked) {
       if (!next.has(entry.path) && next.size >= selectionLimit) {
@@ -137,29 +141,46 @@ export function FileTable({
               <ContextMenuTrigger
                 render={
                   <TableRow
-                    className="cursor-pointer"
+                    className={entry.blocked ? "cursor-not-allowed text-muted-foreground" : "cursor-pointer"}
                     tabIndex={0}
-                    aria-label={`Ações para ${entry.name}`}
-                    onDoubleClick={() => onDownload(entry)}
+                    aria-label={`Ações para ${fileEntryDisplayName(entry)}`}
+                    title={entry.blocked ? BLOCKED_MESSAGE : undefined}
+                    data-blocked={entry.blocked ? "true" : undefined}
+                    onDoubleClick={() => {
+                      if (!entry.blocked) onDownload(entry);
+                    }}
                   />
                 }
               >
                 <TableCell onClick={(event) => event.stopPropagation()}>
                   <Checkbox
-                    aria-label={`Selecionar ${entry.name}`}
+                    aria-label={`Selecionar ${fileEntryDisplayName(entry)}`}
                     checked={selected.has(entry.path)}
-                    disabled={entry.type === "symlink"}
-                    title={entry.type === "symlink" ? "Links simbólicos não podem ser transferidos" : undefined}
+                    disabled={entry.type === "symlink" || entry.blocked}
+                    title={
+                      entry.blocked
+                        ? BLOCKED_MESSAGE
+                        : entry.type === "symlink"
+                          ? "Links simbólicos não podem ser transferidos"
+                          : undefined
+                    }
                     onCheckedChange={(checked) => setSelected(entry, checked === true)}
                   />
                 </TableCell>
                 <TableCell>
                   <button
-                    className="flex items-center gap-2 text-left hover:underline"
+                    className="flex items-center gap-2 text-left hover:underline disabled:no-underline"
+                    disabled={entry.blocked}
                     onClick={() => onDownload(entry)}
                   >
                     <FileEntryIcon entry={entry} />
-                    {entry.name}
+                    {fileEntryDisplayName(entry)}
+                    {entry.blocked && (
+                      <>
+                        <Lock aria-hidden="true" className="size-3.5 shrink-0" />
+                        <span className="sr-only">Bloqueado pela política de acesso</span>
+                      </>
+                    )}
                   </button>
                 </TableCell>
                 <TableCell className="text-muted-foreground">
@@ -170,6 +191,13 @@ export function FileTable({
                 </TableCell>
               </ContextMenuTrigger>
               <ContextMenuContent>
+                {entry.blocked ? (
+                  <ContextMenuItem disabled>
+                    <Lock />
+                    Bloqueado pela política de acesso
+                  </ContextMenuItem>
+                ) : (
+                  <>
                 <ContextMenuItem onClick={() => onDownload(entry)}>
                   {entry.type === "directory" ? <FolderOpen /> : <Download />}
                   {entry.type === "directory" ? "Abrir" : "Baixar"}
@@ -226,6 +254,8 @@ export function FileTable({
                     <Trash2 />
                     Remover
                   </ContextMenuItem>
+                )}
+                  </>
                 )}
               </ContextMenuContent>
             </ContextMenu>

@@ -3,6 +3,8 @@ package filesystem
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -269,6 +271,34 @@ func TestVerifiedCopyDoesNotPublishBeforeChecksumValidation(t *testing.T) {
 	}
 	if string(content) != "old" {
 		t.Fatalf("destination was published before validation: %q", content)
+	}
+}
+
+func TestRemotePublicationRevalidatesBeforeReplacingDestination(t *testing.T) {
+	for _, parallel := range []bool{false, true} {
+		t.Run(fmt.Sprintf("parallel=%t", parallel), func(t *testing.T) {
+			service, mountID, root := newTestService(t, "read_write")
+			if err := os.WriteFile(filepath.Join(root, "destination.txt"), []byte("old"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			denied := errors.New("destination authorization revoked")
+			validate := func() error { return denied }
+			var err error
+			if parallel {
+				_, _, err = service.ReceiveFileResumableRanges(context.Background(), mountID, "destination.txt", "job", true, 0, 4, 3, 2, "", func(context.Context, int64, int64) (io.ReadCloser, func() error, error) {
+					return io.NopCloser(strings.NewReader("new")), func() error { return nil }, nil
+				}, nil, validate, nil)
+			} else {
+				_, _, err = service.ReceiveFileResumable(context.Background(), mountID, "destination.txt", "job", true, 0, 4, 3, "", strings.NewReader("new"), nil, validate)
+			}
+			if !errors.Is(err, denied) {
+				t.Fatalf("validation error = %v", err)
+			}
+			content, err := os.ReadFile(filepath.Join(root, "destination.txt"))
+			if err != nil || string(content) != "old" {
+				t.Fatalf("destination changed: %q %v", content, err)
+			}
+		})
 	}
 }
 

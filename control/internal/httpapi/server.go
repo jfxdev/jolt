@@ -38,38 +38,49 @@ const sessionCookie = "jolt_control_session"
 type contextKey string
 
 const (
-	userKey      contextKey = "user"
-	actorTypeKey contextKey = "actor_type"
-	groupKey     contextKey = "group_ids"
+	userKey             contextKey = "user"
+	actorTypeKey        contextKey = "actor_type"
+	groupKey            contextKey = "group_ids"
+	agentKey            contextKey = "agent_context"
+	credentialKey       contextKey = "credential_id"
+	credentialDigestKey contextKey = "credential_digest"
 )
 
 type Server struct {
-	rotations sync.Map
-	config    config.Config
-	store     *store.Store
-	client    *http.Client
-	registry  *metrics.Registry
-	log       *slog.Logger
+	// recheckNodes judges the open connections to nodes again; nil when the
+	// transport keeps no such list.
+	recheckNodes func()
+	agentMu      sync.Mutex
+	agentTokens  map[string]*agentTokenState
+	agentActors  map[string]struct{}
+	rotations    sync.Map
+	config       config.Config
+	store        *store.Store
+	client       *http.Client
+	registry     *metrics.Registry
+	log          *slog.Logger
 }
 
 // New builds the Control Tower handler. It fails when the configured node TLS
 // material cannot be loaded: a node registered as https:// would otherwise
 // fail every call with an opaque handshake error.
 func New(cfg config.Config, storage *store.Store, logger *slog.Logger) (http.Handler, error) {
-	transport := &http.Transport{
-		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   5 * time.Second,
-		ExpectContinueTimeout: time.Second,
-	}
+	handler, _, err := NewWithBackground(cfg, storage, logger)
+	return handler, err
+}
+
+// NewWithBackground also returns the background work the handler needs, to be
+// run until its context ends. It is a no-op unless signed local jobs are
+// enabled, in which case it keeps the running jobs' authorizations renewed.
+func NewWithBackground(cfg config.Config, storage *store.Store, logger *slog.Logger) (http.Handler, func(context.Context), error) {
 	tlsConfig, err := nodeTLSConfig(cfg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	transport.TLSClientConfig = tlsConfig
-	return newHandler(cfg, storage, logger, &http.Client{Transport: transport}), nil
+	transport := newNodeTransport(cfg, tlsConfig)
+	server, handler := newServerHandler(cfg, storage, logger, &http.Client{Transport: transport})
+	server.recheckNodes = transport.RecheckConnections
+	return handler, server.background, nil
 }
 
 // nodeTLSConfig trusts an extra CA bundle for node endpoints, so a homelab or
@@ -106,6 +117,11 @@ func nodeTLSConfig(cfg config.Config) (*tls.Config, error) {
 }
 
 func newHandler(cfg config.Config, storage *store.Store, logger *slog.Logger, client *http.Client) http.Handler {
+	_, handler := newServerHandler(cfg, storage, logger, client)
+	return handler
+}
+
+func newServerHandler(cfg config.Config, storage *store.Store, logger *slog.Logger, client *http.Client) (*Server, http.Handler) {
 	if client == nil {
 		client = &http.Client{Transport: &http.Transport{
 			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
@@ -119,11 +135,13 @@ func newHandler(cfg config.Config, storage *store.Store, logger *slog.Logger, cl
 	registry := metrics.NewRegistry()
 	registerControlMetrics(registry)
 	s := &Server{
-		config:   cfg,
-		store:    storage,
-		client:   client,
-		registry: registry,
-		log:      logger,
+		agentTokens: make(map[string]*agentTokenState),
+		agentActors: make(map[string]struct{}),
+		config:      cfg,
+		store:       storage,
+		client:      client,
+		registry:    registry,
+		log:         logger,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
@@ -137,17 +155,43 @@ func newHandler(cfg config.Config, storage *store.Store, logger *slog.Logger, cl
 	mux.Handle("GET /api/v1/control-tower/auth/me", s.auth(http.HandlerFunc(s.me)))
 	mux.Handle("GET /api/v1/control-tower/about", s.auth(http.HandlerFunc(s.about)))
 	mux.Handle("POST /api/v1/control-tower/auth/permissions", s.auth(http.HandlerFunc(s.permissions)))
+	mux.HandleFunc("POST /api/v1/control-tower/enroll", s.enroll)
+	mux.HandleFunc("GET /api/v1/control-tower/enroll/{enrollmentID}", s.pollEnrollment)
+	mux.Handle("POST /api/v1/control-tower/enrollments/tokens", s.auth(http.HandlerFunc(s.createJoinToken)))
+	mux.Handle("GET /api/v1/control-tower/enrollments/tokens", s.auth(http.HandlerFunc(s.listJoinTokens)))
+	mux.Handle("DELETE /api/v1/control-tower/enrollments/tokens/{tokenID}", s.auth(http.HandlerFunc(s.revokeJoinToken)))
+	mux.Handle("GET /api/v1/control-tower/enrollments", s.auth(http.HandlerFunc(s.listEnrollments)))
+	mux.Handle("POST /api/v1/control-tower/enrollments/{enrollmentID}/approve", s.auth(http.HandlerFunc(s.approveEnrollment)))
+	mux.Handle("POST /api/v1/control-tower/enrollments/{enrollmentID}/reject", s.auth(http.HandlerFunc(s.rejectEnrollment)))
+	mux.Handle("GET /api/v1/control-tower/crypto/ca", s.auth(http.HandlerFunc(s.listCertificates)))
+	mux.Handle("GET /api/v1/control-tower/crypto/trust-bundle", s.auth(http.HandlerFunc(s.trustBundle)))
+	mux.Handle("GET /api/v1/control-tower/crypto/authorization-keys", s.auth(http.HandlerFunc(s.authorizationKeysSnippet)))
+	mux.Handle("GET /api/v1/control-tower/crypto/revocations", s.auth(http.HandlerFunc(s.listRevocations)))
+	mux.Handle("POST /api/v1/control-tower/crypto/revocations", s.auth(http.HandlerFunc(s.revokeCertificate)))
+	mux.Handle("POST /api/v1/control-tower/crypto/ca/intermediate/rotate", s.auth(http.HandlerFunc(s.rotateIntermediate)))
+	mux.Handle("POST /api/v1/control-tower/crypto/ca/root/rotate", s.auth(http.HandlerFunc(s.beginRootRotation)))
+	mux.Handle("POST /api/v1/control-tower/crypto/ca/root/promote", s.auth(http.HandlerFunc(s.promoteRoot)))
+	mux.Handle("GET /api/v1/control-tower/pending-operations", s.auth(http.HandlerFunc(s.listPendingOperations)))
+	mux.Handle("GET /api/v1/control-tower/pending-operations/{operationID}", s.auth(http.HandlerFunc(s.getPendingOperation)))
+	mux.Handle("POST /api/v1/control-tower/pending-operations/{operationID}/approve", s.auth(http.HandlerFunc(s.approvePendingOperation)))
+	mux.Handle("POST /api/v1/control-tower/pending-operations/{operationID}/reject", s.auth(http.HandlerFunc(s.rejectPendingOperation)))
+	mux.Handle("POST /api/v1/control-tower/subjects/{actorType}/{subjectID}/effective-access", s.auth(http.HandlerFunc(s.effectiveAccess)))
 	mux.Handle("GET /api/v1/control-tower/users", s.auth(http.HandlerFunc(s.listUsers)))
 	mux.Handle("POST /api/v1/control-tower/users", s.auth(http.HandlerFunc(s.createUser)))
 	mux.Handle("PATCH /api/v1/control-tower/users/{userID}", s.auth(http.HandlerFunc(s.updateUser)))
 	mux.Handle("DELETE /api/v1/control-tower/users/{userID}", s.auth(http.HandlerFunc(s.deleteUser)))
 	mux.Handle("GET /api/v1/control-tower/service-accounts", s.auth(http.HandlerFunc(s.listServiceAccounts)))
 	mux.Handle("POST /api/v1/control-tower/service-accounts", s.auth(http.HandlerFunc(s.createServiceAccount)))
+	mux.Handle("POST /api/v1/control-tower/service-accounts/disable", s.auth(http.HandlerFunc(s.disableAgents)))
 	mux.Handle("PATCH /api/v1/control-tower/service-accounts/{serviceAccountID}", s.auth(http.HandlerFunc(s.updateServiceAccount)))
 	mux.Handle("DELETE /api/v1/control-tower/service-accounts/{serviceAccountID}", s.auth(http.HandlerFunc(s.deleteServiceAccount)))
 	mux.Handle("GET /api/v1/control-tower/service-accounts/{serviceAccountID}/tokens", s.auth(http.HandlerFunc(s.listServiceAccountTokens)))
+	mux.Handle("GET /api/v1/control-tower/service-accounts/{serviceAccountID}/workload-identities", s.auth(http.HandlerFunc(s.listWorkloadIdentities)))
+	mux.Handle("POST /api/v1/control-tower/service-accounts/{serviceAccountID}/workload-identities", s.auth(http.HandlerFunc(s.createWorkloadIdentity)))
+	mux.Handle("PATCH /api/v1/control-tower/service-accounts/{serviceAccountID}/workload-identities/{credentialID}", s.auth(http.HandlerFunc(s.updateWorkloadIdentity)))
 	mux.Handle("POST /api/v1/control-tower/service-accounts/{serviceAccountID}/tokens", s.auth(http.HandlerFunc(s.createServiceAccountToken)))
 	mux.Handle("DELETE /api/v1/control-tower/service-accounts/{serviceAccountID}/tokens/{tokenID}", s.auth(http.HandlerFunc(s.revokeServiceAccountToken)))
+	mux.Handle("PATCH /api/v1/control-tower/service-accounts/{serviceAccountID}/tokens/{tokenID}", s.auth(http.HandlerFunc(s.updateAgentToken)))
 	mux.Handle("GET /api/v1/control-tower/access-groups", s.auth(http.HandlerFunc(s.listAccessGroups)))
 	mux.Handle("POST /api/v1/control-tower/access-groups", s.auth(http.HandlerFunc(s.createAccessGroup)))
 	mux.Handle("PATCH /api/v1/control-tower/access-groups/{groupID}", s.auth(http.HandlerFunc(s.updateAccessGroup)))
@@ -166,10 +210,16 @@ func newHandler(cfg config.Config, storage *store.Store, logger *slog.Logger, cl
 	mux.Handle("DELETE /api/v1/control-tower/roles/{roleID}", s.auth(http.HandlerFunc(s.deleteRole)))
 	mux.Handle("GET /api/v1/control-tower/users/{userID}/policies", s.auth(http.HandlerFunc(s.listUserPolicies)))
 	mux.Handle("PUT /api/v1/control-tower/users/{userID}/policies", s.auth(http.HandlerFunc(s.assignUserPolicies)))
+	mux.Handle("GET /api/v1/control-tower/users/{userID}/policies/temporary", s.auth(http.HandlerFunc(s.temporaryUserPolicies)))
+	mux.Handle("POST /api/v1/control-tower/users/{userID}/policies/temporary", s.auth(http.HandlerFunc(s.temporaryUserPolicies)))
+	mux.Handle("DELETE /api/v1/control-tower/users/{userID}/policies/temporary/{policyID}", s.auth(http.HandlerFunc(s.temporaryUserPolicies)))
 	mux.Handle("GET /api/v1/control-tower/users/{userID}/roles", s.auth(http.HandlerFunc(s.listUserRoles)))
 	mux.Handle("PUT /api/v1/control-tower/users/{userID}/roles", s.auth(http.HandlerFunc(s.assignUserRoles)))
 	mux.Handle("GET /api/v1/control-tower/service-accounts/{serviceAccountID}/policies", s.auth(http.HandlerFunc(s.listServiceAccountPolicies)))
 	mux.Handle("PUT /api/v1/control-tower/service-accounts/{serviceAccountID}/policies", s.auth(http.HandlerFunc(s.assignServiceAccountPolicies)))
+	mux.Handle("GET /api/v1/control-tower/service-accounts/{serviceAccountID}/policies/temporary", s.auth(http.HandlerFunc(s.temporaryServiceAccountPolicies)))
+	mux.Handle("POST /api/v1/control-tower/service-accounts/{serviceAccountID}/policies/temporary", s.auth(http.HandlerFunc(s.temporaryServiceAccountPolicies)))
+	mux.Handle("DELETE /api/v1/control-tower/service-accounts/{serviceAccountID}/policies/temporary/{policyID}", s.auth(http.HandlerFunc(s.temporaryServiceAccountPolicies)))
 	mux.Handle("GET /api/v1/control-tower/service-accounts/{serviceAccountID}/groups", s.auth(http.HandlerFunc(s.listServiceAccountGroups)))
 	mux.Handle("PUT /api/v1/control-tower/service-accounts/{serviceAccountID}/groups", s.auth(http.HandlerFunc(s.assignServiceAccountGroups)))
 	mux.Handle("GET /api/v1/control-tower/audit", s.auth(http.HandlerFunc(s.listAuditEvents)))
@@ -187,6 +237,10 @@ func newHandler(cfg config.Config, storage *store.Store, logger *slog.Logger, cl
 	mux.Handle("POST /api/v1/control-tower/connections/{requestID}/reject", s.auth(http.HandlerFunc(s.rejectConnection)))
 	mux.Handle("POST /api/v1/control-tower/connections/{requestID}/revoke", s.auth(http.HandlerFunc(s.revokeConnection)))
 	mux.Handle("GET /api/v1/control-tower/nodes/{nodeID}/trust", s.auth(http.HandlerFunc(s.nodeTrust)))
+	if cfg.SignedLocalJobs {
+		mux.Handle("POST /api/v1/nodes/{nodeID}/mounts/{mountID}/files/destructive-plans", s.auth(http.HandlerFunc(s.createDestructivePlanRoute)))
+		mux.Handle("POST /api/v1/nodes/{nodeID}/mounts/{mountID}/files/destructive-plans/{planID}/confirm", s.auth(http.HandlerFunc(s.confirmDestructivePlanRoute)))
+	}
 	mux.Handle("POST /api/v1/nodes/{nodeID}/transfers/targets", s.auth(http.HandlerFunc(s.transferTargets)))
 	mux.Handle("POST /api/v1/nodes/{nodeID}/transfers/plan", s.auth(http.HandlerFunc(s.planLogicalTransfer)))
 	mux.Handle("POST /api/v1/nodes/{nodeID}/transfers", s.auth(http.HandlerFunc(s.createLogicalTransfer)))
@@ -203,7 +257,20 @@ func newHandler(cfg config.Config, storage *store.Store, logger *slog.Logger, cl
 	mux.HandleFunc("GET /api/v1/public/shares/{token}/archive", s.publicShareArchive)
 	mux.Handle("/api/v1/nodes/{nodeID}/{resource...}", s.auth(http.HandlerFunc(s.proxyNode)))
 	mux.HandleFunc("/", s.static)
-	return s.recover(s.correlation(s.securityHeaders(s.instrument(s.csrf(mux)))))
+	return s, s.recover(s.correlation(s.securityHeaders(s.instrument(s.csrf(mux)))))
+}
+
+// background runs the work that outlives requests until ctx ends.
+func (s *Server) background(ctx context.Context) {
+	if s.config.Authority != nil {
+		go s.runCertificateMetrics(ctx.Done())
+		go s.runManagedSync(ctx.Done())
+	}
+	if s.config.SignedLocalJobs {
+		s.runSignedJobRenewal(ctx)
+		return
+	}
+	<-ctx.Done()
 }
 
 func (s *Server) auth(next http.Handler) http.Handler {
@@ -224,6 +291,8 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		}
 		ctx := context.WithValue(r.Context(), userKey, user)
 		ctx = context.WithValue(ctx, actorTypeKey, "user")
+		ctx = context.WithValue(ctx, credentialKey, "session-"+security.Digest("jolt-signed-session:"+cookie.Value))
+		ctx = context.WithValue(ctx, credentialDigestKey, security.Digest(cookie.Value))
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -235,7 +304,20 @@ func (s *Server) authenticateServiceAccount(next http.Handler, w http.ResponseWr
 		return
 	}
 	plainToken := strings.TrimSpace(strings.TrimPrefix(authorization, prefix))
-	account, _, err := s.store.AuthenticateServiceAccount(r.Context(), security.Digest(plainToken))
+	digest := security.Digest(plainToken)
+	account, token, err := s.store.AuthenticateServiceAccount(r.Context(), digest)
+	if err != nil && s.config.WorkloadProviders != nil {
+		identity, verifyErr := s.config.WorkloadProviders.Verify(r.Context(), plainToken)
+		if verifyErr == nil {
+			r = r.WithContext(context.WithValue(r.Context(), workloadIdentityKey, identity))
+			account, token, err = s.revalidateServiceCredential(r)
+			// Workload streams for automation accounts need independent expiry,
+			// revocation and share handling before they can be enabled.
+			if err == nil && (account.Kind != "agent" || identity.ExpiresAt.After(time.Now().UTC().Add(30*24*time.Hour))) {
+				err = store.ErrNotFound
+			}
+		}
+	}
 	if err != nil {
 		s.store.AuditActor(r.Context(), "", "service_account", "authenticate", "control-tower", "denied", r.Header.Get("X-Correlation-ID"))
 		writeError(w, r, http.StatusUnauthorized, "invalid_service_token", "Token de conta de serviço inválido, expirado ou revogado.")
@@ -250,6 +332,12 @@ func (s *Server) authenticateServiceAccount(next http.Handler, w http.ResponseWr
 	ctx := context.WithValue(r.Context(), userKey, actor)
 	ctx = context.WithValue(ctx, actorTypeKey, "service_account")
 	ctx = context.WithValue(ctx, groupKey, groupIDs)
+	ctx = context.WithValue(ctx, credentialKey, "token-"+token.ID)
+	ctx = context.WithValue(ctx, credentialDigestKey, digest)
+	if account.Kind == "agent" {
+		s.serveAgent(next, w, r.WithContext(ctx), account, token)
+		return
+	}
 	next.ServeHTTP(w, r.WithContext(ctx))
 }
 
@@ -294,6 +382,9 @@ func (s *Server) recover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if value := recover(); value != nil {
+				if value == http.ErrAbortHandler {
+					panic(value)
+				}
 				s.log.Error("request panic", "error", value, "correlation_id", r.Header.Get("X-Correlation-ID"))
 				writeError(w, r, http.StatusInternalServerError, "internal_error", "Erro inesperado.")
 			}
@@ -316,8 +407,24 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// aboutResponse is the build plus the optional behaviours this Control Tower
+// was started with, so the interface offers only what the server will accept.
+type aboutResponse struct {
+	buildinfo.Info
+	Features aboutFeatures `json:"features"`
+}
+
+type aboutFeatures struct {
+	TypedPolicies bool `json:"typed_policies"`
+	Approvals     bool `json:"approvals"`
+	ManagedTLS    bool `json:"managed_tls"`
+}
+
 func (s *Server) about(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, buildinfo.Current())
+	writeJSON(w, http.StatusOK, aboutResponse{
+		Info:     buildinfo.Current(),
+		Features: aboutFeatures{TypedPolicies: s.config.TypedPolicies, Approvals: s.config.Approvals, ManagedTLS: s.config.Authority != nil},
+	})
 }
 
 type loginRequest struct {
@@ -679,8 +786,22 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, path, capabil
 		s.fail(w, r, err)
 		return false
 	}
+	if decision.NeedsApproval && !decision.Allowed {
+		if collector, ok := r.Context().Value(approvalCollectorKey{}).(*approvalCollector); ok {
+			// Keep going: the request is stored for approval once every
+			// requirement has been looked at.
+			collector.add(decision.Path, decision.Capability)
+			return true
+		}
+		s.auditAuthorizationDecision(r, decision)
+		writeError(w, r, http.StatusForbidden, "approval_unsupported", "Esta operação exige aprovação humana, que só está disponível para apagar, mover e copiar arquivos pela API de arquivos.")
+		return false
+	}
 	s.auditAuthorizationDecision(r, decision)
 	if decision.Allowed {
+		if tracker, ok := r.Context().Value(decisionTrackerKey{}).(*decisionTracker); ok {
+			tracker.decisions = append(tracker.decisions, decision)
+		}
 		return true
 	}
 	s.registry.Inc("jolt_control_authorization_denied_total", capability)
@@ -699,6 +820,15 @@ func (s *Server) auditAuthorizationDecision(r *http.Request, decision rbac.Decis
 
 func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r, "list", "control-tower/audit") {
+		return
+	}
+	format := strings.TrimSpace(r.URL.Query().Get("format"))
+	if format == "ndjson" {
+		s.exportAuditEvents(w, r)
+		return
+	}
+	if format != "" && format != "json" {
+		writeError(w, r, http.StatusBadRequest, "invalid_format", "Formato de auditoria inválido.")
 		return
 	}
 	limit := 100
@@ -747,7 +877,75 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) exportAuditEvents(w http.ResponseWriter, r *http.Request) {
+	var after int64
+	if raw := strings.TrimSpace(r.URL.Query().Get("after")); raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || value < 0 {
+			writeError(w, r, http.StatusBadRequest, "invalid_cursor", "O cursor de auditoria é inválido.")
+			return
+		}
+		after = value
+	}
+	limit := 500
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 500 {
+			writeError(w, r, http.StatusBadRequest, "invalid_limit", "O limite deve estar entre 1 e 500.")
+			return
+		}
+		limit = value
+	}
+	events, more, err := s.store.ListAuditEvents(r.Context(), store.AuditQuery{Ascending: true, AfterID: after, Limit: limit})
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	checkpoint, err := s.store.AuditCheckpoint(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if checkpoint != nil {
+		w.Header().Set("X-Jolt-Checkpoint-ID", strconv.FormatInt(checkpoint.EventID, 10))
+		w.Header().Set("X-Jolt-Checkpoint-Hash", checkpoint.EventHash)
+		w.Header().Set("X-Jolt-Checkpoint-Reason", checkpoint.Reason)
+	}
+	if len(events) > 0 {
+		after = events[len(events)-1].ID
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("X-Jolt-Next-After", strconv.FormatInt(after, 10))
+	w.Header().Set("X-Jolt-Has-More", strconv.FormatBool(more))
+	w.Header().Set("Cache-Control", "no-store")
+	encoder := json.NewEncoder(w)
+	for _, event := range events {
+		if err := encoder.Encode(event); err != nil {
+			return
+		}
+	}
+}
+
 func (s *Server) evaluateAuthorization(r *http.Request, path, capability string) (rbac.Decision, error) {
+	asksForApproval := false
+	if agent, ok := r.Context().Value(agentKey).(agentContext); ok {
+		allowed := capability == "read" || capability == "list"
+		if allowed && agent.limits.Capabilities != nil {
+			allowed = false
+			for _, ceiling := range *agent.limits.Capabilities {
+				allowed = allowed || ceiling == capability
+			}
+		}
+		if !allowed {
+			// The one thing past the ceiling is asking a person to delete, and
+			// only where the request can be kept for one.
+			_, collecting := r.Context().Value(approvalCollectorKey{}).(*approvalCollector)
+			if !(agent.limits.RequestDeletes && capability == "delete" && collecting) {
+				return rbac.Decision{Path: rbac.NormalizePath(path), Capability: capability, Denied: true}, nil
+			}
+			asksForApproval = true
+		}
+	}
 	if currentUser(r).Role == "admin" && currentActorType(r) == "user" {
 		return rbac.Decision{
 			Allowed: true, PolicyIDs: []string{"builtin-admin"}, Path: path, Capability: capability,
@@ -773,7 +971,75 @@ func (s *Server) evaluateAuthorization(r *http.Request, path, capability string)
 	if err != nil {
 		return rbac.Decision{}, err
 	}
-	return rbac.Evaluate(rbac.ExpandCompatibilityRules(policies), path, capability), nil
+	expanded := rbac.ExpandCompatibilityRules(policies)
+	var decision rbac.Decision
+	switch {
+	case s.config.TypedPolicies && r.Context().Value(entryTypeKey{}) != nil:
+		decision = rbac.EvaluateEntry(expanded, path, capability, r.Context().Value(entryTypeKey{}).(string)).Decision
+	case s.config.TypedPolicies:
+		decision = rbac.EvaluateTyped(expanded, path, capability, s.entryMode(r))
+	default:
+		decision = rbac.Evaluate(expanded, path, capability)
+	}
+	if asksForApproval && !decision.NeedsApproval {
+		// A plain grant would be a direct write, which an agent never gets.
+		return rbac.Decision{Path: rbac.NormalizePath(path), Capability: capability, Denied: true}, nil
+	}
+	return s.applyApproval(r, decision), nil
+}
+
+type entryTypeKey struct{}
+
+// withEntryType says what the path of a request is ("file" or "directory"), so
+// typed rules are judged for that type instead of for every type it could be.
+func withEntryType(r *http.Request, kind string) *http.Request {
+	if kind != "file" && kind != "directory" {
+		return r
+	}
+	return r.WithContext(context.WithValue(r.Context(), entryTypeKey{}, kind))
+}
+
+type nodeFilteredKey struct{}
+
+// markNodeFiltered tells authorization that the node will enforce typed rules
+// on this operation, per entry, with a signed context. Only mark operations
+// that really carry one.
+func markNodeFiltered(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), nodeFilteredKey{}, true))
+}
+
+func (s *Server) entryMode(r *http.Request) rbac.EntryMode {
+	if filtered, _ := r.Context().Value(nodeFilteredKey{}).(bool); filtered {
+		return rbac.NodeFiltered
+	}
+	return rbac.EveryEntry
+}
+
+// nodeEnforces reports whether the node applies a signed context to this
+// operation, entry by entry, so typed rules need not be settled by the Control
+// Tower alone.
+func (s *Server) nodeEnforces(resource, method string) bool {
+	if s.config.SignedLocalReads && signedReadOperation(resource, method) != "" {
+		return true
+	}
+	if operation, _ := signedUploadOperation(resource, method); s.config.SignedUploads && operation != "" {
+		return true
+	}
+	_, copying := signedLocalCopyMount(resource)
+	return s.config.SignedLocalJobs && copying && method == http.MethodPost
+}
+
+// deniesBeyondFilter is the subtree guard for a scope. With typed policies
+// enabled, every operation that could touch a whole tree is either filtered by
+// the node per entry (reads, uploads, copies, leased deletes and moves) or
+// refused (a direct delete or move of a directory needs a plan), so a typed
+// denial inside the scope is never the Control Tower's to apply here and only a
+// denial by path refuses the operation. Otherwise any denial does.
+func (s *Server) deniesBeyondFilter(policies []rbac.Policy, scope string) bool {
+	if s.config.TypedPolicies {
+		return rbac.UntypedDeniesWithin(policies, scope)
+	}
+	return rbac.DeniesWithin(policies, scope)
 }
 
 func currentAccessGroupIDs(r *http.Request) []string {
@@ -800,12 +1066,14 @@ func validUsername(username string) bool {
 }
 
 type createServiceAccountRequest struct {
-	Name        string     `json:"name"`
-	Description string     `json:"description"`
-	GroupIDs    []string   `json:"group_ids"`
-	Enabled     *bool      `json:"enabled"`
-	TokenName   string     `json:"token_name"`
-	ExpiresAt   *time.Time `json:"expires_at"`
+	Kind        string             `json:"kind"`
+	AgentLimits *store.AgentLimits `json:"agent_limits"`
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	GroupIDs    []string           `json:"group_ids"`
+	Enabled     *bool              `json:"enabled"`
+	TokenName   string             `json:"token_name"`
+	ExpiresAt   *time.Time         `json:"expires_at"`
 }
 
 type updateServiceAccountRequest struct {
@@ -815,9 +1083,10 @@ type updateServiceAccountRequest struct {
 }
 
 type createServiceAccountTokenRequest struct {
-	Name           string     `json:"name"`
-	ExpiresAt      *time.Time `json:"expires_at"`
-	RevokeExisting bool       `json:"revoke_existing"`
+	AgentLimits    *store.AgentLimits `json:"agent_limits"`
+	Name           string             `json:"name"`
+	ExpiresAt      *time.Time         `json:"expires_at"`
+	RevokeExisting bool               `json:"revoke_existing"`
 }
 
 func (s *Server) listServiceAccounts(w http.ResponseWriter, r *http.Request) {
@@ -845,6 +1114,31 @@ func (s *Server) createServiceAccount(w http.ResponseWriter, r *http.Request) {
 	input.Name = strings.TrimSpace(input.Name)
 	input.Description = strings.TrimSpace(input.Description)
 	input.TokenName = strings.TrimSpace(input.TokenName)
+	input.Kind = strings.ToLower(strings.TrimSpace(input.Kind))
+	if input.Kind == "" {
+		input.Kind = "automation"
+	}
+	if input.Kind != "automation" && input.Kind != "agent" || input.Kind == "automation" && input.AgentLimits != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_service_account", "Tipo ou limites da conta são inválidos.")
+		return
+	}
+	now := time.Now().UTC()
+	if input.Kind == "agent" {
+		if input.ExpiresAt == nil {
+			expiry := now.Add(30 * 24 * time.Hour)
+			input.ExpiresAt = &expiry
+		}
+		limits, err := normalizeAgentLimits(input.AgentLimits)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_agent_settings", "Limites ou redes permitidas são inválidos.")
+			return
+		}
+		if !validAgentExpiry(input.ExpiresAt, now) {
+			writeError(w, r, http.StatusBadRequest, "invalid_agent_settings", agentExpiryError())
+			return
+		}
+		input.AgentLimits = &limits
+	}
 	if input.TokenName == "" {
 		input.TokenName = "initial"
 	}
@@ -858,7 +1152,6 @@ func (s *Server) createServiceAccount(w http.ResponseWriter, r *http.Request) {
 	if input.Enabled != nil {
 		enabled = *input.Enabled
 	}
-	now := time.Now().UTC()
 	input.GroupIDs = uniqueNonEmpty(input.GroupIDs)
 	if len(input.GroupIDs) == 0 || len(input.GroupIDs) > 100 {
 		s.audit(r, "create", resource, "denied")
@@ -874,7 +1167,7 @@ func (s *Server) createServiceAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	account := store.ServiceAccount{
-		ID: randomID("svc"), Name: input.Name, Description: input.Description, Enabled: enabled,
+		ID: randomID("svc"), Name: input.Name, Description: input.Description, Enabled: enabled, Kind: input.Kind,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.store.CreateServiceAccount(r.Context(), account); err != nil {
@@ -899,7 +1192,7 @@ func (s *Server) createServiceAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	token := store.ServiceAccountToken{
 		ID: randomID("sat"), ServiceAccountID: account.ID, Name: input.TokenName,
-		TokenHash: digest, ExpiresAt: input.ExpiresAt, CreatedAt: now,
+		TokenHash: digest, ExpiresAt: input.ExpiresAt, CreatedAt: now, AgentLimits: input.AgentLimits,
 	}
 	if err := s.store.CreateServiceAccountToken(r.Context(), token, false); err != nil {
 		_ = s.store.DeleteServiceAccount(r.Context(), account.ID)
@@ -912,6 +1205,7 @@ func (s *Server) createServiceAccount(w http.ResponseWriter, r *http.Request) {
 		"credential": map[string]any{
 			"token_id": token.ID, "name": token.Name, "token": plain,
 			"expires_at": token.ExpiresAt, "created_at": token.CreatedAt,
+			"agent_limits": token.AgentLimits,
 		},
 	})
 }
@@ -951,7 +1245,13 @@ func (s *Server) updateServiceAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	account.UpdatedAt = time.Now().UTC()
-	if err := s.store.UpdateServiceAccount(r.Context(), account); err != nil {
+	s.agentMu.Lock()
+	err = s.store.UpdateServiceAccount(r.Context(), account)
+	if err == nil && !account.Enabled {
+		s.cancelAgentLocked(account.ID, "")
+	}
+	s.agentMu.Unlock()
+	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			s.audit(r, "update", resource, "denied")
 			writeError(w, r, http.StatusConflict, "service_account_conflict", "Já existe uma conta de serviço com esse nome.")
@@ -970,7 +1270,13 @@ func (s *Server) deleteServiceAccount(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r, "delete", resource) {
 		return
 	}
-	if err := s.store.DeleteServiceAccount(r.Context(), id); err != nil {
+	s.agentMu.Lock()
+	err := s.store.DeleteServiceAccount(r.Context(), id)
+	if err == nil {
+		s.cancelAgentLocked(id, "")
+	}
+	s.agentMu.Unlock()
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "service_account_not_found", "Conta de serviço não encontrada.")
 			return
@@ -1011,6 +1317,35 @@ func (s *Server) createServiceAccountToken(w http.ResponseWriter, r *http.Reques
 		s.audit(r, "create", resource, "denied")
 		return
 	}
+	account, err := s.store.GetServiceAccount(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, r, http.StatusNotFound, "service_account_not_found", "Conta de serviço não encontrada.")
+		return
+	}
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	now := time.Now().UTC()
+	if account.Kind == "agent" {
+		if input.ExpiresAt == nil {
+			expiry := now.Add(30 * 24 * time.Hour)
+			input.ExpiresAt = &expiry
+		}
+		limits, err := normalizeAgentLimits(input.AgentLimits)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_agent_settings", "Limites ou redes permitidas são inválidos.")
+			return
+		}
+		if !validAgentExpiry(input.ExpiresAt, now) {
+			writeError(w, r, http.StatusBadRequest, "invalid_agent_settings", agentExpiryError())
+			return
+		}
+		input.AgentLimits = &limits
+	} else if input.AgentLimits != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_agent_settings", "Limites de agente exigem uma conta de agente.")
+		return
+	}
 	input.Name = strings.TrimSpace(input.Name)
 	if input.Name == "" {
 		input.Name = "rotated"
@@ -1025,12 +1360,17 @@ func (s *Server) createServiceAccountToken(w http.ResponseWriter, r *http.Reques
 		s.fail(w, r, err)
 		return
 	}
-	now := time.Now().UTC()
 	token := store.ServiceAccountToken{
 		ID: randomID("sat"), ServiceAccountID: id, Name: input.Name, TokenHash: digest,
-		ExpiresAt: input.ExpiresAt, CreatedAt: now,
+		ExpiresAt: input.ExpiresAt, CreatedAt: now, AgentLimits: input.AgentLimits,
 	}
-	if err := s.store.CreateServiceAccountToken(r.Context(), token, input.RevokeExisting); err != nil {
+	s.agentMu.Lock()
+	err = s.store.CreateServiceAccountToken(r.Context(), token, input.RevokeExisting)
+	if err == nil && input.RevokeExisting {
+		s.cancelAgentLocked(id, "")
+	}
+	s.agentMu.Unlock()
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "service_account_not_found", "Conta de serviço não encontrada.")
 			return
@@ -1042,6 +1382,7 @@ func (s *Server) createServiceAccountToken(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"token_id": token.ID, "name": token.Name, "token": plain,
 		"expires_at": token.ExpiresAt, "created_at": token.CreatedAt,
+		"agent_limits": token.AgentLimits,
 	})
 }
 
@@ -1052,7 +1393,13 @@ func (s *Server) revokeServiceAccountToken(w http.ResponseWriter, r *http.Reques
 	if !s.requireAdmin(w, r, "delete", resource) {
 		return
 	}
-	if err := s.store.RevokeServiceAccountToken(r.Context(), accountID, tokenID); err != nil {
+	s.agentMu.Lock()
+	err := s.store.RevokeServiceAccountToken(r.Context(), accountID, tokenID)
+	if err == nil {
+		s.cancelAgentLocked(accountID, tokenID)
+	}
+	s.agentMu.Unlock()
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "service_token_not_found", "Credencial ativa não encontrada.")
 			return
@@ -1190,7 +1537,13 @@ func (s *Server) updateAccessGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	group.UpdatedAt = time.Now().UTC()
-	if err := s.store.UpdateAccessGroup(r.Context(), group); err != nil {
+	s.agentMu.Lock()
+	err = s.store.UpdateAccessGroup(r.Context(), group)
+	if err == nil {
+		s.cancelAgentLocked("", "")
+	}
+	s.agentMu.Unlock()
+	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(w, r, http.StatusConflict, "access_group_conflict", "Já existe um grupo com esse nome.")
 			return
@@ -1208,7 +1561,13 @@ func (s *Server) deleteAccessGroup(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r, "delete", resource) {
 		return
 	}
-	if err := s.store.DeleteAccessGroup(r.Context(), id); err != nil {
+	s.agentMu.Lock()
+	err := s.store.DeleteAccessGroup(r.Context(), id)
+	if err == nil {
+		s.cancelAgentLocked("", "")
+	}
+	s.agentMu.Unlock()
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "access_group_not_found", "Grupo de acesso não encontrado.")
 			return
@@ -1288,11 +1647,16 @@ func (s *Server) assignAccessGroupIDs(w http.ResponseWriter, r *http.Request, ki
 	}
 	input.IDs = uniqueNonEmpty(input.IDs)
 	var err error
+	s.agentMu.Lock()
 	if kind == "nodes" {
 		err = s.store.SetAccessGroupNodes(r.Context(), id, input.IDs)
 	} else {
 		err = s.store.SetAccessGroupPolicies(r.Context(), id, input.IDs)
 	}
+	if err == nil {
+		s.cancelAgentLocked("", "")
+	}
+	s.agentMu.Unlock()
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "assignment_target_not_found", "Grupo, node ou policy não encontrado.")
@@ -1351,7 +1715,7 @@ func (s *Server) createPolicy(w http.ResponseWriter, r *http.Request) {
 		s.audit(r, "create", resource, "denied")
 		return
 	}
-	if !normalizePolicyRequest(&input) {
+	if !normalizePolicyRequest(&input, s.config.TypedPolicies, s.config.Approvals) {
 		s.audit(r, "create", resource, "denied")
 		writeError(w, r, http.StatusBadRequest, "invalid_policy", "Nome, descrição, paths ou capabilities da policy são inválidos.")
 		return
@@ -1389,12 +1753,22 @@ func (s *Server) updatePolicy(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	for _, rule := range current.Rules {
+		if rule.FileTypes != nil && !s.config.TypedPolicies {
+			writeError(w, r, http.StatusConflict, "file_type_policy_unavailable", "A edição desta policy exige a integração completa das restrições de tipo.")
+			return
+		}
+		if len(rule.NeedsApproval) > 0 && !s.config.Approvals {
+			writeError(w, r, http.StatusConflict, "approval_policy_unavailable", "A edição desta policy exige as aprovações humanas habilitadas, ou as marcas de aprovação seriam perdidas.")
+			return
+		}
+	}
 	var input policyRequest
 	if !decodeJSON(w, r, &input) {
 		s.audit(r, "update", resource, "denied")
 		return
 	}
-	if !normalizePolicyRequest(&input) {
+	if !normalizePolicyRequest(&input, s.config.TypedPolicies, s.config.Approvals) {
 		s.audit(r, "update", resource, "denied")
 		writeError(w, r, http.StatusBadRequest, "invalid_policy", "Nome, descrição, paths ou capabilities da policy são inválidos.")
 		return
@@ -1403,7 +1777,13 @@ func (s *Server) updatePolicy(w http.ResponseWriter, r *http.Request) {
 	current.Description = input.Description
 	current.Rules = input.Rules
 	current.UpdatedAt = time.Now().UTC()
-	if err := s.store.UpdatePolicy(r.Context(), current); err != nil {
+	s.agentMu.Lock()
+	err = s.store.UpdatePolicy(r.Context(), current)
+	if err == nil {
+		s.cancelAgentLocked("", "")
+	}
+	s.agentMu.Unlock()
+	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			s.audit(r, "update", resource, "denied")
 			writeError(w, r, http.StatusConflict, "policy_conflict", "Já existe uma policy com esse nome.")
@@ -1422,7 +1802,13 @@ func (s *Server) deletePolicy(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r, "delete", resource) {
 		return
 	}
-	if err := s.store.DeletePolicy(r.Context(), id); err != nil {
+	s.agentMu.Lock()
+	err := s.store.DeletePolicy(r.Context(), id)
+	if err == nil {
+		s.cancelAgentLocked("", "")
+	}
+	s.agentMu.Unlock()
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "policy_not_found", "Policy não encontrada.")
 			return
@@ -1659,7 +2045,13 @@ func (s *Server) assignServiceAccountGroups(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
-	if err := s.store.SetServiceAccountGroups(r.Context(), id, input.IDs); err != nil {
+	s.agentMu.Lock()
+	err := s.store.SetServiceAccountGroups(r.Context(), id, input.IDs)
+	if err == nil {
+		s.cancelAgentLocked(id, "")
+	}
+	s.agentMu.Unlock()
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "assignment_target_not_found", "API key ou grupo não encontrado.")
 			return
@@ -1710,7 +2102,13 @@ func (s *Server) assignSubjectPolicies(w http.ResponseWriter, r *http.Request, s
 			return
 		}
 	}
-	if err := s.store.SetSubjectPolicies(r.Context(), subjectType, subjectID, input.PolicyIDs); err != nil {
+	s.agentMu.Lock()
+	err := s.store.SetSubjectPolicies(r.Context(), subjectType, subjectID, input.PolicyIDs)
+	if err == nil && subjectType == "service_account" {
+		s.cancelAgentLocked(subjectID, "")
+	}
+	s.agentMu.Unlock()
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			s.audit(r, "update", resource, "denied")
 			writeError(w, r, http.StatusNotFound, "assignment_target_not_found", "Usuário, conta de serviço ou policy não encontrado.")
@@ -1739,7 +2137,10 @@ func subjectPolicyResource(subjectType, subjectID string) string {
 	return "control-tower/service-accounts/" + subjectID + "/policies"
 }
 
-func normalizePolicyRequest(input *policyRequest) bool {
+// normalizePolicyRequest validates a policy. Typed rules (file types and
+// visibility) are accepted only when typed policies are enabled, which means
+// every operation that reaches a file enforces them.
+func normalizePolicyRequest(input *policyRequest, typedPolicies, approvals bool) bool {
 	input.Name = strings.TrimSpace(input.Name)
 	input.Description = strings.TrimSpace(input.Description)
 	if !validServiceAccountName(input.Name) || len(input.Description) > 512 || len(input.Rules) == 0 || len(input.Rules) > 100 {
@@ -1747,6 +2148,18 @@ func normalizePolicyRequest(input *policyRequest) bool {
 	}
 	for index := range input.Rules {
 		rule := &input.Rules[index]
+		typed := rule.FileTypes != nil
+		if (typed || rule.Visibility != "") && !typedPolicies {
+			return false
+		}
+		if rule.Visibility != "" && (!typed || rule.Visibility != "hidden" && rule.Visibility != "visible") {
+			return false
+		}
+		if typed {
+			if _, err := rule.FileTypes.Compile(); err != nil {
+				return false
+			}
+		}
 		rule.Path = rbac.NormalizePath(rule.Path)
 		if !rbac.ValidPath(rule.Path) || len(rule.Capabilities) == 0 || len(rule.Capabilities) > 9 {
 			return false
@@ -1761,10 +2174,23 @@ func normalizePolicyRequest(input *policyRequest) bool {
 			seen[capability] = true
 			normalized = append(normalized, capability)
 		}
-		if seen["deny"] && len(normalized) != 1 {
+		// A path denial stands alone. A typed denial names the capabilities it
+		// takes away from the files it matches.
+		if seen["deny"] && !typed && len(normalized) != 1 {
 			return false
 		}
 		rule.Capabilities = normalized
+		if len(rule.NeedsApproval) > 0 {
+			if !approvals {
+				return false
+			}
+			for position, value := range rule.NeedsApproval {
+				rule.NeedsApproval[position] = strings.ToLower(strings.TrimSpace(value))
+			}
+			if !rbac.ValidNeedsApproval(*rule) {
+				return false
+			}
+		}
 	}
 	return true
 }
@@ -2283,6 +2709,7 @@ type connectionRequest struct {
 }
 
 type nodeMetadata struct {
+	Capabilities  []string                 `json:"capabilities"`
 	Configuration *store.NodeConfiguration `json:"configuration,omitempty"`
 	NodeID        string                   `json:"node_id"`
 	Name          string                   `json:"name"`
@@ -2689,6 +3116,9 @@ func (s *Server) rejectConnection(w http.ResponseWriter, r *http.Request) {
 // restored so the proxy can still forward it; everything else uses ?path=.
 func fileTargetsFromRequest(r *http.Request) (fileTargets, error) {
 	targets := fileTargets{}
+	if r.Method == http.MethodPut {
+		targets.Overwrite, _ = strconv.ParseBool(r.URL.Query().Get("overwrite"))
+	}
 	base := strings.TrimSpace(r.URL.Query().Get("path"))
 	if base != "" {
 		targets.Paths = append(targets.Paths, base)
@@ -2716,6 +3146,7 @@ func fileTargetsFromRequest(r *http.Request) (fileTargets, error) {
 		SourcePath      string `json:"source_path"`
 		DestinationPath string `json:"destination_path"`
 		ConflictPolicy  string `json:"conflict_policy"`
+		Overwrite       bool   `json:"overwrite"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return targets, errors.New("invalid file operation body")
@@ -2723,9 +3154,17 @@ func fileTargetsFromRequest(r *http.Request) (fileTargets, error) {
 	if strings.TrimSpace(payload.Path) != "" {
 		targets.Paths = append(targets.Paths, payload.Path)
 	}
+	targets.Overwrite = payload.Overwrite
 	targets.Source = payload.SourcePath
 	targets.Destination = payload.DestinationPath
 	targets.ConflictPolicy = strings.ToLower(strings.TrimSpace(payload.ConflictPolicy))
+	if targets.ConflictPolicy == "" && payload.Overwrite {
+		targets.ConflictPolicy = "overwrite"
+	}
+	// Local move uses overwrite directly, independent of conflict_policy.
+	if payload.Overwrite && strings.HasSuffix(r.URL.Path, "/move") {
+		targets.ConflictPolicy = "overwrite"
+	}
 	return targets, nil
 }
 
@@ -2755,7 +3194,7 @@ func (s *Server) deniesWithinScope(r *http.Request, scope string) (bool, error) 
 	if err != nil {
 		return false, err
 	}
-	return rbac.DeniesWithin(rbac.ExpandCompatibilityRules(policies), scope), nil
+	return s.deniesBeyondFilter(rbac.ExpandCompatibilityRules(policies), scope), nil
 }
 
 // isMountFileResource reports whether resource addresses files inside a mount,
@@ -2767,6 +3206,33 @@ func isMountFileResource(resource string) bool {
 
 func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 	resource := strings.TrimPrefix(r.PathValue("resource"), "/")
+	// The node trusts the subject in a destructive plan request because the
+	// Control Tower authenticated it. These resources are reachable only through
+	// the dedicated routes, never through the pass-through proxy.
+	if strings.Contains(resource, "destructive-plans") || strings.Contains(resource, "signed-pull") {
+		writeError(w, r, http.StatusNotFound, "resource_not_found", "Recurso do node não permitido.")
+		return
+	}
+	if kind, trashID, known, ok := trashRoute(resource, r.Method); known {
+		if !ok {
+			writeError(w, r, http.StatusNotFound, "resource_not_found", "Recurso do node não permitido.")
+			return
+		}
+		s.proxyTrash(w, r, resource, kind, trashID)
+		return
+	}
+	if s.config.TypedPolicies && s.nodeEnforces(resource, r.Method) {
+		r = markNodeFiltered(r)
+	}
+	// Direct pulls run unsigned, with no renewed authorization and no per-policy
+	// filtering. With signed local jobs enabled, copies go through the logical
+	// transfer, which the destination node plans and runs under a lease.
+	if s.config.SignedLocalJobs && r.Method == http.MethodPost && strings.HasPrefix(resource, "transfers/pull") && !strings.HasSuffix(resource, "/plan") {
+		writeError(w, r, http.StatusConflict, "use_logical_transfer", "Com jobs assinados ativos, use a transferência lógica (POST /api/v1/nodes/{nodeID}/transfers) em vez do pull direto.")
+		return
+	}
+	r, collector := s.withApprovalCollector(r, resource)
+	r, tracker := withDecisionTracker(r)
 	targets := fileTargets{}
 	if isMountFileResource(resource) {
 		parsed, err := fileTargetsFromRequest(r)
@@ -2825,6 +3291,14 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 		transfer.DestinationIsDirectory = strings.Contains(resource, "directory") || strings.Contains(resource, "batch")
 		mountRequirements, err := s.transferMountRequirements(r.Context(), r.PathValue("nodeID"), transfer)
 		if err != nil {
+			if errors.Is(err, errTransferNodeUpgradeRequired) {
+				writeError(w, r, http.StatusConflict, "node_upgrade_required", "Atualize os nodes para usar exclusões nesta transferência.")
+				return
+			}
+			if errors.Is(err, errTransferNodeUnavailable) {
+				writeError(w, r, http.StatusBadGateway, "node_unavailable", "Não foi possível verificar as capacidades dos nodes da transferência.")
+				return
+			}
 			writeError(w, r, http.StatusBadRequest, "invalid_transfer_grants",
 				"Não foi possível validar os grants e mounts exatos desta transferência.")
 			return
@@ -2839,6 +3313,16 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if collector != nil && len(collector.requirements) > 0 {
+		s.keepForApproval(w, r, resource, targets, collector)
+		return
+	}
+	// Access that rests only on a temporary grant ends with it, mid-stream too.
+	if deadline, bounded := s.temporaryAccessDeadline(r, tracker); bounded {
+		limited, cancel := context.WithDeadline(r.Context(), deadline)
+		defer cancel()
+		r = r.WithContext(limited)
+	}
 	node, err := s.store.GetNode(r.Context(), r.PathValue("nodeID"))
 	if err != nil {
 		writeError(w, r, http.StatusNotFound, "node_not_found", "Node não encontrado.")
@@ -2847,6 +3331,106 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 	if !allowedNodeResource(resource) {
 		writeError(w, r, http.StatusNotFound, "resource_not_found", "Recurso do node não permitido.")
 		return
+	}
+	if refuseRestrictedAgentArchive(w, r, resource) {
+		return
+	}
+	if s.config.SignedLocalJobs && r.Context().Value(agentKey) == nil && s.refuseUnplannedTreeOperation(w, r, node, resource, targets) {
+		return
+	}
+	if mountID, ok := signedLocalCopyMount(resource); ok && s.config.SignedLocalJobs && r.Method == http.MethodPost && r.Context().Value(agentKey) == nil {
+		s.createSignedLocalCopyFromRequest(w, r, node, mountID)
+		return
+	}
+	agentScan := r.Context().Value(agentKey) != nil && (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+		(agentFileResource(resource, "content") || agentFileResource(resource, "archive"))
+	if agentScan {
+		var info struct {
+			NodeID       string   `json:"node_id"`
+			Capabilities []string `json:"capabilities"`
+		}
+		headers := http.Header{"X-Jolt-Capability-Check": []string{"agent-secret-scan"}}
+		if err := s.callNodeJSONWithHeaders(r.Context(), node, http.MethodGet, "/api/v1/node", nil, &info, r.Header.Get("X-Correlation-ID"), headers); err != nil {
+			writeError(w, r, http.StatusBadGateway, "node_unavailable", "Não foi possível verificar a proteção de leitura no node.")
+			return
+		}
+		found := false
+		for _, capability := range info.Capabilities {
+			if capability == "agent_secret_scan_v1" {
+				found = true
+				break
+			}
+		}
+		if info.NodeID != node.ID || !found {
+			writeError(w, r, http.StatusConflict, "node_upgrade_required", "Atualize o node para habilitar leituras protegidas para agentes.")
+			return
+		}
+	}
+	if jobActionNeedsRevalidation(resource, r.Method) && !s.revalidateJobAction(w, r, node, resource) {
+		return
+	}
+	agentSearch := r.Context().Value(agentKey) != nil && r.Method == http.MethodGet &&
+		strings.HasSuffix(resource, "/files/search") && isMountFileResource(resource)
+	if agentSearch {
+		var info struct {
+			NodeID       string   `json:"node_id"`
+			Capabilities []string `json:"capabilities"`
+		}
+		if err := s.callNodeJSON(r.Context(), node, http.MethodGet, "/api/v1/node", nil, &info, r.Header.Get("X-Correlation-ID")); err != nil {
+			writeError(w, r, http.StatusBadGateway, "node_unavailable", "Não foi possível verificar os limites de busca no node.")
+			return
+		}
+		supported := info.NodeID == node.ID
+		found := false
+		for _, capability := range info.Capabilities {
+			if capability == "agent_search_limits_v1" {
+				found = true
+				break
+			}
+		}
+		if !supported || !found {
+			writeError(w, r, http.StatusConflict, "node_upgrade_required", "Atualize o node para habilitar buscas limitadas para agentes.")
+			return
+		}
+	}
+	signedToken := ""
+	readOperation := signedReadOperation(resource, r.Method)
+	uploadOperation, uploadSessionID := signedUploadOperation(resource, r.Method)
+	if (s.config.SignedLocalReads && readOperation != "") || (s.config.SignedUploads && uploadOperation != "") {
+		var deadline time.Time
+		var ok bool
+		if uploadOperation != "" {
+			signedToken, deadline, ok = s.prepareSignedProxyUpload(w, r, node, resource, uploadOperation, uploadSessionID, targets)
+		} else {
+			signedToken, deadline, ok = s.prepareSignedProxyRead(w, r, node, resource, readOperation)
+		}
+		if !ok {
+			return
+		}
+		controller := http.NewResponseController(w)
+		if err := controller.SetWriteDeadline(deadline); err != nil {
+			writeError(w, r, http.StatusServiceUnavailable, "signed_authorization_unavailable", "Não foi possível limitar o prazo desta leitura.")
+			return
+		}
+		if (uploadOperation == "upload_chunk" || uploadOperation == "upload_simple") && controller.SetReadDeadline(deadline) != nil {
+			_ = controller.SetWriteDeadline(time.Time{})
+			writeError(w, r, http.StatusServiceUnavailable, "signed_authorization_unavailable", "Não foi possível limitar o prazo do envio.")
+			return
+		}
+		ctx, cancel := context.WithDeadline(r.Context(), deadline)
+		defer func() {
+			expired := ctx.Err() != nil || !time.Now().Before(deadline)
+			cancel()
+			if expired {
+				panic(http.ErrAbortHandler)
+			}
+			_ = controller.SetWriteDeadline(time.Time{})
+			if uploadOperation == "upload_chunk" || uploadOperation == "upload_simple" {
+				_ = controller.SetReadDeadline(time.Time{})
+			}
+		}()
+		r = r.WithContext(ctx)
+		w = &signedProxyWriter{ResponseWriter: w, ctx: ctx}
 	}
 	token, err := security.Decrypt(s.config.EncryptionKey, node.TokenEncrypted)
 	if err != nil {
@@ -2864,6 +3448,16 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("X-Correlation-ID", r.Header.Get("X-Correlation-ID"))
+	request.Header.Set("X-Jolt-Internal-Canary", "1")
+	if signedToken != "" {
+		request.Header.Set(signedAuthorizationHeader, signedToken)
+	}
+	if agentSearch {
+		request.Header.Set("X-Jolt-Agent-Search", "1")
+	}
+	if agentScan {
+		request.Header.Set("X-Jolt-Scan", "secrets")
+	}
 	request.Header.Set("Content-Type", r.Header.Get("Content-Type"))
 	for _, header := range []string{"Range", "If-Range", "If-Modified-Since", "If-None-Match",
 		// Content-Range carries the offset of a resumable upload chunk.
@@ -2887,6 +3481,44 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer response.Body.Close()
+	if signedToken != "" && response.Header.Get("X-Jolt-Access-Applied") != "v1" {
+		writeError(w, r, http.StatusConflict, "node_upgrade_required", "O node não confirmou a aplicação da autorização. Atualize o node e confira as chaves.")
+		return
+	}
+	if agentScan && response.Header.Get("X-Jolt-Scan-Applied") != "secrets" {
+		writeError(w, r, http.StatusConflict, "node_upgrade_required", "O node não confirmou a varredura de segredos. Atualize o node.")
+		return
+	}
+	if agentScan && response.StatusCode == http.StatusForbidden {
+		switch kind := response.Header.Get("X-Jolt-Secret-Kind"); kind {
+		case "private_key", "aws_access_key", "github_token", "jwt", "credential_assignment":
+			s.audit(r, "secret_detected", "secret_scan/"+kind, "denied")
+		}
+	}
+	if agentSearch && response.Header.Get("X-Jolt-Agent-Search-Applied") != "1" {
+		writeError(w, r, http.StatusConflict, "node_upgrade_required", "O node não confirmou os limites de busca para agentes. Atualize o node.")
+		return
+	}
+	if response.Header.Get("X-Jolt-Canary") == "1" {
+		s.auditCanary(r, currentUser(r).ID, currentActorType(r), "nodes/"+node.ID+"/"+resource, response.StatusCode)
+	}
+	if !authorizeAgentResponseMedia(w, r, resource, response) {
+		return
+	}
+	if agent, ok := r.Context().Value(agentKey).(agentContext); ok && response.ContentLength >= 0 {
+		if response.ContentLength > agent.limits.MaxResponseBytes {
+			writeError(w, r, http.StatusRequestEntityTooLarge, "read_too_large", "A resposta excede o limite de leitura do agente.")
+			return
+		}
+		if response.ContentLength > agent.budget {
+			w.Header().Set("Retry-After", secondsUntilNextUTCDay(time.Now()))
+			writeError(w, r, http.StatusTooManyRequests, "agent_daily_quota", "A resposta excede a cota diária restante.")
+			return
+		}
+	}
+	if agent, ok := r.Context().Value(agentKey).(agentContext); ok && !decorateAgentListingResponse(w, r, response, agentListingKey(resource, r.Method), agent) {
+		return
+	}
 	for _, header := range []string{"Content-Type", "Content-Length", "Content-Disposition",
 		"Accept-Ranges", "Content-Range", "Cache-Control", "X-Accel-Buffering",
 		// Resumable uploads and archives report their state in these headers.
@@ -2901,10 +3533,14 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", "inline")
 	}
 	w.WriteHeader(response.StatusCode)
+	var copyErr error
 	if strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
-		_, _ = io.Copy(flushingWriter{writer: w}, response.Body)
+		_, copyErr = io.Copy(flushingWriter{writer: w}, response.Body)
 	} else {
-		_, _ = io.Copy(w, response.Body)
+		_, copyErr = io.Copy(w, response.Body)
+	}
+	if signedToken != "" && copyErr != nil {
+		panic(http.ErrAbortHandler)
 	}
 	action := strings.ToLower(r.Method)
 	result := resultForStatus(response.StatusCode)
@@ -2933,6 +3569,11 @@ type transferAuthorizationInput struct {
 	Operation              string   `json:"operation"`
 }
 
+var (
+	errTransferNodeUpgradeRequired = errors.New("transfer node lacks grant exclusion support")
+	errTransferNodeUnavailable     = errors.New("transfer node capabilities unavailable")
+)
+
 type nodeTransferGrant struct {
 	ConfiguredEnabled bool     `json:"configured_enabled"`
 	InactiveReason    string   `json:"inactive_reason,omitempty"`
@@ -2943,6 +3584,7 @@ type nodeTransferGrant struct {
 	Direction         string   `json:"direction"`
 	Enabled           bool     `json:"enabled"`
 	ConflictPolicies  []string `json:"conflict_policies"`
+	Exclude           []string `json:"exclude"`
 	Permissions       struct {
 		Read   bool `json:"read"`
 		Write  bool `json:"write"`
@@ -2970,6 +3612,12 @@ type logicalTransferRequest struct {
 	BandwidthLimit    int64  `json:"bandwidth_limit_bytes_per_second"`
 	MaxParallelFiles  int    `json:"max_parallel_files"`
 	MaxParallelChunks int    `json:"max_parallel_chunks"`
+	// MovePlan is the one-use confirmation a move must present when it is
+	// created, returned when the move was previewed.
+	MovePlan *struct {
+		ID    string `json:"plan_id"`
+		Token string `json:"token"`
+	} `json:"move_plan,omitempty"`
 }
 
 type transferTargetsRequest struct {
@@ -3058,6 +3706,9 @@ func (s *Server) transferTargets(w http.ResponseWriter, r *http.Request) {
 		if operation == "move" && !s.authorizeFileTree(w, r, scope, "delete") {
 			return
 		}
+		if operation == "move" && !s.authorizeFileTree(w, r, scope, "update") {
+			return
+		}
 	}
 	sourceNode, err := s.store.GetNode(r.Context(), sourceNodeID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -3078,6 +3729,7 @@ func (s *Server) transferTargets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadGateway, "node_unavailable", "Não foi possível consultar a identidade do node de origem.")
 		return
 	}
+	sourceGrants = grantsSupportedByNode(sourceGrants, sourceMetadata.Capabilities, "grant_exclude_send_v1")
 	nodes, err := s.store.ListNodes(r.Context())
 	if err != nil {
 		s.fail(w, r, err)
@@ -3123,6 +3775,9 @@ func (s *Server) transferTargets(w http.ResponseWriter, r *http.Request) {
 		sourceAllowed := hasCompatibleSourceGrant(sourceGrants, destinationMetadata.NodeID, input.SourceMountID, paths, operation)
 		destinationAllowed := false
 		for _, destinationGrant := range destinationGrants {
+			if len(destinationGrant.Exclude) > 0 && !containsString(destinationMetadata.Capabilities, "grant_exclude_receive_v1") {
+				continue
+			}
 			if !destinationGrantAllows(destinationGrant, sourceMetadata.NodeID) ||
 				!s.transferCapabilityAllowed(r, fileScope("nodes/"+candidate.ID+"/files/mounts/"+destinationGrant.MountID, destinationGrant.Path), "create") {
 				continue
@@ -3169,8 +3824,15 @@ func (s *Server) transferTargets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) planLogicalTransfer(w http.ResponseWriter, r *http.Request) {
+	// A preview changes nothing, so a grant that needs approval does not stop
+	// it; the creation is what a person must approve.
+	r, _ = s.armApprovalCollector(r)
 	resolved, ok := s.resolveLogicalTransferRequest(w, r, "create")
 	if !ok {
+		return
+	}
+	if s.config.SignedLocalJobs {
+		s.planSignedLogicalTransfer(w, r, resolved)
 		return
 	}
 	var plan any
@@ -3189,8 +3851,17 @@ func (s *Server) createLogicalTransfer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "idempotency_key_required", "Idempotency-Key é obrigatório para criar a transferência.")
 		return
 	}
+	r, collector := s.armApprovalCollector(r)
 	resolved, ok := s.resolveLogicalTransferRequest(w, r, "execute")
 	if !ok {
+		return
+	}
+	if collector != nil && len(collector.requirements) > 0 {
+		s.keepTransferForApproval(w, r, resolved, collector)
+		return
+	}
+	if s.config.SignedLocalJobs {
+		s.createSignedLogicalTransfer(w, r, resolved)
 		return
 	}
 	payload := resolved.nodeRequest(r.Header.Get("X-Correlation-ID"))
@@ -3242,6 +3913,9 @@ func (s *Server) resolveLogicalTransferRequest(w http.ResponseWriter, r *http.Re
 		writeError(w, r, http.StatusBadRequest, "path_outside_grant", "A pasta de destino precisa ser relativa ao mount autorizado.")
 		return resolvedLogicalTransfer{}, false
 	}
+	if s.config.TypedPolicies && s.config.SignedLocalJobs {
+		r = markNodeFiltered(r) // the destination node plans and runs it under a lease
+	}
 	request.Operation = operation
 	request.Source.Paths = paths
 	request.Destination.Path = destinationPath
@@ -3263,9 +3937,16 @@ func (s *Server) resolveLogicalTransferRequest(w http.ResponseWriter, r *http.Re
 		if operation == "move" && !s.authorizeFileTree(w, r, scope, "delete") {
 			return resolvedLogicalTransfer{}, false
 		}
+		if operation == "move" && !s.authorizeFileTree(w, r, scope, "update") {
+			return resolvedLogicalTransfer{}, false
+		}
 	}
-	if !s.authorizeFileTree(w, r, fileScope(destinationBase, destinationPath), "create") ||
+	destinationScope := fileScope(destinationBase, destinationPath)
+	if !s.authorizeFileTree(w, r, destinationScope, "create") ||
 		!s.authorize(w, r, "nodes/"+destinationNodeID+"/transfers", transferCapability, "permission_denied", "Você não pode executar transferências neste node.") {
+		return resolvedLogicalTransfer{}, false
+	}
+	if transferMayOverwrite(request.ConflictPolicy) && !s.authorizeFileTree(w, r, destinationScope, "update") {
 		return resolvedLogicalTransfer{}, false
 	}
 	sourceNode, err := s.store.GetNode(r.Context(), request.Source.NodeID)
@@ -3294,10 +3975,19 @@ func (s *Server) resolveLogicalTransferRequest(w http.ResponseWriter, r *http.Re
 		s.writeLogicalTransferNodeError(w, r, err)
 		return resolvedLogicalTransfer{}, false
 	}
+	unfilteredSources, unfilteredDestinations := sourceGrants, destinationGrants
+	sourceGrants = grantsSupportedByNode(sourceGrants, sourceMetadata.Capabilities, "grant_exclude_send_v1")
+	destinationGrants = grantsSupportedByNode(destinationGrants, destinationMetadata.Capabilities, "grant_exclude_receive_v1")
 	sourceGrant, destinationGrant, found := selectLogicalTransferGrants(sourceGrants, destinationGrants,
 		sourceMetadata.NodeID, destinationMetadata.NodeID, request.Source.MountID, request.Destination.MountID,
 		paths, destinationPath, operation, request.ConflictPolicy)
 	if !found {
+		if _, _, compatibleWithoutCheck := selectLogicalTransferGrants(unfilteredSources, unfilteredDestinations,
+			sourceMetadata.NodeID, destinationMetadata.NodeID, request.Source.MountID, request.Destination.MountID,
+			paths, destinationPath, operation, request.ConflictPolicy); compatibleWithoutCheck {
+			writeError(w, r, http.StatusConflict, "node_upgrade_required", "Atualize os nodes para usar exclusões nesta transferência.")
+			return resolvedLogicalTransfer{}, false
+		}
 		writeError(w, r, http.StatusUnprocessableEntity, "no_compatible_grant", "Não há um grant compatível para toda a seleção e o destino.")
 		return resolvedLogicalTransfer{}, false
 	}
@@ -3395,21 +4085,67 @@ func validConflictPolicy(policy string) bool {
 	}
 }
 
+func transferMayOverwrite(policy string) bool {
+	return policy == "overwrite" || policy == "checksum" || policy == "ask"
+}
+
 func sourceGrantAllows(grant nodeTransferGrant, destinationNodeID, mountID string, paths []string, operation string) bool {
 	if !grant.Enabled || grant.PeerNodeID != destinationNodeID || grant.MountID != mountID || !grant.Permissions.Read ||
 		(grant.Direction != "send" && grant.Direction != "send_receive") || (operation == "move" && !grant.Permissions.Delete) {
+		return false
+	}
+	if !grantAllowsPath(grant, grant.Path) {
 		return false
 	}
 	for _, sourcePath := range paths {
 		if _, ok := relativeTransferPath(sourcePath, grant.Path); !ok {
 			return false
 		}
+		if !grantAllowsPath(grant, sourcePath) {
+			return false
+		}
 	}
 	return true
 }
 
+func grantAllowsPath(grant nodeTransferGrant, value string) bool {
+	if len(grant.Exclude) > 64 {
+		return false
+	}
+	for _, pattern := range grant.Exclude {
+		if pattern == "" || strings.ContainsAny(pattern, "/\\\x00") {
+			return false
+		}
+		if _, err := path.Match(strings.ToLower(pattern), "test"); err != nil {
+			return false
+		}
+		for _, component := range strings.Split(value, "/") {
+			if component == "" || component == "." {
+				continue
+			}
+			if matched, err := path.Match(strings.ToLower(pattern), strings.ToLower(component)); err != nil || matched {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func grantsSupportedByNode(grants []nodeTransferGrant, capabilities []string, capability string) []nodeTransferGrant {
+	if containsString(capabilities, capability) {
+		return grants
+	}
+	result := make([]nodeTransferGrant, 0, len(grants))
+	for _, grant := range grants {
+		if len(grant.Exclude) == 0 {
+			result = append(result, grant)
+		}
+	}
+	return result
+}
+
 func destinationGrantAllows(grant nodeTransferGrant, sourceNodeID string) bool {
-	return grant.Enabled && grant.PeerNodeID == sourceNodeID && grant.Permissions.Write &&
+	return grant.Enabled && grantAllowsPath(grant, grant.Path) && grant.PeerNodeID == sourceNodeID && grant.Permissions.Write &&
 		(grant.Direction == "receive" || grant.Direction == "send_receive")
 }
 
@@ -3448,7 +4184,7 @@ func selectLogicalTransferGrants(sourceGrants, destinationGrants []nodeTransferG
 			!containsString(candidate.ConflictPolicies, conflictPolicy) {
 			continue
 		}
-		if _, ok := relativeTransferPath(destinationPath, candidate.Path); !ok {
+		if _, ok := relativeTransferPath(destinationPath, candidate.Path); !ok || !grantAllowsPath(candidate, destinationPath) {
 			continue
 		}
 		root, err := normalizeTransferPath(candidate.Path, true)
@@ -3531,8 +4267,12 @@ func transferFromBody(r *http.Request) (transferAuthorizationInput, error) {
 		return transferAuthorizationInput{}, errors.New("invalid transfer identifiers")
 	}
 	payload.Operation = strings.ToLower(strings.TrimSpace(payload.Operation))
+	payload.ConflictPolicy = strings.ToLower(strings.TrimSpace(payload.ConflictPolicy))
 	if payload.Operation != "" && payload.Operation != "copy" && payload.Operation != "move" {
 		return transferAuthorizationInput{}, errors.New("invalid transfer operation")
+	}
+	if payload.ConflictPolicy != "" && !validConflictPolicy(payload.ConflictPolicy) {
+		return transferAuthorizationInput{}, errors.New("invalid conflict policy")
 	}
 	return payload, nil
 }
@@ -3559,6 +4299,25 @@ func (s *Server) transferMountRequirements(ctx context.Context, destinationNodeI
 		!destinationGrant.Permissions.Write {
 		return nil, errors.New("destination grant does not authorize this transfer")
 	}
+	for _, check := range []struct {
+		node       store.Node
+		grant      nodeTransferGrant
+		capability string
+	}{
+		{sourceNode, sourceGrant, "grant_exclude_send_v1"},
+		{destinationNode, destinationGrant, "grant_exclude_receive_v1"},
+	} {
+		if len(check.grant.Exclude) == 0 {
+			continue
+		}
+		metadata, err := s.nodeMetadata(ctx, check.node)
+		if err != nil {
+			return nil, errors.Join(errTransferNodeUnavailable, err)
+		}
+		if !containsString(metadata.Capabilities, check.capability) {
+			return nil, errTransferNodeUpgradeRequired
+		}
+	}
 	sourcePaths := input.SourcePaths
 	if len(sourcePaths) == 0 {
 		sourcePaths = []string{input.SourcePath}
@@ -3569,13 +4328,18 @@ func (s *Server) transferMountRequirements(ctx context.Context, destinationNodeI
 		if err != nil {
 			return nil, err
 		}
-		scope := fileScope("nodes/"+input.PeerNodeID+"/files/mounts/"+sourceGrant.MountID, path.Join(sourceGrant.Path, normalized))
+		sourcePath := path.Join(sourceGrant.Path, normalized)
+		if !grantAllowsPath(sourceGrant, sourcePath) {
+			return nil, errors.New("source is excluded by grant")
+		}
+		scope := fileScope("nodes/"+input.PeerNodeID+"/files/mounts/"+sourceGrant.MountID, sourcePath)
 		if scope == "" {
 			return nil, errors.New("invalid source path")
 		}
 		requirements = append(requirements, authorizationRequirement{Path: scope, Capability: "read"})
 		if input.Operation == "move" {
 			requirements = append(requirements, authorizationRequirement{Path: scope, Capability: "delete"})
+			requirements = append(requirements, authorizationRequirement{Path: scope, Capability: "update"})
 		}
 	}
 	normalized, err := normalizeTransferPath(input.DestinationPath, true)
@@ -3583,7 +4347,10 @@ func (s *Server) transferMountRequirements(ctx context.Context, destinationNodeI
 		return nil, err
 	}
 	destinationPath := path.Join(destinationGrant.Path, normalized)
-	if input.ConflictPolicy == "rename" && !input.DestinationIsDirectory {
+	if !grantAllowsPath(destinationGrant, destinationPath) {
+		return nil, errors.New("destination is excluded by grant")
+	}
+	if (input.ConflictPolicy == "rename" || input.ConflictPolicy == "ask") && !input.DestinationIsDirectory {
 		destinationPath = path.Dir(destinationPath)
 	}
 	scope := fileScope("nodes/"+destinationNodeID+"/files/mounts/"+destinationGrant.MountID, destinationPath)
@@ -3591,6 +4358,9 @@ func (s *Server) transferMountRequirements(ctx context.Context, destinationNodeI
 		return nil, errors.New("invalid destination path")
 	}
 	requirements = append(requirements, authorizationRequirement{Path: scope, Capability: "create"})
+	if transferMayOverwrite(input.ConflictPolicy) {
+		requirements = append(requirements, authorizationRequirement{Path: scope, Capability: "update"})
+	}
 	return requirements, nil
 }
 
@@ -3674,10 +4444,13 @@ func requirementsFor(paths []string, capability string) []authorizationRequireme
 // whole mount. Source and Destination are set for copy and move, where the two
 // sides need different capabilities.
 type fileTargets struct {
-	ConflictPolicy string
-	Paths          []string
-	Source         string
-	Destination    string
+	ConflictPolicy                        string
+	Overwrite                             bool
+	PreviousActorID, PreviousCredentialID string
+	AuthorizationRevision                 uint64
+	Paths                                 []string
+	Source                                string
+	Destination                           string
 }
 
 func (t fileTargets) all() []string {
@@ -3728,6 +4501,9 @@ func nodeAuthorizationRequirements(nodeID, resource, method string, targets file
 			switch method {
 			case http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodDelete:
 				requirements := requirementsFor(scopes, "create")
+				if targets.Overwrite && (method == http.MethodPost || method == http.MethodPatch) {
+					requirements = append(requirements, requirementsFor(scopes, "update")...)
+				}
 				if method == http.MethodPatch || method == http.MethodPost && len(segments) == 4 {
 					requirements = append(requirements, authorizationRequirement{Path: prefix + "/jobs", Capability: "create"})
 				}
@@ -3740,7 +4516,7 @@ func nodeAuthorizationRequirements(nodeID, resource, method string, targets file
 		destination := fileScope(mountBase, targets.Destination)
 		// A rename conflict can publish a sibling of the requested name. Require
 		// authorization for that parent rather than authorizing only the old name.
-		if targets.ConflictPolicy == "rename" && len(segments) >= 4 && segments[3] == "copy" {
+		if (targets.ConflictPolicy == "rename" || targets.ConflictPolicy == "ask") && len(segments) >= 4 && segments[3] == "copy" {
 			destination = fileScope(mountBase, path.Dir(targets.Destination))
 		}
 
@@ -3752,32 +4528,49 @@ func nodeAuthorizationRequirements(nodeID, resource, method string, targets file
 			}
 			return requirementsFor(scopes, "list")
 		case http.MethodPut:
-			return requirementsFor(scopes, "create")
+			requirements := requirementsFor(scopes, "create")
+			if targets.Overwrite {
+				requirements = append(requirements, requirementsFor(scopes, "update")...)
+			}
+			return requirements
 		case http.MethodDelete:
 			return requirementsFor(scopes, "delete")
 		case http.MethodPost:
-			// Copy and move keep their historical capabilities, now evaluated
-			// on each side's own subtree: reading the source and writing the
-			// destination are separate grants once policies can name subpaths.
+			// Overwrite, checksum and interactive conflict handling can replace
+			// existing destination entries and therefore also require update.
+			mayOverwrite := targets.ConflictPolicy == "overwrite" || targets.ConflictPolicy == "checksum" || targets.ConflictPolicy == "ask"
 			if len(segments) >= 5 && segments[3] == "copy" && segments[4] == "plan" {
-				return []authorizationRequirement{
+				requirements := []authorizationRequirement{
 					{Path: source, Capability: "read"},
 					{Path: destination, Capability: "create"},
 				}
+				if mayOverwrite {
+					requirements = append(requirements, authorizationRequirement{Path: destination, Capability: "update"})
+				}
+				return requirements
 			}
 			if len(segments) >= 4 && segments[3] == "copy" {
-				return []authorizationRequirement{
+				requirements := []authorizationRequirement{
 					{Path: source, Capability: "read"},
 					{Path: destination, Capability: "create"},
 					{Path: prefix + "/jobs", Capability: "create"},
 				}
+				if mayOverwrite {
+					requirements = append(requirements, authorizationRequirement{Path: destination, Capability: "update"})
+				}
+				return requirements
 			}
 			if len(segments) >= 4 && segments[3] == "move" {
-				return []authorizationRequirement{
+				requirements := []authorizationRequirement{
+					{Path: source, Capability: "read"},
 					{Path: source, Capability: "update"},
-					{Path: destination, Capability: "update"},
+					{Path: destination, Capability: "create"},
 					{Path: prefix + "/jobs", Capability: "create"},
 				}
+				if mayOverwrite {
+					requirements = append(requirements, authorizationRequirement{Path: destination, Capability: "update"})
+				}
+				return requirements
 			}
 			return append(requirementsFor(scopes, "create"),
 				authorizationRequirement{Path: prefix + "/jobs", Capability: "create"})
@@ -4096,4 +4889,60 @@ func randomID(prefix string) string {
 	value := make([]byte, 12)
 	_, _ = rand.Read(value)
 	return prefix + "_" + hex.EncodeToString(value)
+}
+
+type decisionTrackerKey struct{}
+
+// decisionTracker remembers the grants a request relied on.
+type decisionTracker struct{ decisions []rbac.Decision }
+
+func withDecisionTracker(r *http.Request) (*http.Request, *decisionTracker) {
+	tracker := &decisionTracker{}
+	return r.WithContext(context.WithValue(r.Context(), decisionTrackerKey{}, tracker)), tracker
+}
+
+// temporaryAccessDeadline returns when a request must stop because every grant
+// it relied on was temporary. A grant that something permanent also gives, and
+// the built-in administrator, do not bound it; neither does an expired-in-flight
+// check that cannot be made.
+func (s *Server) temporaryAccessDeadline(r *http.Request, tracker *decisionTracker) (time.Time, bool) {
+	if tracker == nil || len(tracker.decisions) == 0 || r.Context().Value(agentKey) != nil {
+		return time.Time{}, false
+	}
+	if currentUser(r).Role == "admin" && currentActorType(r) == "user" {
+		return time.Time{}, false
+	}
+	temporary, err := s.store.TemporaryPolicies(r.Context(), currentActorType(r), currentUser(r).ID)
+	if err != nil || len(temporary) == 0 {
+		return time.Time{}, false
+	}
+	expiry := make(map[string]time.Time, len(temporary))
+	for _, grant := range temporary {
+		expiry[grant.PolicyID] = grant.ExpiresAt
+	}
+	var earliest time.Time
+	bounded := false
+	for _, decision := range tracker.decisions {
+		// A grant lasts as long as the longest temporary policy that gives it,
+		// unless some policy that is not temporary gives it too.
+		var last time.Time
+		permanent := len(decision.PolicyIDs) == 0
+		for _, id := range decision.PolicyIDs {
+			until, isTemporary := expiry[id]
+			if !isTemporary {
+				permanent = true
+				break
+			}
+			if until.After(last) {
+				last = until
+			}
+		}
+		if permanent {
+			continue
+		}
+		if !bounded || last.Before(earliest) {
+			earliest, bounded = last, true
+		}
+	}
+	return earliest, bounded
 }

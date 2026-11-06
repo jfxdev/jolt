@@ -3,6 +3,8 @@ package rbac
 import (
 	"sort"
 	"strings"
+
+	"github.com/jfxdev/jolt/control/internal/filetypes"
 )
 
 var validCapabilities = map[string]struct{}{
@@ -11,8 +13,13 @@ var validCapabilities = map[string]struct{}{
 }
 
 type Rule struct {
-	Path         string   `json:"path"`
-	Capabilities []string `json:"capabilities"`
+	Path         string              `json:"path"`
+	Capabilities []string            `json:"capabilities"`
+	FileTypes    *filetypes.Selector `json:"file_types,omitempty"`
+	Visibility   string              `json:"visibility,omitempty"`
+	// NeedsApproval lists capabilities this rule grants only once a person
+	// approves each request. Only the destructive ones may be listed.
+	NeedsApproval []string `json:"needs_approval,omitempty"`
 }
 
 type Policy struct {
@@ -22,11 +29,14 @@ type Policy struct {
 }
 
 type Decision struct {
-	Allowed    bool     `json:"allowed"`
-	Denied     bool     `json:"denied"`
-	PolicyIDs  []string `json:"policy_ids"`
-	Path       string   `json:"path"`
-	Capability string   `json:"capability"`
+	// NeedsApproval is set on an allowed decision whose winning grant asks for a
+	// person's approval. Callers that cannot collect one must treat it as denied.
+	NeedsApproval bool     `json:"needs_approval,omitempty"`
+	Allowed       bool     `json:"allowed"`
+	Denied        bool     `json:"denied"`
+	PolicyIDs     []string `json:"policy_ids"`
+	Path          string   `json:"path"`
+	Capability    string   `json:"capability"`
 }
 
 func ValidCapability(value string) bool {
@@ -117,6 +127,7 @@ func Evaluate(policies []Policy, path, capability string) Decision {
 	capability = strings.ToLower(strings.TrimSpace(capability))
 	decision := Decision{Path: path, Capability: capability}
 	bestSpecificity := -1
+	needsApproval := false
 	allowedPolicies := map[string]struct{}{}
 	deniedPolicies := map[string]struct{}{}
 
@@ -127,6 +138,11 @@ func Evaluate(policies []Policy, path, capability string) Decision {
 				continue
 			}
 			capabilities := capabilitySet(rule.Capabilities)
+			// This path-only evaluator cannot safely grant a typed rule. Treat
+			// typed denies conservatively until the node applies the full filter.
+			if rule.FileTypes != nil && !capabilities["deny"] {
+				continue
+			}
 			if capabilities["deny"] {
 				deniedPolicies[policy.ID] = struct{}{}
 				continue
@@ -134,10 +150,13 @@ func Evaluate(policies []Policy, path, capability string) Decision {
 			if !grants(capabilities, capability) {
 				continue
 			}
+			marked := requiresApproval(rule, capability)
 			if specificity > bestSpecificity {
 				bestSpecificity = specificity
+				needsApproval = marked
 				allowedPolicies = map[string]struct{}{policy.ID: {}}
 			} else if specificity == bestSpecificity {
+				needsApproval = needsApproval || marked
 				allowedPolicies[policy.ID] = struct{}{}
 			}
 		}
@@ -149,9 +168,72 @@ func Evaluate(policies []Policy, path, capability string) Decision {
 	}
 	if len(allowedPolicies) > 0 {
 		decision.Allowed = true
+		decision.NeedsApproval = needsApproval
 		decision.PolicyIDs = sortedKeys(allowedPolicies)
 	}
 	return decision
+}
+
+// ApprovalCapabilities are the capabilities a rule may ask a person to approve.
+var ApprovalCapabilities = []string{"delete", "update"}
+
+func requiresApproval(rule Rule, capability string) bool {
+	for _, value := range rule.NeedsApproval {
+		if strings.ToLower(strings.TrimSpace(value)) == capability {
+			return true
+		}
+	}
+	return false
+}
+
+// approvalMarked reports whether the most specific path rules that grant the
+// capability ask for approval, ignoring denials: the typed evaluators decide
+// allow and deny themselves and only need this mark from the path rules.
+func approvalMarked(policies []Policy, path, capability string) bool {
+	best, marked := -1, false
+	for _, policy := range policies {
+		for _, rule := range policy.Rules {
+			matches, specificity := match(rule.Path, path)
+			capabilities := capabilitySet(rule.Capabilities)
+			if !matches || rule.FileTypes != nil || capabilities["deny"] || !grants(capabilities, capability) {
+				continue
+			}
+			if specificity > best {
+				best, marked = specificity, requiresApproval(rule, capability)
+			} else if specificity == best {
+				marked = marked || requiresApproval(rule, capability)
+			}
+		}
+	}
+	return marked
+}
+
+// ValidNeedsApproval checks the approval marks of a rule: only destructive
+// capabilities, each one the rule really grants, never on a denial, and not on
+// a typed rule (the node cannot tell the Control Tower which entry needs it).
+func ValidNeedsApproval(rule Rule) bool {
+	if len(rule.NeedsApproval) == 0 {
+		return true
+	}
+	capabilities := capabilitySet(rule.Capabilities)
+	if capabilities["deny"] || rule.FileTypes != nil || rule.Visibility != "" || len(rule.NeedsApproval) > len(ApprovalCapabilities) {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, value := range rule.NeedsApproval {
+		if value != strings.ToLower(strings.TrimSpace(value)) || seen[value] || !grants(capabilities, value) {
+			return false
+		}
+		known := false
+		for _, allowed := range ApprovalCapabilities {
+			known = known || value == allowed
+		}
+		if !known {
+			return false
+		}
+		seen[value] = true
+	}
+	return true
 }
 
 func grants(capabilities map[string]bool, requested string) bool {
@@ -227,6 +309,37 @@ func DeniesWithin(policies []Policy, scope string) bool {
 	return false
 }
 
+// UntypedDeniesWithin preserves the subtree refusal for path-based denials
+// when a node will enforce typed rules per entry. The original DeniesWithin
+// remains conservative for operations without verified node filtering.
+func UntypedDeniesWithin(policies []Policy, scope string) bool {
+	if !ValidResourcePath(scope) {
+		return true
+	}
+	scopeParts := strings.Split(NormalizePath(scope), "/")
+	for _, policy := range policies {
+		for _, rule := range policy.Rules {
+			if rule.FileTypes != nil || !capabilitySet(rule.Capabilities)["deny"] {
+				continue
+			}
+			if !ValidPath(rule.Path) || denyReachesScope(strings.Split(NormalizePath(rule.Path), "/"), scopeParts) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// RuleTouchesScope reports whether a rule can match the named scope or a
+// descendant. Callers must validate both paths before using this to narrow a
+// security context; invalid input is conservatively treated as touching it.
+func RuleTouchesScope(rulePath, scope string) bool {
+	if !ValidPath(rulePath) || !ValidResourcePath(scope) {
+		return true
+	}
+	return denyReachesScope(strings.Split(NormalizePath(rulePath), "/"), strings.Split(NormalizePath(scope), "/"))
+}
+
 // denyReachesScope reports whether a deny rule covers the scope itself or
 // anything under it. The rule's fixed prefix must agree with the scope on every
 // segment they share; a "*" agrees with anything. A rule shorter than the scope
@@ -271,10 +384,9 @@ func ExpandCompatibilityRules(policies []Policy) []Policy {
 		for _, rule := range policy.Rules {
 			rules = append(rules, rule)
 			if isMountScopedFileRule(rule.Path) {
-				rules = append(rules, Rule{
-					Path:         NormalizePath(rule.Path) + "/" + Recursive,
-					Capabilities: rule.Capabilities,
-				})
+				compatibility := rule
+				compatibility.Path = NormalizePath(rule.Path) + "/" + Recursive
+				rules = append(rules, compatibility)
 			}
 		}
 		policy.Rules = rules
@@ -298,4 +410,51 @@ func sortedKeys(values map[string]struct{}) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+// RuleMatch is a rule that bears on a decision, for diagnosis.
+type RuleMatch struct {
+	PolicyID      string              `json:"policy_id"`
+	Path          string              `json:"path"`
+	Capabilities  []string            `json:"capabilities"`
+	Effect        string              `json:"effect"`
+	FileTypes     *filetypes.Selector `json:"file_types,omitempty"`
+	Visibility    string              `json:"visibility,omitempty"`
+	NeedsApproval []string            `json:"needs_approval,omitempty"`
+}
+
+// MatchingRules lists the rules that cover the path and bear on the capability,
+// with the effect each one has: allow, deny, typed_allow or typed_deny. It does
+// not decide anything; it shows what the decision was made from. A rule that
+// covers the path but says nothing about the capability is left out.
+func MatchingRules(policies []Policy, path, capability string) []RuleMatch {
+	path = NormalizePath(path)
+	capability = strings.ToLower(strings.TrimSpace(capability))
+	var matches []RuleMatch
+	for _, policy := range policies {
+		for _, rule := range policy.Rules {
+			covers, _ := match(rule.Path, path)
+			if !covers {
+				continue
+			}
+			capabilities := capabilitySet(rule.Capabilities)
+			effect := ""
+			switch {
+			case capabilities["deny"] && rule.FileTypes == nil:
+				effect = "deny"
+			case capabilities["deny"] && (len(capabilities) == 1 || grants(capabilities, capability)):
+				effect = "typed_deny"
+			case !capabilities["deny"] && grants(capabilities, capability) && rule.FileTypes != nil:
+				effect = "typed_allow"
+			case !capabilities["deny"] && grants(capabilities, capability):
+				effect = "allow"
+			}
+			if effect == "" {
+				continue
+			}
+			matches = append(matches, RuleMatch{PolicyID: policy.ID, Path: NormalizePath(rule.Path), Capabilities: append([]string(nil), rule.Capabilities...),
+				Effect: effect, FileTypes: rule.FileTypes, Visibility: rule.Visibility, NeedsApproval: append([]string(nil), rule.NeedsApproval...)})
+		}
+	}
+	return matches
 }

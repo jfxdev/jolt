@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -29,6 +30,7 @@ import (
 	"github.com/jfxdev/jolt/backend/internal/services/jobs"
 	"github.com/jfxdev/jolt/backend/internal/services/pairing"
 	"github.com/jfxdev/jolt/backend/internal/services/transfers"
+	"github.com/jfxdev/jolt/backend/internal/trust"
 )
 
 type Server struct {
@@ -43,6 +45,7 @@ type Server struct {
 	certificates    *joltcrypto.CertificateManager
 	transfers       *transfers.Service
 	registry        *metrics.Registry
+	trust           *trust.Manager
 	log             *slog.Logger
 }
 
@@ -65,6 +68,7 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 		cfg.CopyChunkSize = 16 << 20
 	}
 	files.ConfigureUploadLimits(cfg.UploadMaxBytes, cfg.UploadMinFreeBytes)
+	files.ConfigureUploadInspection(filesystem.UploadInspection{Enabled: cfg.UploadInspection.Enabled, BlockExecutables: cfg.UploadInspection.BlockExecutables, AllowedMediaTypes: cfg.UploadInspection.AllowedMediaTypes})
 	s := &Server{config: cfg, identity: identity, files: files, jobs: jobService, pairing: pairingService, grants: grantService, log: logger}
 	for _, dependency := range dependencies {
 		switch value := dependency.(type) {
@@ -74,6 +78,8 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 			s.certificates = value
 		case *transfers.Service:
 			s.transfers = value
+		case *trust.Manager:
+			s.trust = value
 		case contracts.Store:
 			s.store = value
 		}
@@ -92,32 +98,57 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 	mux.HandleFunc("GET /api/v1/mounts/{mountID}", s.getMount)
 	mux.HandleFunc("PUT /api/v1/mounts/{mountID}", s.updateMount)
 	mux.HandleFunc("DELETE /api/v1/mounts/{mountID}", s.deleteMount)
-	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files", s.listFiles)
-	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/metadata", s.metadata)
-	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/content", s.download)
-	mux.HandleFunc("PUT /api/v1/mounts/{mountID}/files/content", s.upload)
-	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/archive", s.archive)
-	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/archive/plan", s.archivePlan)
-	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/search", s.search)
-	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/disk-usage", s.diskUsage)
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files", s.signedLocalRead("list", s.listFiles))
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/metadata", s.signedLocalRead("metadata", s.metadata))
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/content", s.signedLocalRead("content", s.download))
+	mux.HandleFunc("PUT /api/v1/mounts/{mountID}/files/content", s.signedUpload("upload_simple", s.upload))
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/archive", s.signedLocalRead("archive", s.archive))
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/archive/plan", s.signedLocalRead("archive_plan", s.archivePlan))
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/search", s.signedLocalRead("search", s.search))
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/disk-usage", s.signedLocalRead("disk_usage", s.diskUsage))
 	mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/directories", s.mkdir)
 	mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/copy/plan", s.planCopy)
 	mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/copy", s.copy)
 	mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/move", s.move)
 	mux.HandleFunc("DELETE /api/v1/mounts/{mountID}/files", s.deleteFile)
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/trash", s.listTrash)
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/trash/{trashID}", s.getTrash)
+	mux.HandleFunc("POST /api/v1/mounts/{mountID}/trash/{trashID}/restore", s.restoreTrash)
+	mux.HandleFunc("DELETE /api/v1/mounts/{mountID}/trash/{trashID}", s.purgeTrash)
 	if s.store != nil {
 		mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/uploads", s.listUploadSessions)
-		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads", s.createUploadSession)
+		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads", s.signedUpload("upload_create", s.createUploadSession))
 		mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/uploads/{uploadID}/verification", s.uploadLocked(s.verifyUploadSession))
 		mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.uploadLocked(s.getUploadSession))
-		mux.HandleFunc("PATCH /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.uploadLocked(s.appendUploadChunk))
-		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads/{uploadID}/complete", s.uploadLocked(s.completeUploadSession))
-		mux.HandleFunc("DELETE /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.uploadLocked(s.abortUploadSession))
+		mux.HandleFunc("PATCH /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.uploadLocked(s.signedUpload("upload_chunk", s.appendUploadChunk)))
+		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads/{uploadID}/complete", s.uploadLocked(s.signedUpload("upload_complete", s.completeUploadSession)))
+		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads/{uploadID}/authorize", s.uploadLocked(s.signedUpload("upload_reauthorize", s.reauthorizeUploadSession)))
+		mux.HandleFunc("DELETE /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.uploadLocked(s.signedUpload("upload_abort", s.abortUploadSession)))
+	}
+	if s.trust != nil && s.trust.Managed() {
+		mux.HandleFunc("GET /api/v1/crypto/trust-bundle", s.managedTrust(s.trustStatus))
+		mux.HandleFunc("PUT /api/v1/crypto/trust-bundle", s.managedTrust(s.adoptTrustBundle))
+		mux.HandleFunc("POST /api/v1/crypto/api-cert/csr", s.managedTrust(s.prepareAPICertificate))
+		mux.HandleFunc("PUT /api/v1/crypto/api-cert", s.managedTrust(s.installAPICertificate))
 	}
 	mux.HandleFunc("GET /api/v1/jobs", s.listJobs)
 	mux.HandleFunc("GET /api/v1/jobs/summary", s.jobSummary)
 	mux.HandleFunc("GET /api/v1/jobs/events", s.streamJobEvents)
 	mux.HandleFunc("GET /api/v1/jobs/{jobID}", s.getJob)
+	if _, ok := s.store.(signedJobCreationStore); ok && s.jobs != nil {
+		mux.HandleFunc("POST /api/v1/jobs/signed-local-copy/prepare", s.prepareSignedLocalCopy)
+		mux.HandleFunc("POST /api/v1/jobs/signed-local-copy", s.createSignedLocalCopy)
+	}
+	if _, ok := s.store.(jobs.DestructivePlanStore); ok && s.jobs != nil {
+		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/destructive-plans", s.createDestructivePlan)
+		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/destructive-plans/{planID}/accept", s.acceptDestructivePlan)
+	}
+	if _, ok := s.store.(signedJobAuthorizationRegistrar); ok {
+		mux.HandleFunc("POST /api/v1/jobs/{jobID}/authorization", s.registerJobAuthorization)
+	}
+	if _, ok := s.store.(signedJobAuthorizationReporter); ok {
+		mux.HandleFunc("GET /api/v1/jobs/{jobID}/authorization", s.jobAuthorizationStatus)
+	}
 	mux.HandleFunc("GET /api/v1/jobs/{jobID}/items", s.listJobItems)
 	mux.HandleFunc("POST /api/v1/jobs/{jobID}/items/{ordinal}/override", s.overrideJobItem)
 	mux.HandleFunc("POST /api/v1/jobs/{jobID}/pause", s.pauseJob)
@@ -156,8 +187,8 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 	}
 	if s.store != nil {
 		mux.HandleFunc("GET /api/v1/crypto/operational-token", s.operationalTokenState)
-		mux.HandleFunc("POST /api/v1/crypto/operational-token/prepare", s.prepareOperationalToken)
-		mux.HandleFunc("POST /api/v1/crypto/operational-token/commit", s.commitOperationalToken)
+		mux.HandleFunc("POST /api/v1/crypto/operational-token/prepare", s.withoutCertificateOnlyAuth(s.prepareOperationalToken))
+		mux.HandleFunc("POST /api/v1/crypto/operational-token/commit", s.withoutCertificateOnlyAuth(s.commitOperationalToken))
 	}
 	if s.transfers != nil {
 		mux.HandleFunc("POST /api/v1/transfers/pull", s.createPullTransfer)
@@ -165,11 +196,14 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 		mux.HandleFunc("POST /api/v1/transfers/pull/directory", s.createDirectoryPullTransfer)
 		mux.HandleFunc("POST /api/v1/transfers/pull/batch/plan", s.planBatchPullTransfer)
 		mux.HandleFunc("POST /api/v1/transfers/pull/batch", s.createBatchPullTransfer)
+		mux.HandleFunc("POST /api/v1/transfers/signed-pull/batch/prepare", s.prepareSignedBatchPull)
+		mux.HandleFunc("POST /api/v1/transfers/signed-pull/batch/plan", s.planSignedBatchPull)
+		mux.HandleFunc("POST /api/v1/transfers/signed-pull/batch", s.createSignedBatchPull)
 	}
 	if s.registry != nil && s.config.MetricsToken != "" {
 		mux.HandleFunc("GET /metrics", s.metrics)
 	}
-	return s.recover(s.correlation(s.logging(s.instrument(s.auth(mux)))))
+	return s.recover(s.correlation(s.logging(s.instrument(s.auth(s.guardSignedContext(mux))))))
 }
 
 func (s *Server) auth(next http.Handler) http.Handler {
@@ -191,12 +225,41 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if s.certificateOnly() {
+			// The Control Tower's client certificate is the only credential.
+			// A bearer token, even a correct one, opens nothing.
+			if !s.trust.ControlTowerPresented(r.TLS) {
+				writeError(w, r, http.StatusUnauthorized, "unauthorized", "A valid Control Tower certificate is required.", nil)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
 		if !strings.HasPrefix(header, prefix) || !s.acceptOperationalToken(r.Context(), token) {
 			writeError(w, r, http.StatusUnauthorized, "unauthorized", "A valid bearer token is required.", nil)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// certificateOnly reports whether this node was set to managed-only and is
+// enrolled: the client certificate of the Control Tower authenticates it, not
+// the operational token.
+func (s *Server) certificateOnly() bool {
+	return s.config.TLSMode == config.TLSManagedOnly && s.trust != nil && s.trust.Managed()
+}
+
+// withoutCertificateOnlyAuth refuses a route that works on the operational
+// token when that token is not what authenticates the Control Tower.
+func (s *Server) withoutCertificateOnlyAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.certificateOnly() {
+			writeError(w, r, http.StatusConflict, "operational_token_disabled", "This node authenticates the Control Tower by certificate; there is no operational token to rotate.", nil)
+			return
+		}
+		next(w, r)
+	}
 }
 
 // instrument records request counts and latency. The route label is the
@@ -238,6 +301,8 @@ type statusRecorder struct {
 	written int64
 	wrote   bool
 }
+
+func (w *statusRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *statusRecorder) WriteHeader(status int) {
 	if !w.wrote {
@@ -348,6 +413,34 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) node(w http.ResponseWriter, r *http.Request) {
+	capabilities := []string{"api_filesystem", "streaming_upload", "range_download", "durable_local_jobs", "job_controls", "job_events_sse", "job_eta", "bandwidth_limits", "waiting_mount", "waiting_validation", "directory_manifests", "directory_resume", "resumable_chunks", "conflict_policies", "manual_item_overrides", "checksum_verification", "source_change_policies", "transfer_path_grants", "cluster_grouping", "mtls_peer_listener", "mtls_certificate_rotation", "mtls_certificate_rollout_diagnostics", "mtls_certificate_revocation", "identity_handover", "mtls_peer_heartbeat", "direct_file_pull", "operational_token_rotation", "idempotency", "hidden_patterns_v1", "protected_move_v1", "canary_paths_v1", "agent_search_limits_v1", "agent_secret_scan_v1", "grant_exclude_send_v1", "grant_exclude_receive_v1", "upload_inspection_v1", "trash_v1"}
+	if s.trust != nil && s.trust.Managed() {
+		capabilities = append(capabilities, "managed_tls_v1")
+	}
+	if len(s.authorizationKeys()) > 0 {
+		capabilities = append(capabilities, "signed_local_read_v1", "signed_local_tree_read_v1")
+		if s.store != nil {
+			capabilities = append(capabilities, "signed_upload_sessions_v1", "signed_upload_reauthorize_v1", "signed_simple_upload_v1")
+		}
+		if _, ok := s.store.(signedJobAuthorizationRegistrar); ok {
+			capabilities = append(capabilities, "signed_job_authorization_registration_v1", "signed_job_options_binding_v1")
+		}
+		if _, ok := s.store.(signedJobAuthorizationReporter); ok {
+			capabilities = append(capabilities, "signed_job_authorization_status_v1")
+		}
+		if _, ok := s.store.(signedJobCreationStore); ok && s.jobs != nil {
+			capabilities = append(capabilities, "signed_local_copy_creation_v1")
+		}
+		if s.signedExecutionEnabled() {
+			capabilities = append(capabilities, "signed_local_copy_execution_v1")
+			if _, ok := s.store.(jobs.DestructivePlanStore); ok {
+				capabilities = append(capabilities, "destructive_plans_v1")
+			}
+			if s.transfers != nil {
+				capabilities = append(capabilities, "signed_transfer_pull_v1")
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"configuration": map[string]any{"source": "yaml", "apply_mode": "restart", "mounts_mutable": false, "grants_mutable": false},
 		"node_id":       s.identity.NodeID, "name": s.config.NodeName, "fingerprint": s.identity.Fingerprint,
@@ -358,7 +451,8 @@ func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 		"upload_max_sessions":       s.config.UploadMaxSessions,
 		"upload_max_reserved_bytes": s.config.UploadMaxReservedBytes,
 		"upload_min_free_bytes":     s.config.UploadMinFreeBytes,
-		"state":                     "idle", "capabilities": []string{"api_filesystem", "streaming_upload", "range_download", "durable_local_jobs", "job_controls", "job_events_sse", "job_eta", "bandwidth_limits", "waiting_mount", "waiting_validation", "directory_manifests", "directory_resume", "resumable_chunks", "conflict_policies", "manual_item_overrides", "checksum_verification", "source_change_policies", "transfer_path_grants", "cluster_grouping", "mtls_peer_listener", "mtls_certificate_rotation", "mtls_certificate_rollout_diagnostics", "mtls_certificate_revocation", "identity_handover", "mtls_peer_heartbeat", "direct_file_pull", "operational_token_rotation", "idempotency"},
+		"upload_inspection":         s.config.UploadInspection,
+		"state":                     "idle", "capabilities": capabilities,
 	})
 }
 
@@ -369,6 +463,7 @@ func (s *Server) effectiveConfig(w http.ResponseWriter, r *http.Request) {
 		"upload_max_sessions":       s.config.UploadMaxSessions,
 		"upload_max_reserved_bytes": s.config.UploadMaxReservedBytes,
 		"upload_min_free_bytes":     s.config.UploadMinFreeBytes,
+		"upload_inspection":         s.config.UploadInspection,
 		"node_name":                 s.config.NodeName, "api_address": s.config.APIAddress, "mtls_address": s.config.MTLSAddress,
 		"mtls_public_endpoint": s.config.MTLSPublicEndpoint,
 		"data_dir":             "[internal]", "keys_dir": "[internal]", "control_tower_token": "[redacted]",
@@ -577,6 +672,11 @@ type batchPullTransferRequest struct {
 	BandwidthLimit     int64    `json:"bandwidth_limit_bytes_per_second"`
 	MaxParallelFiles   int      `json:"max_parallel_files"`
 	MaxParallelChunks  int      `json:"max_parallel_chunks"`
+	// Used only by signed moves: the authenticated subject the Control Tower
+	// names and the confirmation the move consumes.
+	SubjectType   string `json:"subject_type"`
+	MovePlanID    string `json:"plan_id"`
+	MovePlanToken string `json:"plan_token"`
 }
 
 func (r batchPullTransferRequest) transferRequest(correlationID string) transfers.BatchPullRequest {
@@ -589,6 +689,7 @@ func (r batchPullTransferRequest) transferRequest(correlationID string) transfer
 			MaxParallelChunks: r.MaxParallelChunks, CorrelationID: correlationID,
 		},
 		SourcePaths: r.SourcePaths, SourceNames: r.SourceNames, Operation: r.Operation,
+		SubjectType: r.SubjectType, MovePlanID: r.MovePlanID, MovePlanToken: r.MovePlanToken,
 	}
 }
 
@@ -830,7 +931,7 @@ func (s *Server) deleteMount(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	page, err := s.files.ListPage(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path"), limit, r.URL.Query().Get("after"))
+	page, err := s.files.ListPageFiltered(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path"), limit, r.URL.Query().Get("after"), signedAccessFilter(r))
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -839,7 +940,11 @@ func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) metadata(w http.ResponseWriter, r *http.Request) {
-	item, err := s.files.Metadata(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path"))
+	filter := signedAccessFilter(r)
+	if r.Header.Get("X-Jolt-Internal-Canary") == "1" && s.files.IsCanary(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path")) {
+		w.Header().Set("X-Jolt-Canary", "1")
+	}
+	item, err := s.files.MetadataFiltered(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path"), filter)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -848,12 +953,26 @@ func (s *Server) metadata(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) download(w http.ResponseWriter, r *http.Request) {
-	file, info, err := s.files.Open(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path"))
+	scanSecrets := r.Header.Get("X-Jolt-Scan") == "secrets"
+	if scanSecrets {
+		w.Header().Set("X-Jolt-Scan-Applied", "secrets")
+	}
+	filter := signedAccessFilter(r)
+	if r.Header.Get("X-Jolt-Internal-Canary") == "1" && s.files.IsCanary(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path")) {
+		w.Header().Set("X-Jolt-Canary", "1")
+	}
+	file, info, err := s.files.OpenFiltered(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path"), filter)
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
 	defer file.Close()
+	if scanSecrets {
+		if err := filesystem.ScanSecretPrefix(file); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+	}
 	if boolQuery(r, "editor") && info.Size() > editorMaxBytes {
 		writeError(w, r, http.StatusRequestEntityTooLarge, "editor_content_too_large",
 			"O editor aceita arquivos de até 512 KB.", nil)
@@ -911,6 +1030,30 @@ func encodeRFC5987(value string) string {
 
 func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
+	filter := signedAccessFilter(r)
+	idempotency := signedSimpleUploadIdempotency(r)
+	if filter != nil {
+		candidate := entities.UploadSession{ID: "simple", MountID: r.PathValue("mountID"), Destination: path, Overwrite: boolQuery(r, "overwrite")}
+		if idempotency != "" && s.store != nil {
+			if err := s.files.ValidateUploadReauthorizationFiltered(r.Context(), candidate, filter); err != nil {
+				s.fail(w, r, err)
+				return
+			}
+			job, _, found, err := s.store.FindJobByIdempotency(r.Context(), idempotency)
+			if err != nil {
+				s.fail(w, r, err)
+				return
+			}
+			if found {
+				writeJSON(w, http.StatusOK, job)
+				return
+			}
+		}
+		if err := s.files.ValidateUploadDestinationFiltered(r.Context(), candidate, filter); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+	}
 	if boolQuery(r, "editor") {
 		if r.ContentLength > editorMaxBytes {
 			writeError(w, r, http.StatusRequestEntityTooLarge, "editor_content_too_large",
@@ -932,7 +1075,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		Type: "upload", MountID: r.PathValue("mountID"), Destination: path,
 		CorrelationID: r.Header.Get("X-Correlation-ID"), Overwrite: boolQuery(r, "overwrite"),
 		BandwidthLimit: bandwidthLimit,
-	}, idempotencyKey(r))
+	}, idempotency)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -942,8 +1085,15 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.jobs.ReleaseBandwidthLimiter(job.ID)
-	bytes, operationErr := s.files.Upload(r.Context(), r.PathValue("mountID"), path, r.Body,
-		boolQuery(r, "overwrite"), s.jobs.BandwidthLimiter(job))
+	var bytes int64
+	var operationErr error
+	if filter != nil {
+		bytes, operationErr = s.files.UploadFiltered(r.Context(), r.PathValue("mountID"), path, r.Body,
+			boolQuery(r, "overwrite"), filter, s.jobs.BandwidthLimiter(job))
+	} else {
+		bytes, operationErr = s.files.Upload(r.Context(), r.PathValue("mountID"), path, r.Body,
+			boolQuery(r, "overwrite"), s.jobs.BandwidthLimiter(job))
+	}
 	_ = s.jobs.Complete(r.Context(), &job, bytes, operationErr)
 	if operationErr != nil {
 		s.fail(w, r, operationErr)
@@ -1076,7 +1226,14 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	visible := items[:0]
+	for _, item := range items {
+		if s.hideJob(r.Context(), &item) {
+			continue
+		}
+		visible = append(visible, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": visible})
 }
 
 func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
@@ -1085,7 +1242,39 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	if s.hideJob(r.Context(), &job) {
+		s.fail(w, r, jobs.ErrNotFound)
+		return
+	}
 	writeJSON(w, http.StatusOK, job)
+}
+
+// hideJob prevents historical job metadata from undoing a newly configured
+// hidden-name rule. Errors may embed filenames, so omit them on protected mounts.
+func (s *Server) hideJob(ctx context.Context, job *entities.Job) bool {
+	if job.MountID == "" {
+		return false
+	}
+	mount, err := s.files.GetMount(ctx, job.MountID)
+	if errors.Is(err, filesystem.ErrNotFound) {
+		return false
+	}
+	if err != nil {
+		return true
+	}
+	if len(mount.HiddenPatterns) > 0 {
+		job.Error = ""
+	}
+	for _, value := range []string{job.SourcePath, job.Destination} {
+		if value == "" {
+			continue
+		}
+		hidden, err := s.files.IsHiddenPath(ctx, job.MountID, value)
+		if err != nil || hidden {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) jobSummary(w http.ResponseWriter, r *http.Request) {
@@ -1098,6 +1287,15 @@ func (s *Server) jobSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listJobItems(w http.ResponseWriter, r *http.Request) {
+	job, err := s.jobs.Get(r.Context(), r.PathValue("jobID"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if s.hideJob(r.Context(), &job) {
+		s.fail(w, r, jobs.ErrNotFound)
+		return
+	}
 	after, _ := strconv.Atoi(r.URL.Query().Get("after"))
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	items, next, err := s.store.ListJobItemsPage(r.Context(), r.PathValue("jobID"), after, limit)
@@ -1108,7 +1306,36 @@ func (s *Server) listJobItems(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_after": next})
+	mount, mountErr := s.files.GetMount(r.Context(), job.MountID)
+	if mountErr != nil && !errors.Is(mountErr, filesystem.ErrNotFound) {
+		s.fail(w, r, mountErr)
+		return
+	}
+	visible := items[:0]
+	for _, item := range items {
+		if errors.Is(mountErr, filesystem.ErrNotFound) {
+			visible = append(visible, item)
+			continue
+		}
+		hide := false
+		for _, value := range []string{item.RelativePath, item.SourcePath, item.DestinationPath} {
+			if value == "" {
+				continue
+			}
+			hidden, err := s.files.IsHiddenPath(r.Context(), job.MountID, value)
+			if err != nil || hidden {
+				hide = true
+				break
+			}
+		}
+		if !hide {
+			if len(mount.HiddenPatterns) > 0 {
+				item.Error = ""
+			}
+			visible = append(visible, item)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": visible, "next_after": next})
 }
 
 type overrideJobItemRequest struct {
@@ -1117,6 +1344,15 @@ type overrideJobItemRequest struct {
 }
 
 func (s *Server) overrideJobItem(w http.ResponseWriter, r *http.Request) {
+	current, err := s.jobs.Get(r.Context(), r.PathValue("jobID"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if s.hideJob(r.Context(), &current) {
+		s.fail(w, r, jobs.ErrNotFound)
+		return
+	}
 	ordinal, err := strconv.Atoi(r.PathValue("ordinal"))
 	if err != nil || ordinal < 0 {
 		writeError(w, r, http.StatusBadRequest, "invalid_ordinal", "Item ordinal must be a non-negative integer.", nil)
@@ -1129,6 +1365,10 @@ func (s *Server) overrideJobItem(w http.ResponseWriter, r *http.Request) {
 	job, err := s.jobs.OverrideItem(r.Context(), r.PathValue("jobID"), ordinal, request.Action, request.ApplyToFollowing)
 	if err != nil {
 		s.fail(w, r, err)
+		return
+	}
+	if s.hideJob(r.Context(), &job) {
+		s.fail(w, r, jobs.ErrNotFound)
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
@@ -1164,9 +1404,16 @@ func (s *Server) streamJobEvents(w http.ResponseWriter, r *http.Request) {
 	defer heartbeat.Stop()
 	for {
 		for _, event := range events {
+			after = event.ID
 			job, getErr := s.jobs.Get(r.Context(), event.JobID)
 			if getErr != nil {
 				continue
+			}
+			if s.hideJob(r.Context(), &job) {
+				continue
+			}
+			if mount, err := s.files.GetMount(r.Context(), job.MountID); err == nil && len(mount.HiddenPatterns) > 0 {
+				event.Message = ""
 			}
 			payload, marshalErr := json.Marshal(map[string]any{"event": event, "job": job})
 			if marshalErr != nil {
@@ -1175,7 +1422,6 @@ func (s *Server) streamJobEvents(w http.ResponseWriter, r *http.Request) {
 			if _, err := fmt.Fprintf(w, "id: %d\nevent: job\ndata: %s\n\n", event.ID, payload); err != nil {
 				return
 			}
-			after = event.ID
 		}
 		if len(events) > 0 {
 			flusher.Flush()
@@ -1221,9 +1467,22 @@ func (s *Server) retryJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) controlJob(w http.ResponseWriter, r *http.Request, action func(context.Context, string) (entities.Job, error)) {
+	current, err := s.jobs.Get(r.Context(), r.PathValue("jobID"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if s.hideJob(r.Context(), &current) {
+		s.fail(w, r, jobs.ErrNotFound)
+		return
+	}
 	job, err := action(r.Context(), r.PathValue("jobID"))
 	if err != nil {
 		s.fail(w, r, err)
+		return
+	}
+	if s.hideJob(r.Context(), &job) {
+		s.fail(w, r, jobs.ErrNotFound)
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
@@ -1506,15 +1765,37 @@ func (s *Server) deleteGrant(w http.ResponseWriter, r *http.Request) {
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	status, code := http.StatusInternalServerError, "internal_error"
 	var maxBytesError *http.MaxBytesError
+	var secretError *filesystem.SecretError
 	switch {
+	case errors.As(err, &secretError):
+		status, code = http.StatusForbidden, "secret_detected"
+		if r.Header.Get("X-Jolt-Scan") == "secrets" {
+			w.Header().Set("X-Jolt-Secret-Kind", secretError.Kind)
+		}
 	case errors.As(err, &maxBytesError):
 		status, code = http.StatusRequestEntityTooLarge, "editor_content_too_large"
 	case errors.Is(err, filesystem.ErrUploadTooLarge):
 		status, code = http.StatusRequestEntityTooLarge, "upload_too_large"
+	case errors.Is(err, filesystem.ErrUploadContentRejected):
+		status, code = http.StatusUnprocessableEntity, "upload_content_rejected"
 	case errors.Is(err, filesystem.ErrInsufficientSpace):
 		status, code = http.StatusInsufficientStorage, "insufficient_storage"
+	case errors.Is(err, filesystem.ErrFilteredHidden):
+		status, code = http.StatusNotFound, "not_found"
+	case errors.Is(err, filesystem.ErrFilteredBlocked):
+		status, code = http.StatusForbidden, "file_type_not_allowed"
+	case errors.Is(err, filesystem.ErrTrashNotFound):
+		status, code = http.StatusNotFound, "trash_not_found"
+	case errors.Is(err, filesystem.ErrTrashFull):
+		status, code = http.StatusInsufficientStorage, "trash_full"
+	case errors.Is(err, filesystem.ErrTrashUnavailable):
+		status, code = http.StatusConflict, "trash_unavailable"
 	case errors.Is(err, filesystem.ErrNotFound):
 		status, code = http.StatusNotFound, "not_found"
+	case errors.Is(err, filesystem.ErrHiddenName):
+		status, code = http.StatusUnprocessableEntity, "hidden_name"
+	case errors.Is(err, filesystem.ErrProtectedTree):
+		status, code = http.StatusConflict, "protected_tree"
 	case errors.Is(err, filesystem.ErrReadOnly):
 		status, code = http.StatusForbidden, "mount_read_only"
 	case errors.Is(err, filesystem.ErrTraversal):
@@ -1541,6 +1822,14 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, code = http.StatusConflict, "invalid_job_state"
 	case errors.Is(err, jobs.ErrInvalid):
 		status, code = http.StatusBadRequest, "invalid_job_request"
+	case errors.Is(err, transfers.ErrMoveIncomplete):
+		status, code = http.StatusConflict, "move_incomplete"
+	case errors.Is(err, jobs.ErrTreeChanged):
+		status, code = http.StatusConflict, "tree_changed"
+	case errors.Is(err, jobs.ErrPlanRejected):
+		status, code = http.StatusForbidden, "plan_rejected"
+	case errors.Is(err, contracts.ErrIdempotencyConflict):
+		status, code = http.StatusConflict, "idempotency_conflict"
 	case errors.Is(err, jobs.ErrWaitingPeer):
 		status, code = http.StatusConflict, "peer_unavailable"
 	case errors.Is(err, grants.ErrNotFound):
@@ -1562,6 +1851,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, code = http.StatusConflict, "identity_restart_required"
 	case errors.Is(err, transfers.ErrForbidden):
 		status, code = http.StatusForbidden, "transfer_forbidden"
+	case errors.Is(err, transfers.ErrPeerUpgradeRequired):
+		status, code = http.StatusConflict, "peer_upgrade_required"
 	case errors.Is(err, transfers.ErrPeer):
 		status, code = http.StatusConflict, "peer_unavailable"
 	case errors.Is(err, transfers.ErrInvalid):
@@ -1569,6 +1860,14 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	if status == http.StatusInternalServerError {
 		s.log.Error("request failed", "error", err, "correlation_id", r.Header.Get("X-Correlation-ID"))
+	}
+	if errors.Is(err, filesystem.ErrFilteredHidden) {
+		writeError(w, r, status, code, filesystem.ErrNotFound.Error(), nil)
+		return
+	}
+	if errors.Is(err, filesystem.ErrUploadContentRejected) {
+		writeError(w, r, status, code, "O conteúdo enviado foi recusado pela inspeção.", nil)
+		return
 	}
 	writeError(w, r, status, code, err.Error(), nil)
 }
@@ -1638,6 +1937,10 @@ const openAPISpec = `openapi: 3.1.0
 info:
   title: jolt node API
   version: 0.1.0
+  description: >
+    Mount hidden_patterns are enforced for all callers. Direct reads of hidden
+    paths return 404, attempts to create a hidden name return 422 hidden_name,
+    and destructive jobs involving protected trees fail with protected_tree.
 servers:
   - url: /
 components:
@@ -1646,6 +1949,23 @@ components:
       type: http
       scheme: bearer
   schemas:
+    SignedLocalCopyRequest:
+      type: object
+      additionalProperties: false
+      required: [mount_id, source_path, destination_path]
+      properties:
+        mount_id: {type: string}
+        source_path: {type: string}
+        destination_path: {type: string}
+        overwrite: {type: boolean}
+        recursive: {type: boolean}
+        conflict_policy: {type: string}
+        source_change_policy: {type: string}
+        verify_checksum: {type: boolean}
+        bandwidth_limit_bytes_per_second: {type: integer, format: int64, minimum: 0}
+        max_parallel_files: {type: integer, minimum: 0, maximum: 32}
+        max_parallel_chunks: {type: integer, minimum: 0, maximum: 16}
+        max_attempts: {type: integer}
     FileConfiguration:
       type: object
       readOnly: true
@@ -1689,6 +2009,11 @@ components:
             conflict_policies:
               type: [array, 'null']
               items: {type: string}
+            exclude:
+              type: array
+              maxItems: 64
+              items: {type: string}
+              description: Basename globs excluded from source and destination paths; moves that include excluded content are refused.
             visible_to_peer: {type: boolean}
             correlation_id: {type: string}
             created_at: {type: string, format: date-time}
@@ -1783,12 +2108,15 @@ paths:
     get:
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context for this exact local listing; supported when signed_local_read_v1 is advertised}
         - {in: query, name: path, schema: {type: string}}
         - {in: query, name: limit, schema: {type: integer, maximum: 1000}}
         - {in: query, name: after, schema: {type: string}, description: Opaque keyset cursor from next_after}
       responses:
         "200":
           description: Directory entries in deterministic order; follow next_after while has_more is true
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
           content:
             application/json:
               schema:
@@ -1797,6 +2125,9 @@ paths:
                   items: {type: array, items: {type: object}}
                   has_more: {type: boolean}
                   next_after: {type: string}
+        "403": {description: Invalid or expired signed context, or visible blocked entry}
+        "404": {description: Hidden entry or path not found}
+        "503": {description: Signed request deadline enforcement unavailable}
     delete:
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
@@ -1806,12 +2137,25 @@ paths:
         "202": {description: Persistent job queued for asynchronous execution}
   /api/v1/mounts/{mountID}/files/content:
     get:
+      description: X-Jolt-Scan secrets scans the first 64 KiB before serving, including Range requests, and confirms enforcement in X-Jolt-Scan-Applied.
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: query, name: path, required: true, schema: {type: string}}
         - {in: query, name: editor, schema: {type: boolean}, description: Enables the 512 KB text-editor limit}
+        - {in: header, name: X-Jolt-Scan, schema: {type: string, enum: [secrets]}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context for this exact local content read}
       responses:
-        "200": {description: File stream}
+        "200":
+          description: File stream
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
+        "206":
+          description: Partial file stream
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
+        "403": {description: secret_detected, file_type_not_allowed, or invalid_signed_context}
+        "404": {description: Hidden entry or path not found}
+        "503": {description: Signed request deadline enforcement unavailable}
     put:
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
@@ -1819,22 +2163,37 @@ paths:
         - {in: query, name: overwrite, schema: {type: boolean}}
         - {in: query, name: editor, schema: {type: boolean}, description: Enables the 512 KB text-editor limit}
         - {in: query, name: bandwidth_limit_bytes_per_second, schema: {type: integer, format: int64, minimum: 0}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context binding the exact query and idempotency key}
+        - {in: header, name: Idempotency-Key, schema: {type: string}}
       requestBody:
         required: true
         content:
           application/octet-stream:
             schema: {type: string, format: binary}
       responses:
-        "201": {description: Completed upload job}
+        "200": {description: Previously completed idempotent upload job}
+        "201":
+          description: Completed upload job
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
+        "403": {description: Invalid signed context or destination denied}
+        "404": {description: Hidden destination or parent not found}
+        "422": {description: hidden_name or upload_content_rejected by the configured upload inspection}
   /api/v1/mounts/{mountID}/files/metadata:
     get:
       summary: Returns metadata for one entry
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: query, name: path, required: true, schema: {type: string}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context for this exact local metadata read}
       responses:
-        "200": {description: Entry name, type, size and modification time}
+        "200":
+          description: Entry name, type, size and modification time
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
+        "403": {description: file_type_not_allowed or invalid_signed_context}
         "404": {description: Entry not found}
+        "503": {description: Signed request deadline enforcement unavailable}
   /api/v1/mounts/{mountID}/files/directories:
     post:
       summary: Creates a directory
@@ -1852,6 +2211,46 @@ paths:
       responses:
         "200": {description: Completed mkdir job}
         "403": {description: The mount is read-only}
+        "422": {description: hidden_name - the destination is hidden by mount configuration}
+  /api/v1/mounts/{mountID}/trash:
+    get:
+      summary: Lists what the mount's trash keeps
+      description: Present only for mounts with trash enabled in node.yaml. Deleting an entry on such a mount moves it here for the configured retention.
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+      responses:
+        "200": {description: The kept entries, newest first}
+        "404": {description: Unknown mount}
+  /api/v1/mounts/{mountID}/trash/{trashID}:
+    get:
+      summary: Reads one kept entry
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: path, name: trashID, required: true, schema: {type: string}}
+      responses:
+        "200": {description: The kept entry}
+        "404": {description: trash_not_found}
+    delete:
+      summary: Purges a kept entry for good
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: path, name: trashID, required: true, schema: {type: string}}
+      responses:
+        "200": {description: The purged entry}
+        "404": {description: trash_not_found}
+  /api/v1/mounts/{mountID}/trash/{trashID}/restore:
+    post:
+      summary: Puts a kept entry back where it was
+      description: Fails with conflict if the name is taken, and with not found if its parent folder is gone. Never overwrites.
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: path, name: trashID, required: true, schema: {type: string}}
+      responses:
+        "200": {description: The restored entry}
+        "403": {description: The mount is read-only}
+        "404": {description: trash_not_found, or the original folder no longer exists}
+        "409": {description: The original name is taken}
+        "422": {description: hidden_name - the original name is now hidden by mount configuration}
   /api/v1/mounts/{mountID}/files/move:
     post:
       summary: Moves or renames an entry inside one mount
@@ -1871,6 +2270,56 @@ paths:
       responses:
         "200": {description: Completed move job}
         "409": {description: The destination exists and overwrite was not requested}
+  /api/v1/mounts/{mountID}/files/destructive-plans:
+    post:
+      summary: Inspects a directory tree and records a five-minute destructive plan
+      description: Requires the operational bearer token. The subject is the actor the Control Tower authenticated. The response carries the one-use confirmation token once; only its hash is stored. Available when the node runs signed jobs.
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subject_type, subject_id, operation, source_path]
+              properties:
+                subject_type: {type: string, enum: [user, service_account]}
+                subject_id: {type: string}
+                operation: {type: string, enum: [delete, move]}
+                source_path: {type: string}
+                destination_path: {type: string}
+                overwrite: {type: boolean}
+      responses:
+        "201": {description: Plan with counts, expiry and confirmation token}
+        "400": {description: Invalid request, a file instead of a directory, or a path outside the mount}
+        "409": {description: Protected entries in the tree, or the move destination exists without overwrite}
+        "503": {description: Destructive plans unavailable on this node}
+  /api/v1/mounts/{mountID}/files/destructive-plans/{planID}/accept:
+    post:
+      summary: Confirms a destructive plan and creates its job
+      description: Requires the operational bearer token, the plan token and an Idempotency-Key. The job waits for a signed authorization and revalidates the tree before changing anything.
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: path, name: planID, required: true, schema: {type: string}}
+        - {in: header, name: Idempotency-Key, required: true, schema: {type: string, maxLength: 256}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subject_type, subject_id, token]
+              properties:
+                subject_type: {type: string, enum: [user, service_account]}
+                subject_id: {type: string}
+                token: {type: string}
+      responses:
+        "200": {description: The same job, for a repeated request}
+        "202": {description: Job created, waiting for authorization}
+        "403": {description: Unknown, expired or mismatched plan or token}
+        "409": {description: The tree changed after the plan, or the key was reused}
+        "503": {description: Destructive plans unavailable on this node}
   /api/v1/mounts/{mountID}/files/archive:
     get:
       summary: Streams a ZIP of a directory, or of the selected entries inside it
@@ -1878,15 +2327,24 @@ paths:
         Symlinks are skipped and counted in X-Jolt-Archive-Skipped-Symlinks
         rather than followed. The size is measured before streaming begins, so
         an oversized selection is refused with a status code instead of
-        producing a truncated download.
+        producing a truncated download. X-Jolt-Scan secrets scans every file
+        before the response and again as each entry is opened.
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: query, name: path, required: true, schema: {type: string}}
         - {in: query, name: name, schema: {type: array, items: {type: string}}, description: Direct children to include; omit for the whole directory}
         - {in: query, name: compress, schema: {type: boolean}, description: Deflate instead of Store; off by default because media is already compressed}
+        - {in: header, name: X-Jolt-Scan, schema: {type: string, enum: [secrets]}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context for this exact local archive operation}
       responses:
-        "200": {description: ZIP stream}
+        "200":
+          description: ZIP stream
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
         "400": {description: Selection exceeds the configured entry or byte limit}
+        "403": {description: secret_detected, file_type_not_allowed, or invalid_signed_context}
+        "404": {description: Hidden entry or path not found}
+        "503": {description: Signed request deadline enforcement unavailable}
   /api/v1/mounts/{mountID}/files/archive/plan:
     get:
       summary: Reports what an archive would contain without writing it
@@ -1894,19 +2352,31 @@ paths:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: query, name: path, required: true, schema: {type: string}}
         - {in: query, name: name, schema: {type: array, items: {type: string}}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context for this exact archive plan}
       responses:
-        "200": {description: File count, total bytes, skipped symlinks and the configured limits}
+        "200":
+          description: File count, total bytes, skipped symlinks and the configured limits
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
+        "403": {description: file_type_not_allowed or invalid_signed_context}
+        "404": {description: Hidden entry or path not found}
+        "503": {description: Signed request deadline enforcement unavailable}
   /api/v1/mounts/{mountID}/files/search:
     get:
       summary: Searches a subtree by name and metadata
       description: >
         Bounded by SEARCH_MAX_RESULTS, SEARCH_MAX_ENTRIES and SEARCH_TIMEOUT.
         Symlinks are never followed. A partial result sets truncated with a
-        truncated_reason of results, entries or timeout.
+        truncated_reason of results, entries, depth or timeout. Requests with
+        X-Jolt-Agent-Search set to 1 are additionally bounded to depth 16,
+        10000 examined entries, 200 results and 10 seconds. The node confirms
+        enforcement in the X-Jolt-Agent-Search-Applied response header.
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: query, name: path, required: true, schema: {type: string}}
         - {in: query, name: query, schema: {type: string}, description: Case-insensitive substring of the entry name}
+        - {in: header, name: X-Jolt-Agent-Search, schema: {type: string, enum: ["1"]}, description: Apply the bounded agent search profile}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context for this exact search}
         - {in: query, name: type, schema: {type: string, enum: [file, directory]}}
         - {in: query, name: extensions, schema: {type: string}, description: Comma-separated extensions}
         - {in: query, name: min_size, schema: {type: integer, format: int64}}
@@ -1915,8 +2385,14 @@ paths:
         - {in: query, name: modified_before, schema: {type: string, format: date-time}}
         - {in: query, name: limit, schema: {type: integer}}
       responses:
-        "200": {description: Matching entries plus scanned count and truncation state}
+        "200":
+          description: Matching entries plus scanned count and truncation state
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
         "400": {description: No query or filter was supplied}
+        "403": {description: file_type_not_allowed or invalid_signed_context}
+        "404": {description: Hidden entry or path not found}
+        "503": {description: Signed request deadline enforcement unavailable}
   /api/v1/mounts/{mountID}/files/disk-usage:
     get:
       summary: Measures allocated disk usage recursively, largest entries first
@@ -1928,8 +2404,15 @@ paths:
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: query, name: path, schema: {type: string}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context for this exact disk usage scan}
       responses:
-        "200": {description: Total allocated bytes, direct children and scan completeness}
+        "200":
+          description: Total allocated bytes, direct children and scan completeness
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
+        "403": {description: file_type_not_allowed or invalid_signed_context}
+        "404": {description: Hidden entry or path not found}
+        "503": {description: Signed request deadline enforcement unavailable}
   /api/v1/mounts/{mountID}/files/uploads:
     get:
       summary: Lists unfinished resumable uploads for a mount
@@ -1942,9 +2425,12 @@ paths:
       description: >
         The declared size caps what the node will write and is verified before
         the file is published, so a truncated upload can never replace a good
-        file. One destination may hold only one open session.
+        file. One destination may hold only one open session. An internal signed
+        context binds the exact request body and creates a session bound to the
+        authenticated actor and credential when signed_upload_sessions_v1 is advertised.
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed upload admission context}
       requestBody:
         required: true
         content:
@@ -1959,9 +2445,14 @@ paths:
                 checksum: {type: string, description: Optional SHA-256 verified before publishing}
                 chunk_size: {type: integer, format: int64}
       responses:
-        "201": {description: Created session}
+        "201":
+          description: Created session
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
+        "403": {description: Signed context invalid or destination denied}
         "409": {description: Another unfinished upload already targets this destination}
         "413": {description: Declared size exceeds UPLOAD_MAX_BYTES}
+        "422": {description: hidden_name - the destination is hidden by mount configuration}
         "429": {description: UPLOAD_MAX_SESSIONS reached; Retry-After carries retry guidance}
         "507": {description: Reservation budget or available disk safety margin exhausted}
   /api/v1/mounts/{mountID}/files/uploads/{uploadID}:
@@ -1983,13 +2474,18 @@ paths:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: path, name: uploadID, required: true, schema: {type: string}}
         - {in: header, name: Content-Range, required: true, schema: {type: string}, description: "bytes <start>-<end>/<total>"}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context required for a bound session}
       requestBody:
         required: true
         content:
           application/octet-stream:
             schema: {type: string, format: binary}
       responses:
-        "200": {description: Session with the new offset}
+        "200":
+          description: Session with the new offset
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
+        "403": {description: Signed context required or invalid, or destination denied}
         "409": {description: Offset mismatch; X-Jolt-Upload-Offset carries the stored offset}
         "413": {description: Chunk exceeds the session chunk_size or upload limit}
         "507": {description: Available disk safety margin exhausted}
@@ -1998,8 +2494,13 @@ paths:
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: path, name: uploadID, required: true, schema: {type: string}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context required for a bound session}
       responses:
-        "204": {description: Upload discarded}
+        "204":
+          description: Upload discarded
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
+        "403": {description: Signed context required or invalid, or destination denied}
   /api/v1/mounts/{mountID}/files/uploads/{uploadID}/verification:
     get:
       summary: SHA-256 verification of every received byte for safe source re-selection
@@ -2035,10 +2536,31 @@ paths:
       parameters:
         - {in: path, name: mountID, required: true, schema: {type: string}}
         - {in: path, name: uploadID, required: true, schema: {type: string}}
+        - {in: header, name: X-Jolt-Access-Authorization, schema: {type: string}, description: Internal signed context required for a bound session}
       responses:
-        "201": {description: Durable completion receipt including upload_id, destination_path, size, SHA-256 checksum, state and completed_at; repeat returns the same receipt until expiry}
+        "201":
+          description: Durable completion receipt including upload_id, destination_path, size, SHA-256 checksum, state and completed_at; repeat returns the same receipt until expiry
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms enforcement when a signed context is supplied, schema: {type: string, enum: [v1]}}
         "400": {description: The upload is short of the declared size or its checksum does not match}
+        "403": {description: Signed context required or invalid, or destination denied}
         "409": {description: The destination exists and the session does not allow overwrite}
+        "422": {description: upload_content_rejected; the rejected partial and upload session are removed}
+  /api/v1/mounts/{mountID}/files/uploads/{uploadID}/authorize:
+    post:
+      summary: Explicitly reauthorize a resumable upload session
+      description: A signed context is required. It binds the current session identity and destination; a bound session can only be reauthorized for the same actor.
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: path, name: uploadID, required: true, schema: {type: string}}
+        - {in: header, name: X-Jolt-Access-Authorization, required: true, schema: {type: string}}
+      responses:
+        "204":
+          description: Session reauthorized
+          headers:
+            X-Jolt-Access-Applied: {description: Confirms signed context enforcement, schema: {type: string, enum: [v1]}}
+        "403": {description: Invalid, stale or insufficient authorization}
+        "404": {description: Session not found or hidden}
   /api/v1/mounts/{mountID}/files/copy/plan:
     post:
       parameters:
@@ -2083,10 +2605,92 @@ paths:
                 verify_checksum: {type: boolean}
       responses:
         "202": {description: Durable itemized copy job queued}
+  /api/v1/crypto/trust-bundle:
+    get:
+      summary: Which trust bundle and API certificate this node holds
+      description: Only on a node the Control Tower's certificate authority enrolled (capability managed_tls_v1); 404 managed_tls_disabled otherwise.
+      responses:
+        "200": {description: The bundle version, how the node authenticates the Control Tower (auth_mode token or certificate) and the API certificate's end, serial, issuer serial and SHA-256}
+        "404": {description: This node is not enrolled}
+    put:
+      summary: Adopt a newer trust bundle
+      description: The node verifies the bundle itself. It must be newer, keep a root of the one in use and be signed by a key that one listed; otherwise 422 trust_bundle_refused and nothing changes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object}
+      responses:
+        "200": {description: Adopted, or already current}
+        "400": {description: Not a trust bundle}
+        "422": {description: Refused by verification}
+  /api/v1/crypto/api-cert/csr:
+    post:
+      summary: Start a renewal of the API certificate
+      description: Makes a new key that never leaves the node and returns a signing request for the given names.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [names]
+              properties:
+                names: {type: array, minItems: 1, maxItems: 16, items: {type: string}}
+      responses:
+        "200": {description: The signing request, as PEM}
+        "400": {description: Invalid names}
+  /api/v1/crypto/api-cert:
+    put:
+      summary: Install the renewed API certificate
+      description: The certificate must match the pending key, chain to a root in the bundle and be valid for a server; otherwise 422 certificate_refused and the current one keeps serving.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [certificate_pem]
+              properties:
+                certificate_pem: {type: string}
+      responses:
+        "200": {description: Installed}
+        "422": {description: Refused}
   /api/v1/jobs:
     get:
       responses:
         "200": {description: Persistent job history}
+  /api/v1/jobs/signed-local-copy/prepare:
+    post:
+      summary: Prepare immutable options for a signed local copy
+      description: Requires the operational bearer token. Computes normalized options and their digest without creating a job or authorizing execution.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SignedLocalCopyRequest'}
+      responses:
+        "200": {description: Normalized options, digest and whether signed execution is enabled}
+        "400": {description: Invalid request or noncanonical paths}
+        "503": {description: Signed job creation unavailable}
+  /api/v1/jobs/signed-local-copy:
+    post:
+      summary: Create a signed local copy awaiting validation
+      description: Requires the operational bearer token and a job-bound signed envelope matching the normalized request. The job is queued once its first authorization is registered and runs only while that authorization is renewed.
+      parameters:
+        - {in: header, name: X-Jolt-Access-Authorization, required: true, schema: {type: string}}
+        - {in: header, name: Idempotency-Key, required: true, schema: {type: string, maxLength: 128}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SignedLocalCopyRequest'}
+      responses:
+        "200": {description: Existing job returned for an identical request}
+        "202": {description: Job created in waiting_validation awaiting its first authorization}
+        "400": {description: Invalid body, scope, signature or idempotency key}
+        "409": {description: Idempotency key or job identifier conflict}
+        "503": {description: Signed job creation unavailable}
   /api/v1/jobs/summary:
     get:
       summary: Counts all durable jobs by state, independent of history pagination
@@ -2117,6 +2721,50 @@ paths:
         - {in: path, name: jobID, required: true, schema: {type: string}}
       responses:
         "200": {description: Durable job state and progress}
+  /api/v1/jobs/{jobID}/authorization:
+    get:
+      summary: Retrieve the stored job authorization revision and digest
+      description: Requires the operational bearer token. The digest identifies the stored envelope without disclosing it; expired authorizations remain visible for reconciliation and do not enable execution.
+      parameters:
+        - {in: path, name: jobID, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: Revision zero and null expiry indicate that no authorization was stored
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revision, expires_at, envelope_digest, execution_enabled]
+                properties:
+                  revision: {type: integer, minimum: 0}
+                  expires_at: {type: [string, "null"], format: date-time}
+                  envelope_digest: {type: string, description: Unpadded base64url SHA-256 digest, or empty when revision is zero}
+                  execution_enabled: {type: boolean, description: True when this node runs jobs bound to signed authorizations}
+        "401": {description: Invalid operational bearer token}
+        "404": {description: Job not found}
+        "503": {description: Durable state unavailable or inconsistent}
+    post:
+      summary: Register or renew a signed job authorization
+      description: Requires the operational bearer token and a signed, job-bound envelope. The node verifies the job scope and next revision and stores the context encrypted. A local copy waiting for authorization is queued; a running one keeps running while its lease is renewed.
+      parameters:
+        - {in: path, name: jobID, required: true, schema: {type: string}}
+        - {in: header, name: X-Jolt-Access-Authorization, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: Authorization registered or an identical current envelope retried
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revision, expires_at, execution_enabled]
+                properties:
+                  revision: {type: integer, minimum: 1}
+                  expires_at: {type: string, format: date-time}
+                  execution_enabled: {type: boolean, description: True when this node runs jobs bound to signed authorizations}
+        "400": {description: Missing or ambiguous signed envelope}
+        "401": {description: Invalid operational bearer token}
+        "403": {description: Invalid, expired, replayed or mismatched authorization}
+        "503": {description: Signing keys or durable state unavailable}
   /api/v1/jobs/{jobID}/items:
     get:
       parameters:
@@ -2305,6 +2953,95 @@ paths:
                 verify_checksum: {type: boolean}
       responses:
         "200": {description: Complete totals and an item preview truncated to 500 entries when necessary}
+  /api/v1/transfers/signed-pull/batch/prepare:
+    post:
+      summary: Normalizes a node-to-node copy into the options a lease binds
+      description: Requires the operational bearer token. It plans and creates nothing. A move is accepted too and needs a plan. Previewing it records a one-use confirmation (move_plan) that creation must present. Available when the node runs signed jobs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [peer_node_id, source_grant_id, source_paths, destination_grant_id, destination_path]
+              properties:
+                peer_node_id: {type: string}
+                source_grant_id: {type: string}
+                source_paths: {type: array, items: {type: string}, description: Paths relative to the source grant}
+                source_names: {type: array, items: {type: string}}
+                destination_grant_id: {type: string}
+                destination_path: {type: string}
+                operation: {type: string, enum: [copy, move]}
+                subject_type: {type: string, enum: [user, service_account], description: Only for a move; the subject the Control Tower authenticated}
+                plan_id: {type: string, description: Only when creating a move; the plan it consumes}
+                plan_token: {type: string, description: Only when creating a move}
+                conflict_policy: {type: string, enum: [skip, overwrite, rename, fail, checksum]}
+                verify_checksum: {type: boolean}
+                bandwidth_limit_bytes_per_second: {type: integer}
+                max_parallel_files: {type: integer}
+                max_parallel_chunks: {type: integer}
+      responses:
+        "200": {description: Normalized options, digest and execution_enabled}
+        "400": {description: Invalid request, a move, or the ask conflict policy}
+        "503": {description: Signed transfers unavailable on this node}
+  /api/v1/transfers/signed-pull/batch/plan:
+    post:
+      summary: Previews a node-to-node copy under a signed lease
+      description: Requires the operational bearer token and a job-bound signed envelope. It creates nothing. The preview lists only the entries the signed policy lets the actor list and read and reports how many it left out (sources_omitted), never their names.
+      parameters:
+        - {in: header, name: X-Jolt-Access-Authorization, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [peer_node_id, source_grant_id, source_paths, destination_grant_id, destination_path]
+              properties:
+                peer_node_id: {type: string}
+                source_grant_id: {type: string}
+                source_paths: {type: array, items: {type: string}}
+                destination_grant_id: {type: string}
+                destination_path: {type: string}
+                conflict_policy: {type: string}
+      responses:
+        "200": {description: Counts and the first 500 permitted items, with sources_omitted}
+        "400": {description: Invalid request, scope or signature}
+        "503": {description: Signed transfers unavailable on this node}
+  /api/v1/transfers/signed-pull/batch:
+    post:
+      summary: Plans a node-to-node copy under a signed lease and creates it awaiting authorization
+      description: Requires the operational bearer token, a job-bound signed envelope and an Idempotency-Key. The plan keeps only the source entries the signed policy lets the actor list and read (the count of omitted entries is recorded, never their names) and fails if a destination is not writable under it. The job is queued once its first authorization is registered and runs only while that authorization is renewed.
+      parameters:
+        - {in: header, name: X-Jolt-Access-Authorization, required: true, schema: {type: string}}
+        - {in: header, name: Idempotency-Key, required: true, schema: {type: string, maxLength: 128}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [peer_node_id, source_grant_id, source_paths, destination_grant_id, destination_path]
+              properties:
+                peer_node_id: {type: string}
+                source_grant_id: {type: string}
+                source_paths: {type: array, items: {type: string}, description: Paths relative to the source grant}
+                source_names: {type: array, items: {type: string}}
+                destination_grant_id: {type: string}
+                destination_path: {type: string}
+                operation: {type: string, enum: [copy]}
+                conflict_policy: {type: string, enum: [skip, overwrite, rename, fail, checksum]}
+                verify_checksum: {type: boolean}
+                bandwidth_limit_bytes_per_second: {type: integer}
+                max_parallel_files: {type: integer}
+                max_parallel_chunks: {type: integer}
+      responses:
+        "200": {description: Existing job returned for an identical request}
+        "202": {description: Job created in waiting_validation}
+        "400": {description: Invalid request, scope or signature}
+        "403": {description: A grant or the peer does not permit the transfer}
+        "409": {description: Idempotency key or job identifier conflict}
+        "503": {description: Signed transfers unavailable on this node}
   /api/v1/transfers/pull/batch:
     post:
       description: Persists one destination-owned batch job. Move forces checksum verification and source removal is requested only after every item has completed.
@@ -2462,3 +3199,16 @@ paths:
       responses:
         "409": {description: configuration_managed_by_file - edit node.yaml and restart}
 `
+
+func (s *Server) signedExecutionEnabled() bool {
+	return s.jobs != nil && s.jobs.SignedExecutionEnabled()
+}
+
+// authorizationKeys are the public keys a signed context may carry: those in
+// node.yaml and, on an enrolled node, the unexpired ones in the trust bundle.
+func (s *Server) authorizationKeys() map[string]ed25519.PublicKey {
+	if s.trust != nil {
+		return s.trust.AuthorizationKeys()
+	}
+	return s.config.AuthorizationKeys
+}

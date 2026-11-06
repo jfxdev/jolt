@@ -9,4 +9,9 @@ var (
 	ErrUploadSessionExists  = errors.New("an upload session already targets this destination")
 	ErrManagedConfiguration = errors.New("configuration is managed by file")
 	ErrStateUnavailable     = errors.New("persistent state unavailable; restart required")
+
+	// Cancellation causes for jobs whose signed authorization lapsed or whose
+	// policy context changed while they were running.
+	ErrJobAuthorizationUnavailable = errors.New("job authorization is unavailable or expired")
+	ErrJobAuthorizationChanged     = errors.New("job authorization context changed")
 )

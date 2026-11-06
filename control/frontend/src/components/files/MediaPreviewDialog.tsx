@@ -1,5 +1,6 @@
 import type { FileEntry } from "@/lib/types";
 import { mediaInfoForFilename } from "@/lib/media";
+import { fileEntryDisplayName } from "@/lib/display-name";
 import {
   Dialog,
   DialogContent,
@@ -21,7 +22,7 @@ export function MediaPreviewDialog({ entry, url, onClose }: Props) {
     <Dialog open={entry !== null} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-4xl">
         <DialogHeader>
-          <DialogTitle>{entry?.name}</DialogTitle>
+          <DialogTitle>{entry && fileEntryDisplayName(entry)}</DialogTitle>
           <DialogDescription>Visualização do arquivo</DialogDescription>
         </DialogHeader>
         {url && media?.kind === "audio" && <audio className="w-full" controls src={url} />}
@@ -29,7 +30,7 @@ export function MediaPreviewDialog({ entry, url, onClose }: Props) {
           <video className="max-h-[65vh] w-full rounded-md bg-black" controls src={url} />
         )}
         {url && media?.kind === "image" && (
-          <img className="max-h-[65vh] w-full object-contain" src={url} alt={entry?.name} />
+          <img className="max-h-[65vh] w-full object-contain" src={url} alt={entry ? fileEntryDisplayName(entry) : ""} />
         )}
       </DialogContent>
     </Dialog>

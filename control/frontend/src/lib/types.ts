@@ -25,13 +25,35 @@ export interface BuildInfo {
   version: string;
   commit: string;
   build_date: string;
+  features?: { typed_policies?: boolean; approvals?: boolean; managed_tls?: boolean };
 }
 
 export interface ServiceAccount {
+  kind: "automation" | "agent";
   service_account_id: string;
   name: string;
   description: string;
   enabled: boolean;
+}
+
+export interface AgentLimits {
+  requests_per_minute: number;
+  burst: number;
+  max_concurrent: number;
+  max_response_bytes: number;
+  daily_bytes: number;
+  allowed_cidrs: string[];
+  read_media_types?: string[];
+  capabilities?: ("list" | "read")[];
+  // May ask a person to delete a file; a rule that needs approval must allow it.
+  request_deletes?: boolean;
+}
+
+export interface TemporaryPolicyAssignment {
+  policy_id: string;
+  created_by: string;
+  created_at: string;
+  expires_at: string;
 }
 
 export interface AccessGroup {
@@ -46,6 +68,7 @@ export interface AccessGroup {
 }
 
 export interface ServiceAccountToken {
+  agent_limits?: AgentLimits | null;
   token_id: string;
   name: string;
   expires_at: string | null;
@@ -57,9 +80,101 @@ export interface ServiceCredential extends ServiceAccountToken {
   token: string;
 }
 
+export interface WorkloadIdentityInput {
+  provider_id: string;
+  issuer: string;
+  subject: string;
+  audience: string;
+  agent_limits?: AgentLimits;
+}
+
+export interface WorkloadIdentity extends WorkloadIdentityInput {
+  credential_id: string;
+  service_account_id: string;
+  enabled: boolean;
+  revoked: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+// What a typed rule matches by file type. The node decides each entry's real
+// type; directories are never filtered by type.
+export interface FileTypeSelector {
+  classes?: string[];
+  extensions?: string[];
+  names?: string[];
+}
+
 export interface PolicyRule {
   path: string;
   capabilities: Capability[];
+  // Present only on typed rules, which the Control Tower accepts when typed
+  // policies are enabled.
+  file_types?: FileTypeSelector;
+  visibility?: "hidden" | "visible";
+  // Capabilities this rule grants only once a person approves each request.
+  needs_approval?: ApprovalCapability[];
+}
+
+export type ApprovalCapability = "delete" | "update";
+
+export type PendingState =
+  | "pending"
+  | "executing"
+  | "executed"
+  | "failed"
+  | "rejected"
+  | "expired"
+  | "indeterminate";
+
+// What a file operation answers (202) when a policy asks for a person's approval.
+export interface PendingApprovalNotice {
+  pending_operation_id: string;
+  state: "pending_approval";
+  expires_at: string;
+  operation: "delete" | "move" | "copy";
+  // Set when a folder operation waits: what the approver will be asked about.
+  files?: number;
+  directories?: number;
+  bytes?: number;
+}
+
+export interface PendingOperation {
+  pending_operation_id: string;
+  requester_type: string;
+  requester_id: string;
+  requester_name?: string;
+  method: string;
+  node_id: string;
+  resource: string;
+  summary: {
+    operation?: string;
+    mount_id?: string;
+    paths?: string[];
+    tree?: boolean;
+    // A transfer between nodes: where it goes and from which node.
+    destination?: string;
+    requester_kind?: string;
+    source_node?: string;
+    files?: number;
+    directories?: number;
+    bytes?: number;
+  };
+  requirements: { path: string; capability: string }[];
+  state: PendingState;
+  created_at: string;
+  expires_at: string;
+  decided_by_id?: string;
+  decided_by_name?: string;
+  decided_at?: string;
+  note?: string;
+  result_status?: number;
+}
+
+export interface ApprovalDecision {
+  pending_operation: PendingOperation;
+  result: { status: number; body?: unknown };
+  replayed?: boolean;
 }
 
 export interface Policy {
@@ -67,6 +182,43 @@ export interface Policy {
   name: string;
   description: string;
   rules: PolicyRule[];
+}
+
+export type EffectiveOutcome = "allowed" | "denied" | "hidden" | "blocked" | "approval";
+
+export interface EffectiveCapability {
+  allowed: boolean;
+  denied: boolean;
+  outcome: EffectiveOutcome;
+  policy_ids: string[];
+  typed: boolean;
+  // The rules the answer was made from.
+  rules?: {
+    policy_id: string;
+    path: string;
+    capabilities: string[];
+    effect: "allow" | "deny" | "typed_allow" | "typed_deny";
+    file_types?: { classes?: string[]; extensions?: string[]; names?: string[] };
+    visibility?: string;
+    needs_approval?: string[];
+  }[];
+}
+
+export interface EffectiveAccessCheck {
+  path: string;
+  entry_type: "file" | "directory";
+}
+
+export interface EffectiveAccessResult extends EffectiveAccessCheck {
+  capabilities: Record<string, EffectiveCapability>;
+  reason?: string;
+}
+
+export interface EffectiveAccessResponse {
+  subject: { actor_type: string; id: string; name?: string; role?: string; enabled: boolean };
+  typed_policies: boolean;
+  notes: string[];
+  results: EffectiveAccessResult[];
 }
 
 export interface Role {
@@ -77,6 +229,8 @@ export interface Role {
 }
 
 export interface AuditEvent {
+  chain_data?: string;
+  chain_hash?: string;
   event_id?: string;
   actor_type?: string;
   actor_id?: string;
@@ -94,6 +248,7 @@ export interface AuditEvent {
 export type NodeState = "online" | "offline" | "degraded" | "untrusted" | string;
 
 export interface NodeInfo {
+  upload_inspection?: { enabled: boolean; block_executables: boolean; allowed_media_types: string[] | null };
   configuration?: { source: "yaml"; apply_mode: "restart"; mounts_mutable: boolean; grants_mutable: boolean };
   node_id: string;
   name: string;
@@ -112,17 +267,33 @@ export interface Mount {
   published?: boolean;
   enabled?: boolean;
   state?: "available" | "unavailable" | "degraded";
+  // Present when deleting here moves the entry to a trash kept for retention_days.
+  trash?: { enabled: boolean; retention_days: number };
+}
+
+export interface TrashEntry {
+  trash_id: string;
+  mount_id: string;
+  path: string;
+  type: "file" | "directory";
+  size?: number;
+  state: string;
+  deleted_at: string;
+  expires_at: string;
 }
 
 export type FileEntryType = "directory" | "file" | "symlink";
 
 export interface FileEntry {
   name: string;
+  display_name?: string;
   path: string;
   type: FileEntryType;
   size?: number;
   disk_usage?: number;
   modified_at?: string;
+  // The policy shows this entry but does not let the caller use it.
+  blocked?: boolean;
 }
 
 export interface BrowseResult {
@@ -195,6 +366,7 @@ export interface GrantPermissions {
 export type GrantDirection = "send" | "receive" | "send_receive";
 
 export interface Grant {
+	  exclude?: string[];
   configured_enabled?: boolean;
   inactive_reason?: string;
   grant_id: string;
@@ -337,6 +509,10 @@ export interface TransferPlan {
 	truncated?: boolean;
 	items?: JobItem[];
 	remote_file?: boolean;
+	// Source entries the current policy hides; they are counted, never listed.
+	sources_omitted?: number;
+	// The one-use confirmation of a move, returned when the move is previewed.
+	move_plan?: { plan_id: string; token: string; expires_at: string };
 }
 
 export interface LogicalTransferRequest {
@@ -348,6 +524,8 @@ export interface LogicalTransferRequest {
 	bandwidth_limit_bytes_per_second?: number;
 	max_parallel_files?: number;
 	max_parallel_chunks?: number;
+	// Required to create a move: the confirmation returned by its preview.
+	move_plan?: { plan_id: string; token: string };
 }
 
 export interface TransferTargetMount {
@@ -409,7 +587,7 @@ export interface SearchResponse {
 	entries: FileEntry[];
 	scanned: number;
 	truncated: boolean;
-	truncated_reason?: "results" | "entries" | "timeout";
+	truncated_reason?: "results" | "entries" | "depth" | "timeout";
 }
 
 export interface DiskUsageResponse {
@@ -435,7 +613,7 @@ export interface FilePage extends ListResponse<FileEntry> { next_after?: string;
 export interface UploadVerification { offset: number; next_after: number; blocks: { offset: number; size: number; sha256: string }[] }
 
 export interface UploadSession {
- state?: "open" | "publishing" | "completed";
+ state?: "open" | "publishing" | "completed" | "rejected";
  completed_at?: string;
 	upload_id: string;
 	mount_id: string;
@@ -462,6 +640,7 @@ export interface Share {
 	max_downloads: number;
 	download_count: number;
 	created_by: string;
+	created_by_type: "user" | "service_account";
 	created_at: string;
 	expires_at?: string;
 	revoked_at?: string;
@@ -495,4 +674,99 @@ export interface PublicShare {
 	allow_archive: boolean;
 	expires_at?: string;
 	remaining_downloads?: number;
+}
+
+export type CertificateKind = "root" | "intermediate" | "https" | "client" | "signing_key";
+
+/** One certificate or key the Control Tower's own authority keeps. It carries no secret. */
+export interface CertificateItem {
+  kind: CertificateKind;
+  subject: string;
+  state: "active" | "pending" | "retired" | "next";
+  serial?: string;
+  fingerprint: string;
+  not_before: string;
+  not_after: string;
+}
+
+/** Where a root rotation stands: nothing under way, the next root published, or promoted and the old one still in the bundle. */
+export interface RootRotation {
+  phase: "none" | "prepared" | "promoted";
+  next_root_fingerprint?: string;
+  previous_root_fingerprint?: string;
+}
+
+/** An enrolled node as the inventory describes it. */
+export interface NodeCertificate {
+  node_id: string;
+  name: string;
+  bundle_version: number;
+  bundle_behind: number;
+  cert_serial: string;
+  cert_not_after: string;
+  auth_mode?: "token" | "certificate";
+  last_error?: string;
+  last_error_at?: string;
+}
+
+export interface CertificateInventory {
+  mode: "managed";
+  root_fingerprint: string;
+  root_fingerprint_display: string;
+  bundle_version: number;
+  items: CertificateItem[];
+  rotation: RootRotation;
+  next_root_fingerprint_display?: string;
+  nodes: NodeCertificate[];
+}
+
+export interface Revocation {
+  serial: string;
+  subject: string;
+  reason: string;
+  revoked_at: string;
+  not_after: string;
+}
+
+export interface AuthorizationKeys {
+  signing_key_id: string;
+  keys: { id: string; key: string; not_after: string }[];
+  node_yaml: string;
+}
+
+export interface JoinToken {
+  token_id: string;
+  node_name: string;
+  approval: "auto" | "manual";
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+  used_at?: string;
+  enrollment_id?: string;
+}
+
+/** What creating a token answers: the secret shows here and nowhere else. */
+export interface CreatedJoinToken {
+  token_id: string;
+  token: string;
+  node_name: string;
+  approval: "auto" | "manual";
+  expires_at: string;
+  control_url: string;
+}
+
+export interface Enrollment {
+  enrollment_id: string;
+  token_id: string;
+  state: "pending" | "issued" | "rejected" | "expired";
+  node_name: string;
+  node_id: string;
+  node_fingerprint: string;
+  api_endpoint: string;
+  remote_addr: string;
+  decided_by?: string;
+  note?: string;
+  created_at: string;
+  expires_at: string;
+  decided_at?: string;
 }

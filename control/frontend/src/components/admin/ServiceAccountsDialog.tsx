@@ -7,6 +7,7 @@ import type {
   ServiceAccount,
   ServiceAccountToken,
   ServiceCredential,
+  AgentLimits,
 } from "@/lib/types";
 import { useApiError } from "@/hooks/useApiError";
 import { useConfirm } from "@/context/ConfirmProvider";
@@ -16,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Table,
@@ -32,12 +34,18 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { AdminDialogProps } from "./types";
+import { TemporaryPoliciesEditor } from "./TemporaryPoliciesEditor";
+import { WorkloadIdentitiesEditor } from "./WorkloadIdentitiesEditor";
 import {
   AdminEntityDialog,
   EntityDialogFormLayout,
 } from "./AdminEntityDialog";
 
 interface ServiceAccountForm {
+  kind: "automation" | "agent";
+  limits: AgentLimits;
+  cidrs: string;
+  mediaTypes: string;
   name: string;
   description: string;
   group_ids: string[];
@@ -48,6 +56,10 @@ interface ServiceAccountForm {
 
 function emptyForm(): ServiceAccountForm {
   return {
+    kind: "automation",
+    limits: { requests_per_minute: 60, burst: 10, max_concurrent: 2, max_response_bytes: 16 * 1024 * 1024, daily_bytes: 1024 * 1024 * 1024, allowed_cidrs: [] },
+    cidrs: "",
+    mediaTypes: "",
     name: "",
     description: "",
     group_ids: [],
@@ -142,6 +154,10 @@ export function ServiceAccountsDialog({
     setEditingId(target.service_account_id);
     setCredential(null);
     setForm({
+      kind: target.kind || "automation",
+      limits: emptyForm().limits,
+      cidrs: "",
+      mediaTypes: "",
       name: target.name,
       description: target.description,
       group_ids: [],
@@ -158,7 +174,8 @@ export function ServiceAccountsDialog({
       ]);
       setTokens(t.items || []);
       setPolicyIds(p.policy_ids || []);
-      setForm((current) => ({ ...current, group_ids: g.group_ids || [] }));
+      const limits = t.items?.find((token) => !token.revoked_at && token.agent_limits)?.agent_limits;
+      setForm((current) => ({ ...current, group_ids: g.group_ids || [], limits: limits || current.limits, cidrs: limits?.allowed_cidrs?.join(", ") || "", mediaTypes: limits?.read_media_types?.join(", ") || "" }));
     } catch (error) {
       handleError(error);
     }
@@ -191,6 +208,8 @@ export function ServiceAccountsDialog({
           enabled: form.enabled,
           token_name: form.token_name,
           expires_at: credentialExpiry(form.expires_at),
+          kind: form.kind,
+          ...(form.kind === "agent" ? { agent_limits: { ...form.limits, allowed_cidrs: form.cidrs.split(",").map((item) => item.trim()).filter(Boolean), read_media_types: form.mediaTypes.split(",").map((item) => item.trim()).filter(Boolean) } } : {}),
         });
         setCredential(result.credential);
         setEditingId(result.service_account.service_account_id);
@@ -219,12 +238,13 @@ export function ServiceAccountsDialog({
         name: form.token_name || "rotated",
         expires_at: credentialExpiry(form.expires_at),
         revoke_existing: true,
+        ...(form.kind === "agent" ? { agent_limits: { ...form.limits, allowed_cidrs: form.cidrs.split(",").map((item) => item.trim()).filter(Boolean), read_media_types: form.mediaTypes.split(",").map((item) => item.trim()).filter(Boolean) } } : {}),
       });
       setCredential(result);
       const t = await api.serviceAccountTokens(editingId);
       setTokens(t.items || []);
       toast.success(
-        "Credencial rotacionada. As credenciais anteriores foram revogadas.",
+        "Credencial rotacionada. As API keys estáticas anteriores foram revogadas.",
       );
     } catch (error) {
       handleError(error);
@@ -250,6 +270,26 @@ export function ServiceAccountsDialog({
     } catch (error) {
       handleError(error);
     }
+  }
+
+  async function updateLimits(token: ServiceAccountToken) {
+    setBusy(true);
+    try {
+      await api.updateAgentTokenLimits(editingId, token.token_id, { ...form.limits, allowed_cidrs: form.cidrs.split(",").map((item) => item.trim()).filter(Boolean), read_media_types: form.mediaTypes.split(",").map((item) => item.trim()).filter(Boolean) });
+      const result = await api.serviceAccountTokens(editingId);
+      setTokens(result.items || []);
+      toast.success("Limites atualizados; requisições em andamento foram interrompidas.");
+    } catch (error) { handleError(error); } finally { setBusy(false); }
+  }
+
+  async function disableAgents() {
+    if (!(await confirm({ title: "Desativar todos os agentes?", description: "As requisições em andamento serão interrompidas. Cada conta poderá ser reativada individualmente.", confirmText: "Desativar agentes", destructive: true }))) return;
+    setBusy(true);
+    try {
+      const result = await api.disableAgentAccounts();
+      await reloadAccounts();
+      toast.success(`${result.disabled} conta(s) de agente desativada(s).`);
+    } catch (error) { handleError(error); } finally { setBusy(false); }
   }
 
   async function remove(target: ServiceAccount) {
@@ -312,16 +352,19 @@ export function ServiceAccountsDialog({
         }
       >
         <DialogHeader>
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
                 Administração
               </p>
               <DialogTitle>API Keys</DialogTitle>
             </div>
+            <div className="flex flex-wrap gap-2">
+            <Button variant="destructive" size="sm" disabled={busy} onClick={disableAgents}>Desativar agentes</Button>
             <Button variant="secondary" size="sm" onClick={openCreateForm}>
               Nova API key
             </Button>
+            </div>
           </div>
         </DialogHeader>
 
@@ -447,6 +490,14 @@ export function ServiceAccountsDialog({
               summary={
                 <>
             <div className="grid gap-2">
+              <Label htmlFor="sa-kind">Tipo de conta</Label>
+              <Select value={form.kind} disabled={!!editingId} onValueChange={(value) => setForm({ ...form, kind: value as "automation" | "agent" })}>
+                <SelectTrigger id="sa-kind"><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="automation">Automação</SelectItem><SelectItem value="agent">Agente de IA</SelectItem></SelectContent>
+              </Select>
+              {form.kind === "agent" && <small className="text-muted-foreground">O agente pode apenas listar e ler, dentro das policies e limites da credencial.</small>}
+            </div>
+            <div className="grid gap-2">
               <Label htmlFor="sa-name">Nome</Label>
               <Input
                 id="sa-name"
@@ -530,6 +581,58 @@ export function ServiceAccountsDialog({
               </fieldset>
             )}
 
+            {editingId && <TemporaryPoliciesEditor subject="service-accounts" subjectId={editingId} policies={policies} agent={form.kind === "agent"} />}
+
+            {form.kind === "agent" && (
+              <fieldset className="grid gap-3 rounded-md border p-3">
+                <legend className="px-1 text-sm font-medium">Limites da credencial{editingId ? " selecionada ou nova" : ""}</legend>
+                <div className="grid gap-2">
+                  <Label>Permissões máximas da credencial</Label>
+                  {([ ["list", "Listar"], ["read", "Ler"] ] as const).map(([capability, label]) => (
+                    <label key={capability} className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={(form.limits.capabilities ?? ["list", "read"]).includes(capability)}
+                        onCheckedChange={(checked) => setForm((current) => {
+                          const selected = current.limits.capabilities ?? ["list", "read"];
+                          return { ...current, limits: { ...current.limits, capabilities: checked === true ? [...selected.filter((item) => item !== capability), capability] : selected.filter((item) => item !== capability) } };
+                        })}
+                      />
+                      {label}
+                    </label>
+                  ))}
+                  <small className="text-muted-foreground">A policy da conta também precisa conceder a permissão.</small>
+                  <label className="mt-2 flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={form.limits.request_deletes === true}
+                      onCheckedChange={(checked) => setForm((current) => ({ ...current, limits: { ...current.limits, request_deletes: checked === true } }))}
+                      aria-label="Pode pedir para apagar arquivos"
+                    />
+                    Pode pedir para apagar arquivos
+                  </label>
+                  <small className="text-muted-foreground">
+                    O agente nunca apaga: o pedido espera uma pessoa decidir, e só vale onde uma regra da conta exige aprovação
+                    para apagar. Exige as aprovações habilitadas no Control Tower.
+                  </small>
+                </div>
+                {([
+                  ["requests_per_minute", "Requisições por minuto", 1, 60000],
+                  ["burst", "Pico de requisições", 1, 10000],
+                  ["max_concurrent", "Requisições simultâneas", 1, 32],
+                  ["max_response_bytes", "Bytes por resposta", 1024, 1073741824],
+                  ["daily_bytes", "Bytes por dia (UTC)", 1024, 1125899906842624],
+                ] as const).map(([key, label, min, max]) => (
+                  <div className="grid gap-1" key={key}>
+                    <Label htmlFor={`agent-${key}`}>{label}</Label>
+                    <Input id={`agent-${key}`} type="number" min={min} max={max} step={1} required value={form.limits[key]} onChange={(event) => setForm((current) => ({ ...current, limits: { ...current.limits, [key]: Number(event.target.value) } }))} />
+                  </div>
+                ))}
+                <div className="grid gap-1"><Label htmlFor="agent-cidrs">Redes permitidas (CIDR, opcional)</Label><Input id="agent-cidrs" value={form.cidrs} placeholder="192.168.1.0/24, 10.0.0.0/8" onChange={(event) => setForm({ ...form, cidrs: event.target.value })} /></div>
+                <div className="grid gap-1"><Label htmlFor="agent-media-types">Formatos de leitura (opcional)</Label><Input id="agent-media-types" value={form.mediaTypes} placeholder="text/plain, application/pdf" onChange={(event) => setForm({ ...form, mediaTypes: event.target.value })} /></div>
+                <small className="text-muted-foreground">Em branco permite qualquer formato. Com restrição, downloads ZIP ficam indisponíveis.</small>
+                <small className="text-muted-foreground">Deixe as redes em branco para permitir qualquer origem. A expiração padrão é de 30 dias.</small>
+              </fieldset>
+            )}
+
             {!editingId && (
               <>
                 <div className="grid gap-2">
@@ -546,7 +649,7 @@ export function ServiceAccountsDialog({
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="sa-exp">Expiração opcional</Label>
+                  <Label htmlFor="sa-exp">{form.kind === "agent" ? "Expiração (padrão: 30 dias)" : "Expiração opcional"}</Label>
                   <Input
                     id="sa-exp"
                     type="datetime-local"
@@ -581,7 +684,7 @@ export function ServiceAccountsDialog({
                 <div className="flex items-baseline justify-between">
                   <h3 className="font-semibold">Credenciais</h3>
                   <small className="text-muted-foreground">
-                    Rotação revoga todas as anteriores.
+                    Rotação revoga as API keys estáticas anteriores.
                   </small>
                 </div>
                 <div className="grid gap-2">
@@ -597,7 +700,7 @@ export function ServiceAccountsDialog({
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="sa-newexp">Expiração opcional</Label>
+                  <Label htmlFor="sa-newexp">{form.kind === "agent" ? "Expiração (padrão: 30 dias)" : "Expiração opcional"}</Label>
                   <Input
                     id="sa-newexp"
                     type="datetime-local"
@@ -633,6 +736,9 @@ export function ServiceAccountsDialog({
                         </small>
                       </span>
                       {!token.revoked_at && (
+                        <div className="flex flex-wrap gap-1">
+                        {form.kind === "agent" && token.agent_limits && <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setForm((current) => ({ ...current, limits: token.agent_limits!, cidrs: token.agent_limits?.allowed_cidrs?.join(", ") || "", mediaTypes: token.agent_limits?.read_media_types?.join(", ") || "" }))}>Carregar limites</Button>}
+                        {form.kind === "agent" && <Button type="button" variant="secondary" size="sm" disabled={busy} onClick={() => void updateLimits(token)}>Aplicar limites</Button>}
                         <Button
                           type="button"
                           variant="ghost"
@@ -641,12 +747,15 @@ export function ServiceAccountsDialog({
                         >
                           Revogar
                         </Button>
+                        </div>
                       )}
                     </div>
                   ))}
                 </div>
               </div>
             )}
+
+            {editingId && <WorkloadIdentitiesEditor key={editingId} accountId={editingId} agentLimits={form.kind === "agent" ? { ...form.limits, allowed_cidrs: form.cidrs.split(",").map((item) => item.trim()).filter(Boolean), read_media_types: form.mediaTypes.split(",").map((item) => item.trim()).filter(Boolean) } : undefined} onLoadLimits={(limits) => setForm((current) => ({ ...current, limits, cidrs: limits.allowed_cidrs?.join(", ") || "", mediaTypes: limits.read_media_types?.join(", ") || "" }))} />}
 
             <div className="flex justify-end gap-2">
               <Button type="submit" disabled={busy}>

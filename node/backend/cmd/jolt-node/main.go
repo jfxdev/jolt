@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jfxdev/jolt/backend/internal/contracts"
+	"github.com/jfxdev/jolt/backend/internal/entities"
 	"github.com/jfxdev/jolt/backend/internal/infra/config"
 	joltcrypto "github.com/jfxdev/jolt/backend/internal/infra/crypto"
 	"github.com/jfxdev/jolt/backend/internal/infra/httpapi"
@@ -29,12 +30,14 @@ import (
 	"github.com/jfxdev/jolt/backend/internal/infra/mtlsapi"
 	"github.com/jfxdev/jolt/backend/internal/infra/recovery"
 	db "github.com/jfxdev/jolt/backend/internal/infra/state"
+	"github.com/jfxdev/jolt/backend/internal/join"
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
 	"github.com/jfxdev/jolt/backend/internal/services/grants"
 	"github.com/jfxdev/jolt/backend/internal/services/jobs"
 	"github.com/jfxdev/jolt/backend/internal/services/pairing"
 	"github.com/jfxdev/jolt/backend/internal/services/peers"
 	"github.com/jfxdev/jolt/backend/internal/services/transfers"
+	"github.com/jfxdev/jolt/backend/internal/trust"
 )
 
 func main() {
@@ -99,12 +102,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	trustManager, err := enrollIfManaged(context.Background(), cfg, identity, store, logger)
+	if err != nil {
+		logger.Error("managed certificate authority", "error", err)
+		os.Exit(1)
+	}
+
 	fileService := filesystem.New(store, cfg.ProtectedPaths()...)
 	jobService := jobs.New(store, fileService, cfg.JobMaxAttempts)
 	jobService.ConfigureChunkSize(cfg.CopyChunkSize)
 	jobService.ConfigureBandwidth(cfg.NodeBandwidthLimit)
 	jobService.ConfigureParallelism(cfg.MaxParallelFilesPerJob, cfg.MaxParallelChunksPerFile)
 	jobService.ConfigureTimeouts(cfg.JobValidationTimeout, cfg.TransferChunkTimeout, cfg.JobNoProgressTimeout)
+	jobService.ConfigureSignedExecution(store, identity.NodeID, trustManager.AuthorizationKeys())
+	jobService.ConfigureSignedKeySource(trustManager.AuthorizationKeys)
 	jobContext, stopJobs := context.WithCancel(context.Background())
 	defer stopJobs()
 	pairingService := pairing.New(store, identity)
@@ -120,7 +131,15 @@ func main() {
 	jobService.ConfigureRemoteExecutor(transferService)
 	registry := metrics.NewRegistry()
 	registerNodeMetrics(registry, cfg, store)
+	registerTrustMetrics(registry, trustManager)
 	go sweepUploadSessions(jobContext, store, fileService, logger, cfg.UploadSessionTTL)
+	if recovered, err := fileService.RecoverTrash(jobContext); err != nil {
+		logger.Error("recover trash", "error", err)
+	} else if recovered > 0 {
+		logger.Warn("reconciled trash records after a restart", "count", recovered)
+	}
+	registerTrashMetrics(registry, fileService)
+	go sweepTrash(jobContext, fileService, registry, logger)
 	recoveredJobs, err := jobService.Start(jobContext, cfg.MaxConcurrentJobs)
 	if err != nil {
 		logger.Error("start job workers", "error", err)
@@ -141,11 +160,19 @@ func main() {
 	go peerMonitor.Run(jobContext)
 	server := &http.Server{
 		Addr:              cfg.APIAddress,
-		Handler:           httpapi.New(cfg, identity, fileService, jobService, pairingService, grantService, logger, store, certificateManager, transferService, registry),
+		Handler:           httpapi.New(cfg, identity, fileService, jobService, pairingService, grantService, logger, store, certificateManager, transferService, registry, trustManager),
 		ReadHeaderTimeout: 10 * 1e9,
 		IdleTimeout:       120 * 1e9,
 	}
-	if cfg.APITLSEnabled() {
+	apiTLSOn := cfg.APITLSEnabled() || trustManager.Managed()
+	if trustManager.Managed() {
+		// The certificate is the authority's and is renewed while the node runs.
+		// A client certificate is verified when one is offered. In managed-only
+		// the API then accepts nothing else from the Control Tower; the check
+		// is made on every request, so a revoked certificate stops working on
+		// a connection that is already open.
+		server.TLSConfig = trustManager.TLSConfig()
+	} else if cfg.APITLSEnabled() {
 		apiTLS, tlsErr := apiTLSConfig(cfg)
 		if tlsErr != nil {
 			logger.Error("load API TLS material", "error", tlsErr)
@@ -160,18 +187,18 @@ func main() {
 	}
 	go func() {
 		scheme := "http"
-		if cfg.APITLSEnabled() {
+		if apiTLSOn {
 			scheme = "https"
 		}
 		logger.Info("jolt node started", "node_id", identity.NodeID, "fingerprint", identity.Fingerprint,
 			"address", cfg.APIAddress, "scheme", scheme, "client_certificate_required", cfg.APITLSClientCAFile != "")
-		if !cfg.APITLSEnabled() {
+		if !apiTLSOn {
 			logger.Warn("control API is serving plaintext HTTP; the operational token and file bytes " +
 				"are exposed on the wire. Set api_tls_cert_file and api_tls_key_file in node.yaml, or keep this " +
 				"listener on a private network. See docs/REVERSE_PROXY.md")
 		}
 		var err error
-		if cfg.APITLSEnabled() {
+		if apiTLSOn {
 			err = server.ListenAndServeTLS("", "")
 		} else {
 			err = server.ListenAndServe()
@@ -216,6 +243,61 @@ func main() {
 	}
 }
 
+// enrollIfManaged loads the enrollment state and, for a node in managed mode
+// that has none, enrolls it with the join token. A node in manual mode gets a
+// manager that does nothing.
+func enrollIfManaged(ctx context.Context, cfg config.Config, identity entities.Identity, store *db.Store, logger *slog.Logger) (*trust.Manager, error) {
+	manager, err := trust.Load(ctx, store, cfg.AuthorizationKeys, nil)
+	if err != nil {
+		return nil, err
+	}
+	if !cfg.Managed() {
+		if manager.Managed() {
+			return nil, errors.New("this node was enrolled in a managed authority; set tls_mode: managed (or managed-only) again (its certificate and trusted keys come from that authority)")
+		}
+		return manager, nil
+	}
+	if !manager.Managed() {
+		if cfg.JoinToken == "" {
+			return nil, errors.New("tls_mode is managed and this node is not enrolled: set JOLT_JOIN_TOKEN (or JOLT_JOIN_TOKEN_FILE) to a token from the Control Tower")
+		}
+		token, err := join.ParseToken(cfg.JoinToken)
+		if err != nil {
+			return nil, err
+		}
+		logger.Info("enrolling in the Control Tower's certificate authority", "control_tower", token.ControlURL, "node_fingerprint", identity.Fingerprint)
+		if err := join.Run(ctx, join.Options{
+			Token: token, NodeName: cfg.NodeName, NodeID: identity.NodeID, Fingerprint: identity.Fingerprint, APIEndpoint: cfg.APIPublicEndpoint,
+			Manager: manager, Tokens: store, Log: logger,
+		}); err != nil {
+			return nil, err
+		}
+		logger.Info("enrolled; the join token is spent and can be removed from the environment")
+	} else if cfg.JoinToken != "" {
+		logger.Info("this node is already enrolled; the join token is ignored")
+	}
+	// Finishes an enrollment that a crash interrupted before the token was written.
+	if err := manager.EnsureOperationalToken(ctx, store); err != nil {
+		return nil, err
+	}
+	return manager, nil
+}
+
+// registerTrustMetrics exposes how long the API certificate has left and which
+// trust bundle the node holds. A node that is not enrolled reports nothing.
+func registerTrustMetrics(registry *metrics.Registry, manager *trust.Manager) {
+	if !manager.Managed() {
+		return
+	}
+	registry.GaugeFunc("jolt_node_api_certificate_expiry_seconds", "Seconds until the managed API certificate ends.", func() float64 {
+		end, _ := manager.CertificateEnd()
+		return time.Until(end).Seconds()
+	})
+	registry.GaugeFunc("jolt_node_trust_bundle_version", "Version of the trust bundle this node holds.", func() float64 {
+		return float64(manager.BundleVersion())
+	})
+}
+
 // registerNodeMetrics declares every metric the node exposes. Declaring them
 // up front means a scrape before the first request still returns a complete,
 // zero-valued series set instead of an empty page.
@@ -254,6 +336,69 @@ func registerNodeMetrics(registry *metrics.Registry, cfg config.Config, uploads 
 	registry.GaugeFunc("jolt_max_concurrent_jobs", "Configured job worker count.",
 		func() float64 { return float64(cfg.MaxConcurrentJobs) })
 	registry.RegisterRuntime()
+}
+
+// sweepTrash purges what mounts kept past their retention. It runs often
+// enough that an entry does not outlive its retention by more than a few
+// minutes, and rarely enough to cost nothing.
+func sweepTrash(ctx context.Context, files *filesystem.Service, registry *metrics.Registry, logger *slog.Logger) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for tick := 1; ; tick++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if tick%10 == 0 {
+			purged, err := files.SweepTrash(ctx, time.Now().UTC())
+			if err != nil {
+				logger.Error("sweep trash", "error", err)
+			}
+			if purged > 0 {
+				registry.Add("jolt_trash_purged_total", int64(purged))
+				logger.Info("purged expired trash", "count", purged)
+			}
+		}
+		refreshTrashMetrics(ctx, registry, files, logger)
+	}
+}
+
+func registerTrashMetrics(registry *metrics.Registry, files *filesystem.Service) {
+	registry.Gauge("jolt_trash_entries", "Entries a mount's trash holds.", "mount")
+	registry.Gauge("jolt_trash_bytes", "Bytes of file content a mount's trash holds.", "mount")
+	registry.Gauge("jolt_trash_oldest_age_seconds", "Age of the oldest entry in a mount's trash.", "mount")
+	registry.Counter("jolt_trash_purged_total", "Trash entries purged after their retention.")
+	refreshTrashMetrics(context.Background(), registry, files, nil)
+}
+
+// refreshTrashMetrics sets the gauges from the stored records. A mount whose
+// trash emptied is set to zero rather than left at its last value.
+var trashMounts = map[string]bool{}
+
+func refreshTrashMetrics(ctx context.Context, registry *metrics.Registry, files *filesystem.Service, logger *slog.Logger) {
+	stats, err := files.TrashStats(ctx)
+	if err != nil {
+		if logger != nil {
+			logger.Error("trash statistics", "error", err)
+		}
+		return
+	}
+	seen := map[string]bool{}
+	for _, entry := range stats {
+		seen[entry.MountID] = true
+		trashMounts[entry.MountID] = true
+		registry.SetGauge("jolt_trash_entries", int64(entry.Entries), entry.MountID)
+		registry.SetGauge("jolt_trash_bytes", entry.Bytes, entry.MountID)
+		registry.SetGauge("jolt_trash_oldest_age_seconds", int64(time.Since(entry.Oldest).Seconds()), entry.MountID)
+	}
+	for mount := range trashMounts {
+		if !seen[mount] {
+			registry.SetGauge("jolt_trash_entries", 0, mount)
+			registry.SetGauge("jolt_trash_bytes", 0, mount)
+			registry.SetGauge("jolt_trash_oldest_age_seconds", 0, mount)
+		}
+	}
 }
 
 // sweepUploadSessions discards resumable uploads whose client never came back,

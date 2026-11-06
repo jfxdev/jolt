@@ -18,6 +18,7 @@ import (
 
 	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/entities"
+	"github.com/jfxdev/jolt/backend/internal/filepolicy"
 )
 
 var (
@@ -28,14 +29,18 @@ var (
 	ErrDisabled      = errors.New("mount is disabled")
 	ErrInvalid       = errors.New("invalid request")
 	ErrSourceChanged = errors.New("source changed during copy")
+	ErrHiddenName    = errors.New("destination name is hidden")
+	ErrProtectedTree = errors.New("directory contains protected entries")
 )
 
 type serviceStore interface {
 	contracts.ConfigurationReader
 	contracts.ConfigurationWriter
+	contracts.TrashStore
 }
 
 type Service struct {
+	uploadInspection   UploadInspection
 	maxUploadBytes     int64
 	uploadMinFreeBytes int64
 	uploadWriteMu      sync.Mutex
@@ -104,6 +109,12 @@ func (s *Service) GetMount(ctx context.Context, id string) (entities.Mount, erro
 }
 
 func (s *Service) SaveMount(ctx context.Context, mount entities.Mount) (entities.Mount, error) {
+	if err := filepolicy.ValidateCanaries(mount.CanaryPaths); err != nil {
+		return mount, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	if err := filepolicy.ValidatePatterns(mount.HiddenPatterns); err != nil {
+		return mount, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
 	mount.Name = strings.TrimSpace(mount.Name)
 	if mount.Name == "" {
 		return mount, fmt.Errorf("%w: name is required", ErrInvalid)
@@ -203,13 +214,20 @@ func (s *Service) BrowsePath(ctx context.Context, path string, limit int) (home,
 	if s.blocked(evaluated) {
 		return "", "", "", nil, fmt.Errorf("%w: path is protected", ErrInvalid)
 	}
+	mounts, err := s.store.ListMounts(ctx)
+	if err != nil {
+		return "", "", "", nil, err
+	}
+	if hiddenOnAnyMount(mounts, evaluated) {
+		return "", "", "", nil, ErrNotFound
+	}
 	dirEntries, readErr := os.ReadDir(evaluated)
 	if readErr != nil {
 		return "", "", "", nil, readErr
 	}
 	visible := dirEntries[:0]
 	for _, entry := range dirEntries {
-		if isInternalPartialName(entry.Name()) || strings.HasPrefix(entry.Name(), ".") {
+		if isInternalPartialName(entry.Name()) || strings.HasPrefix(entry.Name(), ".") || hiddenOnAnyMount(mounts, filepath.Join(evaluated, entry.Name())) {
 			continue
 		}
 		visible = append(visible, entry)
@@ -265,6 +283,11 @@ func (s *Service) blocked(path string) bool {
 }
 
 func (s *Service) Metadata(ctx context.Context, mountID, relative string) (entities.FileEntry, error) {
+	return s.MetadataFiltered(ctx, mountID, relative, nil)
+}
+
+// MetadataFiltered determines the real entry type before applying the filter.
+func (s *Service) MetadataFiltered(ctx context.Context, mountID, relative string, filter *AccessFilter) (entities.FileEntry, error) {
 	_, resolved, err := s.resolve(ctx, mountID, relative, false)
 	if err != nil {
 		return entities.FileEntry{}, err
@@ -276,6 +299,9 @@ func (s *Service) Metadata(ctx context.Context, mountID, relative string) (entit
 	if err != nil {
 		return entities.FileEntry{}, err
 	}
+	if err := filter.checkRoot(cleanRelativeSlash(relative), info); err != nil {
+		return entities.FileEntry{}, err
+	}
 	kind := "file"
 	if info.IsDir() {
 		kind = "directory"
@@ -284,7 +310,7 @@ func (s *Service) Metadata(ctx context.Context, mountID, relative string) (entit
 }
 
 func (s *Service) Manifest(ctx context.Context, mountID, relative string) ([]entities.FileEntry, error) {
-	_, root, err := s.resolve(ctx, mountID, relative, false)
+	mount, root, err := s.resolve(ctx, mountID, relative, false)
 	if err != nil {
 		return nil, err
 	}
@@ -313,6 +339,12 @@ func (s *Service) Manifest(ctx context.Context, mountID, relative string) ([]ent
 		if relativePath == "." {
 			return nil
 		}
+		if hiddenName(mount, entry.Name()) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("%w: symlinks are not included in manifests", ErrInvalid)
 		}
@@ -336,7 +368,12 @@ func (s *Service) Manifest(ctx context.Context, mountID, relative string) ([]ent
 // ManifestPage walks a directory without retaining the complete manifest in
 // memory. The total count is still calculated so callers can validate cursors.
 func (s *Service) ManifestPage(ctx context.Context, mountID, relative string, after, limit int) ([]entities.FileEntry, int, error) {
-	_, root, err := s.resolve(ctx, mountID, relative, false)
+	return s.ManifestPageWithExclusions(ctx, mountID, relative, after, limit, nil)
+}
+
+// ManifestPageWithExclusions applies grant patterns before counting or paging.
+func (s *Service) ManifestPageWithExclusions(ctx context.Context, mountID, relative string, after, limit int, exclude []string) ([]entities.FileEntry, int, error) {
+	mount, root, err := s.resolve(ctx, mountID, relative, false)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -369,6 +406,12 @@ func (s *Service) ManifestPage(ctx context.Context, mountID, relative string, af
 		if relativePath == "." {
 			return nil
 		}
+		if hiddenName(mount, entry.Name()) || filepolicy.Hidden(exclude, entry.Name()) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("%w: symlinks are not included in manifests", ErrInvalid)
 		}
@@ -395,9 +438,23 @@ func (s *Service) ManifestPage(ctx context.Context, mountID, relative string, af
 }
 
 func (s *Service) Open(ctx context.Context, mountID, relative string) (*os.File, os.FileInfo, error) {
+	return s.OpenFiltered(ctx, mountID, relative, nil)
+}
+
+// OpenFiltered applies the supplied access filter before and after opening.
+func (s *Service) OpenFiltered(ctx context.Context, mountID, relative string, filter *AccessFilter) (*os.File, os.FileInfo, error) {
 	_, resolved, err := s.resolve(ctx, mountID, relative, false)
 	if err != nil {
 		return nil, nil, err
+	}
+	if filter != nil {
+		info, err := safeStat(resolved)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := filter.checkRoot(cleanRelativeSlash(relative), info); err != nil {
+			return nil, nil, err
+		}
 	}
 	f, err := safeOpen(resolved)
 	if err != nil {
@@ -412,18 +469,37 @@ func (s *Service) Open(ctx context.Context, mountID, relative string) (*os.File,
 		f.Close()
 		return nil, nil, fmt.Errorf("%w: path is not a file", ErrInvalid)
 	}
+	if err := filter.checkRoot(cleanRelativeSlash(relative), info); err != nil {
+		f.Close()
+		return nil, nil, err
+	}
 	return f, info, nil
 }
 
 // Checksum calculates SHA-256 as a stream so large files are never loaded into memory.
 func (s *Service) Checksum(ctx context.Context, mountID, relative string) (string, error) {
-	file, _, err := s.Open(ctx, mountID, relative)
+	return s.checksumFiltered(ctx, mountID, relative, nil)
+}
+
+// ChecksumFiltered hashes only a file readable through the supplied filter.
+func (s *Service) ChecksumFiltered(ctx context.Context, mountID, relative string, filter *AccessFilter) (string, error) {
+	if filter == nil || filter.context == nil {
+		return "", ErrInvalid
+	}
+	return s.checksumFiltered(ctx, mountID, relative, filter)
+}
+
+func (s *Service) checksumFiltered(ctx context.Context, mountID, relative string, filter *AccessFilter) (string, error) {
+	file, _, err := s.OpenFiltered(ctx, mountID, relative, filter)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
 	hash := sha256.New()
 	if _, err := io.Copy(hash, &contextReader{ctx: ctx, reader: file}); err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
@@ -440,7 +516,29 @@ func (s *Service) CreateDirectory(ctx context.Context, mountID, relative string)
 	return safeMkdir(resolved, 0o777)
 }
 
+// CreateDirectoryFiltered remains internal while filtered authorization is not
+// enforced on all file operations.
+func (s *Service) CreateDirectoryFiltered(ctx context.Context, mountID, relative string, filter *AccessFilter) error {
+	if filter == nil || filter.context == nil {
+		return ErrInvalid
+	}
+	mount, resolved, err := s.resolve(ctx, mountID, relative, true)
+	if err != nil {
+		return err
+	}
+	if err := writable(mount); err != nil {
+		return err
+	}
+	return ensureFilteredCopyDirectory(ctx, mount, resolved, false, filter)
+}
+
 func (s *Service) Delete(ctx context.Context, mountID, relative string, recursive bool) error {
+	return s.DeleteFiltered(ctx, mountID, relative, recursive, nil)
+}
+
+// DeleteFiltered checks the complete tree before making any changes. This is
+// not exposed until authorization contexts are enforced across all operations.
+func (s *Service) DeleteFiltered(ctx context.Context, mountID, relative string, recursive bool, filter *AccessFilter) error {
 	if cleanRelative(relative) == "." {
 		return fmt.Errorf("%w: mount root cannot be removed", ErrInvalid)
 	}
@@ -455,13 +553,44 @@ func (s *Service) Delete(ctx context.Context, mountID, relative string, recursiv
 	if err != nil {
 		return err
 	}
+	if err := rejectProtectedTree(ctx, mount, resolved); err != nil {
+		return err
+	}
+	if err := validateFilteredDeleteTree(ctx, mount, resolved, filter); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if info.IsDir() && !recursive {
 		return safeRemove(resolved)
 	}
-	return safeRemoveAll(resolved)
+	if trashEnabled(mount) {
+		return s.moveToTrash(ctx, mount, cleanRelative(relative), resolved, info)
+	}
+	return safeRemoveProtected(ctx, resolved, func(name string) bool { return hiddenName(mount, name) })
+}
+
+// ValidateMoveSource checks a selected source tree before any move cleanup.
+func (s *Service) ValidateMoveSource(ctx context.Context, mountID, relative string) error {
+	return s.ValidateMoveSourceWithExclusions(ctx, mountID, relative, nil)
+}
+
+func (s *Service) ValidateMoveSourceWithExclusions(ctx context.Context, mountID, relative string, exclude []string) error {
+	mount, resolved, err := s.resolvePath(ctx, mountID, relative, false, true)
+	if err != nil {
+		return err
+	}
+	mount.HiddenPatterns = append(append([]string(nil), mount.HiddenPatterns...), exclude...)
+	return rejectProtectedTree(ctx, mount, resolved)
 }
 
 func (s *Service) Move(ctx context.Context, mountID, source, destination string, overwrite bool) error {
+	return s.MoveFiltered(ctx, mountID, source, destination, overwrite, nil)
+}
+
+// MoveFiltered is internal until all file operations enforce the same context.
+func (s *Service) MoveFiltered(ctx context.Context, mountID, source, destination string, overwrite bool, filter *AccessFilter) error {
 	if cleanRelative(source) == "." {
 		return fmt.Errorf("%w: mount root cannot be moved", ErrInvalid)
 	}
@@ -485,6 +614,20 @@ func (s *Service) Move(ctx context.Context, mountID, source, destination string,
 	}
 	if sourceInfo.IsDir() && within(src, dst) {
 		return fmt.Errorf("%w: destination cannot be inside source", ErrInvalid)
+	}
+	if err := rejectProtectedTree(ctx, mount, src); err != nil {
+		return err
+	}
+	if overwrite {
+		if err := rejectProtectedTree(ctx, mount, dst); err != nil {
+			return err
+		}
+	}
+	if err := validateFilteredMove(ctx, mount, src, dst, overwrite, filter); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if !overwrite {
 		if _, err := safeLstat(dst); err == nil {
@@ -515,6 +658,12 @@ func (s *Service) Move(ctx context.Context, mountID, source, destination string,
 	if err := publishPath(dst, backupPath, false); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		if restoreErr := publishPath(backupPath, dst, false); restoreErr != nil {
+			return fmt.Errorf("move canceled: %w (also could not restore destination: %v)", err, restoreErr)
+		}
+		return err
+	}
 	if err := publishPath(src, dst, overwrite); err != nil {
 		if restoreErr := publishPath(backupPath, dst, false); restoreErr != nil {
 			return fmt.Errorf("move failed: %w (also could not restore destination: %v)", err, restoreErr)
@@ -525,6 +674,19 @@ func (s *Service) Move(ctx context.Context, mountID, source, destination string,
 }
 
 func (s *Service) Upload(ctx context.Context, mountID, relative string, body io.Reader, overwrite bool, limiters ...ByteRateLimiter) (int64, error) {
+	return s.uploadFiltered(ctx, mountID, relative, body, overwrite, nil, limiters...)
+}
+
+// UploadFiltered checks the destination before accepting bytes and again just
+// before publication. It does not yet apply to resumable upload sessions.
+func (s *Service) UploadFiltered(ctx context.Context, mountID, relative string, body io.Reader, overwrite bool, filter *AccessFilter, limiters ...ByteRateLimiter) (int64, error) {
+	if filter == nil || filter.context == nil {
+		return 0, ErrInvalid
+	}
+	return s.uploadFiltered(ctx, mountID, relative, body, overwrite, filter, limiters...)
+}
+
+func (s *Service) uploadFiltered(ctx context.Context, mountID, relative string, body io.Reader, overwrite bool, filter *AccessFilter, limiters ...ByteRateLimiter) (int64, error) {
 	if cleanRelative(relative) == "." {
 		return 0, ErrInvalid
 	}
@@ -535,7 +697,11 @@ func (s *Service) Upload(ctx context.Context, mountID, relative string, body io.
 	if err := writable(mount); err != nil {
 		return 0, err
 	}
-	if !overwrite {
+	if filter != nil {
+		if err := validateFilteredFileDestination(ctx, mount, destination, overwrite, filter); err != nil {
+			return 0, err
+		}
+	} else if !overwrite {
 		if _, err := safeLstat(destination); err == nil {
 			return 0, ErrConflict
 		}
@@ -551,6 +717,10 @@ func (s *Service) Upload(ctx context.Context, mountID, relative string, body io.
 	}
 	written, copyErr := io.Copy(&uploadWriter{service: s, file: temp, limit: s.maxUploadBytes}, &contextReader{ctx: ctx, reader: body})
 	syncErr := temp.Sync()
+	var inspectionErr error
+	if copyErr == nil && syncErr == nil {
+		inspectionErr = s.inspectUpload(temp)
+	}
 	closeErr := temp.Close()
 	if copyErr != nil {
 		return written, copyErr
@@ -558,8 +728,19 @@ func (s *Service) Upload(ctx context.Context, mountID, relative string, body io.
 	if syncErr != nil {
 		return written, syncErr
 	}
+	if inspectionErr != nil {
+		return written, inspectionErr
+	}
 	if closeErr != nil {
 		return written, closeErr
+	}
+	if filter != nil {
+		if err := validateFilteredFileDestination(ctx, mount, destination, overwrite, filter); err != nil {
+			return written, err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return written, err
 	}
 	if err := publishPath(tempName, destination, overwrite); err != nil {
 		return written, err
@@ -591,14 +772,39 @@ func (s *Service) CopyWithProgress(ctx context.Context, mountID, source, destina
 		if within(src, dst) {
 			return 0, fmt.Errorf("%w: destination cannot be inside source", ErrInvalid)
 		}
-		return s.copyDirectory(ctx, src, dst, overwrite, progress)
+		return s.copyDirectory(ctx, mount, src, dst, overwrite, progress)
 	}
 	in, err := safeOpen(src)
 	if err != nil {
 		return 0, err
 	}
 	defer in.Close()
-	return copyAtomic(ctx, in, dst, overwrite, info.Size(), 0, progress)
+	return copyAtomic(ctx, mount, in, dst, overwrite, info.Size(), 0, progress)
+}
+
+// CopyFileFiltered copies a single regular file using an internal authorization
+// filter. It is not exposed until authorization is enforced for every operation.
+func (s *Service) CopyFileFiltered(ctx context.Context, mountID, source, destination string, overwrite bool, filter *AccessFilter) (int64, error) {
+	if filter == nil || cleanRelative(source) == cleanRelative(destination) {
+		return 0, ErrInvalid
+	}
+	mount, dst, err := s.resolve(ctx, mountID, destination, true)
+	if err != nil {
+		return 0, err
+	}
+	if err := writable(mount); err != nil {
+		return 0, err
+	}
+	check := func() error { return validateFilteredFileDestination(ctx, mount, dst, overwrite, filter) }
+	if err := check(); err != nil {
+		return 0, err
+	}
+	file, info, err := s.OpenFiltered(ctx, mountID, source, filter)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+	return copyAtomicWithCheck(ctx, mount, file, dst, overwrite, info.Size(), 0, nil, check)
 }
 
 // CopyFileVerified hashes the temporary file while streaming and validates it
@@ -662,12 +868,24 @@ func (s *Service) CopyFileVerified(ctx context.Context, mountID, source, destina
 			(expectedChecksum != "" && checksum != expectedChecksum)) {
 		return written, checksum, ErrSourceChanged
 	}
+	if err := ctx.Err(); err != nil {
+		return written, checksum, err
+	}
 	if overwrite {
 		if info, statErr := safeLstat(dst); statErr == nil && info.IsDir() {
+			if err := rejectProtectedTree(ctx, mount, dst); err != nil {
+				return written, checksum, err
+			}
+			if err := ctx.Err(); err != nil {
+				return written, checksum, err
+			}
 			if err := safeRemoveAll(dst); err != nil {
 				return written, checksum, err
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return written, checksum, err
 	}
 	if err := publishPath(tempName, dst, overwrite); err != nil {
 		return written, checksum, err
@@ -679,6 +897,22 @@ func (s *Service) CopyFileVerified(ctx context.Context, mountID, source, destina
 // The checkpoint is the last byte count known to be synced and persisted by the
 // caller; bytes beyond it are discarded after an unclean interruption.
 func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destination, resumeKey string, overwrite bool, checkpoint, chunkSize int64, expectedChecksum string, allowSourceChange bool, progress func(int64, int64) error, limiters ...ByteRateLimiter) (int64, string, error) {
+	return s.copyFileResumable(ctx, mountID, source, destination, resumeKey, overwrite, checkpoint, chunkSize, expectedChecksum, allowSourceChange, progress, nil, limiters...)
+}
+
+// CopyFileResumableFiltered retains checkpoints while enforcing the verified
+// source and final destination policy. It does not enable protected jobs.
+func (s *Service) CopyFileResumableFiltered(ctx context.Context, mountID, source, destination, resumeKey string, overwrite bool, checkpoint, chunkSize int64, expectedChecksum string, allowSourceChange bool, progress func(int64, int64) error, filter *AccessFilter, limiters ...ByteRateLimiter) (int64, string, error) {
+	if filter == nil || cleanRelative(source) == cleanRelative(destination) {
+		return 0, "", ErrInvalid
+	}
+	return s.copyFileResumable(ctx, mountID, source, destination, resumeKey, overwrite, checkpoint, chunkSize, expectedChecksum, allowSourceChange, progress, filter, limiters...)
+}
+
+func (s *Service) copyFileResumable(ctx context.Context, mountID, source, destination, resumeKey string, overwrite bool, checkpoint, chunkSize int64, expectedChecksum string, allowSourceChange bool, progress func(int64, int64) error, filter *AccessFilter, limiters ...ByteRateLimiter) (int64, string, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, "", err
+	}
 	mount, src, err := s.resolve(ctx, mountID, source, false)
 	if err != nil {
 		return 0, "", err
@@ -690,6 +924,11 @@ func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destin
 	if err := writable(mount); err != nil {
 		return 0, "", err
 	}
+	if filter != nil {
+		if err := validateFilteredFileDestination(ctx, mount, dst, overwrite, filter); err != nil {
+			return 0, "", err
+		}
+	}
 	if chunkSize <= 0 {
 		chunkSize = 16 << 20
 	}
@@ -698,7 +937,12 @@ func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destin
 			return 0, "", ErrConflict
 		}
 	}
-	input, err := safeOpen(src)
+	var input *os.File
+	if filter != nil {
+		input, _, err = s.OpenFiltered(ctx, mountID, source, filter)
+	} else {
+		input, err = safeOpen(src)
+	}
 	if err != nil {
 		return 0, "", err
 	}
@@ -711,6 +955,9 @@ func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destin
 		return 0, "", fmt.Errorf("%w: source is not a regular file", ErrInvalid)
 	}
 	partialPath := resumablePartialPath(dst, resumeKey)
+	if err := ctx.Err(); err != nil {
+		return 0, "", err
+	}
 	partial, err := safeOpenFile(partialPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return 0, "", err
@@ -729,7 +976,7 @@ func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destin
 		}
 	}
 	if checkpoint > 0 {
-		matches, err := matchingPrefix(input, partial, checkpoint)
+		matches, err := matchingPrefix(ctx, input, partial, checkpoint)
 		if err != nil {
 			return 0, "", err
 		}
@@ -785,7 +1032,7 @@ func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destin
 		return completed, "", err
 	}
 	hash := sha256.New()
-	if _, err := io.Copy(hash, partial); err != nil {
+	if _, err := io.Copy(hash, &contextReader{ctx: ctx, reader: partial}); err != nil {
 		return completed, "", err
 	}
 	checksum := hex.EncodeToString(hash.Sum(nil))
@@ -795,12 +1042,27 @@ func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destin
 	if err := partial.Close(); err != nil {
 		return completed, checksum, err
 	}
+	if err := s.validateResumableCopyPublication(ctx, mountID, source, mount, dst, overwrite, before, filter); err != nil {
+		return completed, checksum, err
+	}
 	if overwrite {
 		if info, statErr := safeLstat(dst); statErr == nil && info.IsDir() {
+			if filter != nil {
+				return completed, checksum, ErrProtectedTree
+			}
+			if err := rejectProtectedTree(ctx, mount, dst); err != nil {
+				return completed, checksum, err
+			}
+			if err := ctx.Err(); err != nil {
+				return completed, checksum, err
+			}
 			if err := safeRemoveAll(dst); err != nil {
 				return completed, checksum, err
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return completed, checksum, err
 	}
 	if err := publishPath(partialPath, dst, overwrite); err != nil {
 		return completed, checksum, err
@@ -812,9 +1074,25 @@ func (s *Service) CopyFileResumable(ctx context.Context, mountID, source, destin
 // ranges concurrently. A batch is synced in full before the durable contiguous
 // checkpoint advances, so interruption can only discard the current batch.
 func (s *Service) CopyFileResumableParallel(ctx context.Context, mountID, source, destination, resumeKey string, overwrite bool, checkpoint, chunkSize int64, maxParallel int, expectedChecksum string, allowSourceChange bool, progress func(int64, int64) error, limiter ByteRateLimiter) (int64, string, error) {
+	return s.copyFileResumableParallel(ctx, mountID, source, destination, resumeKey, overwrite, checkpoint, chunkSize, maxParallel, expectedChecksum, allowSourceChange, progress, nil, limiter)
+}
+
+// CopyFileResumableParallelFiltered is the policy-aware variant; failed
+// validation leaves the resumable partial unpublished.
+func (s *Service) CopyFileResumableParallelFiltered(ctx context.Context, mountID, source, destination, resumeKey string, overwrite bool, checkpoint, chunkSize int64, maxParallel int, expectedChecksum string, allowSourceChange bool, progress func(int64, int64) error, filter *AccessFilter, limiter ByteRateLimiter) (int64, string, error) {
+	if filter == nil || cleanRelative(source) == cleanRelative(destination) {
+		return 0, "", ErrInvalid
+	}
+	return s.copyFileResumableParallel(ctx, mountID, source, destination, resumeKey, overwrite, checkpoint, chunkSize, maxParallel, expectedChecksum, allowSourceChange, progress, filter, limiter)
+}
+
+func (s *Service) copyFileResumableParallel(ctx context.Context, mountID, source, destination, resumeKey string, overwrite bool, checkpoint, chunkSize int64, maxParallel int, expectedChecksum string, allowSourceChange bool, progress func(int64, int64) error, filter *AccessFilter, limiter ByteRateLimiter) (int64, string, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, "", err
+	}
 	if maxParallel <= 1 {
-		return s.CopyFileResumable(ctx, mountID, source, destination, resumeKey, overwrite,
-			checkpoint, chunkSize, expectedChecksum, allowSourceChange, progress, limiter)
+		return s.copyFileResumable(ctx, mountID, source, destination, resumeKey, overwrite,
+			checkpoint, chunkSize, expectedChecksum, allowSourceChange, progress, filter, limiter)
 	}
 	mount, src, err := s.resolve(ctx, mountID, source, false)
 	if err != nil {
@@ -827,6 +1105,11 @@ func (s *Service) CopyFileResumableParallel(ctx context.Context, mountID, source
 	if err := writable(mount); err != nil {
 		return 0, "", err
 	}
+	if filter != nil {
+		if err := validateFilteredFileDestination(ctx, mount, dst, overwrite, filter); err != nil {
+			return 0, "", err
+		}
+	}
 	if chunkSize <= 0 {
 		chunkSize = 16 << 20
 	}
@@ -838,7 +1121,12 @@ func (s *Service) CopyFileResumableParallel(ctx context.Context, mountID, source
 			return 0, "", ErrConflict
 		}
 	}
-	input, err := safeOpen(src)
+	var input *os.File
+	if filter != nil {
+		input, _, err = s.OpenFiltered(ctx, mountID, source, filter)
+	} else {
+		input, err = safeOpen(src)
+	}
 	if err != nil {
 		return 0, "", err
 	}
@@ -851,6 +1139,9 @@ func (s *Service) CopyFileResumableParallel(ctx context.Context, mountID, source
 		return 0, "", fmt.Errorf("%w: source is not a regular file", ErrInvalid)
 	}
 	partialPath := resumablePartialPath(dst, resumeKey)
+	if err := ctx.Err(); err != nil {
+		return 0, "", err
+	}
 	partial, err := safeOpenFile(partialPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return 0, "", err
@@ -869,7 +1160,7 @@ func (s *Service) CopyFileResumableParallel(ctx context.Context, mountID, source
 		}
 	}
 	if checkpoint > 0 {
-		matches, matchErr := matchingPrefix(input, partial, checkpoint)
+		matches, matchErr := matchingPrefix(ctx, input, partial, checkpoint)
 		if matchErr != nil {
 			return 0, "", matchErr
 		}
@@ -976,7 +1267,7 @@ func (s *Service) CopyFileResumableParallel(ctx context.Context, mountID, source
 		return completed, "", err
 	}
 	hash := sha256.New()
-	if _, err := io.Copy(hash, partial); err != nil {
+	if _, err := io.Copy(hash, &contextReader{ctx: ctx, reader: partial}); err != nil {
 		return completed, "", err
 	}
 	checksum := hex.EncodeToString(hash.Sum(nil))
@@ -986,12 +1277,27 @@ func (s *Service) CopyFileResumableParallel(ctx context.Context, mountID, source
 	if err := partial.Close(); err != nil {
 		return completed, checksum, err
 	}
+	if err := s.validateResumableCopyPublication(ctx, mountID, source, mount, dst, overwrite, before, filter); err != nil {
+		return completed, checksum, err
+	}
 	if overwrite {
 		if info, statErr := safeLstat(dst); statErr == nil && info.IsDir() {
+			if filter != nil {
+				return completed, checksum, ErrProtectedTree
+			}
+			if err := rejectProtectedTree(ctx, mount, dst); err != nil {
+				return completed, checksum, err
+			}
+			if err := ctx.Err(); err != nil {
+				return completed, checksum, err
+			}
 			if err := safeRemoveAll(dst); err != nil {
 				return completed, checksum, err
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return completed, checksum, err
 	}
 	if err := publishPath(partialPath, dst, overwrite); err != nil {
 		return completed, checksum, err
@@ -1073,11 +1379,6 @@ func (s *Service) ReceiveFileResumable(ctx context.Context, mountID, destination
 	if count, err := input.Read(trailing[:]); count != 0 || (err != nil && !errors.Is(err, io.EOF)) {
 		return completed, "", fmt.Errorf("%w: remote stream exceeded the declared size", ErrInvalid)
 	}
-	if finalValidation != nil {
-		if err := finalValidation(); err != nil {
-			return completed, "", err
-		}
-	}
 	if _, err := partial.Seek(0, io.SeekStart); err != nil {
 		return completed, "", err
 	}
@@ -1088,6 +1389,11 @@ func (s *Service) ReceiveFileResumable(ctx context.Context, mountID, destination
 	checksum := hex.EncodeToString(hash.Sum(nil))
 	if expectedChecksum != "" && checksum != expectedChecksum {
 		return completed, checksum, fmt.Errorf("%w: remote checksum mismatch", ErrSourceChanged)
+	}
+	if finalValidation != nil {
+		if err := finalValidation(); err != nil {
+			return completed, checksum, err
+		}
 	}
 	if err := partial.Close(); err != nil {
 		return completed, checksum, err
@@ -1119,6 +1425,7 @@ func (s *Service) ReceiveFileResumableRanges(
 	expectedChecksum string,
 	fetch func(context.Context, int64, int64) (io.ReadCloser, func() error, error),
 	progress func(int64, int64) error,
+	finalValidation func() error,
 	limiter ByteRateLimiter,
 ) (int64, string, error) {
 	mount, dst, err := s.resolve(ctx, mountID, destination, true)
@@ -1258,6 +1565,11 @@ func (s *Service) ReceiveFileResumableRanges(
 	if expectedChecksum != "" && checksum != expectedChecksum {
 		return completed, checksum, fmt.Errorf("%w: remote checksum mismatch", ErrSourceChanged)
 	}
+	if finalValidation != nil {
+		if err := finalValidation(); err != nil {
+			return completed, checksum, err
+		}
+	}
 	if err := partial.Close(); err != nil {
 		return completed, checksum, err
 	}
@@ -1300,7 +1612,7 @@ func resumablePartialPath(destination, resumeKey string) string {
 	return filepath.Join(filepath.Dir(destination), ".jolt-"+safeKey+".partial")
 }
 
-func matchingPrefix(source, partial *os.File, size int64) (bool, error) {
+func matchingPrefix(ctx context.Context, source, partial *os.File, size int64) (bool, error) {
 	if _, err := source.Seek(0, io.SeekStart); err != nil {
 		return false, err
 	}
@@ -1308,10 +1620,10 @@ func matchingPrefix(source, partial *os.File, size int64) (bool, error) {
 		return false, err
 	}
 	sourceHash, partialHash := sha256.New(), sha256.New()
-	if _, err := io.CopyN(sourceHash, source, size); err != nil {
+	if _, err := io.CopyN(sourceHash, &contextReader{ctx: ctx, reader: source}, size); err != nil {
 		return false, err
 	}
-	if _, err := io.CopyN(partialHash, partial, size); err != nil {
+	if _, err := io.CopyN(partialHash, &contextReader{ctx: ctx, reader: partial}, size); err != nil {
 		return false, err
 	}
 	return string(sourceHash.Sum(nil)) == string(partialHash.Sum(nil)), nil
@@ -1324,7 +1636,7 @@ func minInt64(left, right int64) int64 {
 	return right
 }
 
-func (s *Service) copyDirectory(ctx context.Context, source, destination string, overwrite bool, progress func(int64, int64)) (int64, error) {
+func (s *Service) copyDirectory(ctx context.Context, mount entities.Mount, source, destination string, overwrite bool, progress func(int64, int64)) (int64, error) {
 	if _, err := safeLstat(destination); err == nil && !overwrite {
 		return 0, ErrConflict
 	}
@@ -1332,6 +1644,12 @@ func (s *Service) copyDirectory(ctx context.Context, source, destination string,
 	if err := safeWalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if path != source && hiddenName(mount, entry.Name()) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		if !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 {
 			info, err := entry.Info()
@@ -1352,6 +1670,12 @@ func (s *Service) copyDirectory(ctx context.Context, source, destination string,
 		if walkErr != nil {
 			return walkErr
 		}
+		if path != source && hiddenName(mount, entry.Name()) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -1360,6 +1684,11 @@ func (s *Service) copyDirectory(ctx context.Context, source, destination string,
 			return err
 		}
 		target := filepath.Join(destination, relative)
+		if overwrite {
+			if err := rejectProtectedTree(ctx, mount, target); err != nil {
+				return err
+			}
+		}
 		if entry.IsDir() {
 			return safeMkdirAll(target, 0o777)
 		}
@@ -1370,7 +1699,7 @@ func (s *Service) copyDirectory(ctx context.Context, source, destination string,
 		if err != nil {
 			return err
 		}
-		n, copyErr := copyAtomic(ctx, in, target, overwrite, expected, completed, progress)
+		n, copyErr := copyAtomic(ctx, mount, in, target, overwrite, expected, completed, progress)
 		closeErr := in.Close()
 		completed += n
 		if copyErr != nil {
@@ -1381,7 +1710,11 @@ func (s *Service) copyDirectory(ctx context.Context, source, destination string,
 	return completed, err
 }
 
-func copyAtomic(ctx context.Context, source io.Reader, destination string, overwrite bool, total, offset int64, progress func(int64, int64)) (int64, error) {
+func copyAtomic(ctx context.Context, mount entities.Mount, source io.Reader, destination string, overwrite bool, total, offset int64, progress func(int64, int64)) (int64, error) {
+	return copyAtomicWithCheck(ctx, mount, source, destination, overwrite, total, offset, progress, nil)
+}
+
+func copyAtomicWithCheck(ctx context.Context, mount entities.Mount, source io.Reader, destination string, overwrite bool, total, offset int64, progress func(int64, int64), check func() error) (int64, error) {
 	if !overwrite {
 		if _, err := safeLstat(destination); err == nil {
 			return 0, ErrConflict
@@ -1406,12 +1739,32 @@ func copyAtomic(ctx context.Context, source io.Reader, destination string, overw
 	if closeErr != nil {
 		return written, closeErr
 	}
+	if err := ctx.Err(); err != nil {
+		return written, err
+	}
+	if check != nil {
+		if err := check(); err != nil {
+			return written, err
+		}
+	}
 	if overwrite {
 		if info, statErr := safeLstat(destination); statErr == nil && info.IsDir() {
+			if check != nil {
+				return written, ErrProtectedTree
+			}
+			if err := rejectProtectedTree(ctx, mount, destination); err != nil {
+				return written, err
+			}
+			if err := ctx.Err(); err != nil {
+				return written, err
+			}
 			if err := safeRemoveAll(destination); err != nil {
 				return written, err
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return written, err
 	}
 	if err := publishPath(tempName, destination, overwrite); err != nil {
 		return written, err
@@ -1469,7 +1822,10 @@ func (s *Service) resolvePath(ctx context.Context, mountID, relative string, all
 		return mount, "", ErrTraversal
 	}
 	for _, part := range strings.Split(clean, string(filepath.Separator)) {
-		if isInternalPartialName(part) {
+		if part != "." && hiddenName(mount, part) {
+			if allowMissing {
+				return mount, "", ErrHiddenName
+			}
 			return mount, "", ErrNotFound
 		}
 	}
@@ -1477,6 +1833,11 @@ func (s *Service) resolvePath(ctx context.Context, mountID, relative string, all
 	candidate := filepath.Join(root, clean)
 	if !within(root, candidate) {
 		return mount, "", ErrTraversal
+	}
+	if allowMissing {
+		if err := rejectProtectedTree(ctx, mount, candidate); err != nil {
+			return mount, "", err
+		}
 	}
 	check := candidate
 	if allowMissing || allowFinalLink {
@@ -1505,7 +1866,91 @@ func (s *Service) resolvePath(ctx context.Context, mountID, relative string, all
 // They are all named ".jolt-<key>.partial", and none of them is a file an
 // operator should see in a listing or be able to address through the API.
 func isInternalPartialName(name string) bool {
-	return strings.HasPrefix(name, ".jolt-") && strings.HasSuffix(name, ".partial")
+	return filepolicy.Internal(name)
+}
+
+func hiddenName(mount entities.Mount, name string) bool {
+	return isInternalPartialName(name) || filepolicy.Hidden(mount.HiddenPatterns, name)
+}
+
+// IsHiddenPath checks configured names without requiring the destination to
+// exist. It also covers persisted sessions created before a configuration change.
+func (s *Service) IsHiddenPath(ctx context.Context, mountID, relative string) (bool, error) {
+	mount, err := s.store.GetMount(ctx, mountID)
+	if errors.Is(err, contracts.ErrNotFound) {
+		return false, ErrNotFound
+	}
+	if err != nil {
+		return false, err
+	}
+	clean := cleanRelative(relative)
+	if filepath.IsAbs(relative) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return false, ErrTraversal
+	}
+	for _, part := range strings.Split(clean, string(filepath.Separator)) {
+		if part != "." && hiddenName(mount, part) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// IsCanary performs a name-only check; it never grants access to that path.
+func (s *Service) IsCanary(ctx context.Context, mountID, relative string) bool {
+	mount, err := s.store.GetMount(ctx, mountID)
+	if err != nil || filepath.IsAbs(relative) {
+		return false
+	}
+	clean := filepath.ToSlash(cleanRelative(relative))
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return false
+	}
+	return filepolicy.IsCanary(mount.CanaryPaths, clean)
+}
+
+func hiddenOnAnyMount(mounts []entities.Mount, candidate string) bool {
+	for _, mount := range mounts {
+		if !within(mount.LocalPath, candidate) {
+			continue
+		}
+		relative, err := filepath.Rel(mount.LocalPath, candidate)
+		if err != nil {
+			return true
+		}
+		for _, part := range strings.Split(relative, string(filepath.Separator)) {
+			if part != "." && hiddenName(mount, part) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// rejectProtectedTree performs a complete preflight before a recursive remove
+// or rename. The host filesystem may still change outside Jolt afterwards.
+func rejectProtectedTree(ctx context.Context, mount entities.Mount, root string) error {
+	info, err := safeLstat(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	return safeWalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if current != root && (hiddenName(mount, entry.Name()) || entry.Type()&os.ModeSymlink != 0) {
+			return ErrProtectedTree
+		}
+		return nil
+	})
 }
 
 func within(root, candidate string) bool {

@@ -1,6 +1,7 @@
 import { FolderOpen, LoaderCircle } from "lucide-react";
 import type { DiskUsageResponse, FileEntry } from "@/lib/types";
 import { formatBytes, formatDate } from "@/lib/format";
+import { fileEntryDisplayName } from "@/lib/display-name";
 import { FileEntryIcon } from "@/components/files/FileEntryIcon";
 import {
   Table,
@@ -78,7 +79,7 @@ export function DiskUsageTable({ result, loading, onOpen }: Props) {
                       onClick={() => onOpen(entry)}
                     >
                       <FileEntryIcon entry={entry} />
-                      {entry.name}
+                      {fileEntryDisplayName(entry)}
                       {entry.type === "directory" && <FolderOpen className="size-3.5 text-muted-foreground" />}
                     </button>
                   </TableCell>

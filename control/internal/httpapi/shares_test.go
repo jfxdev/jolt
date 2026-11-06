@@ -3,16 +3,22 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jfxdev/jolt/control/internal/config"
 	"github.com/jfxdev/jolt/control/internal/rbac"
 	"github.com/jfxdev/jolt/control/internal/security"
+	"github.com/jfxdev/jolt/control/internal/signedauth"
 	"github.com/jfxdev/jolt/control/internal/store"
 )
 
@@ -174,6 +180,8 @@ func TestCreateShareRejectsTraversalAndBadInput(t *testing.T) {
 		{"node_id": "", "mount_id": "media", "path": "a.txt", "kind": "file"},
 		{"node_id": "nod_a", "mount_id": "media", "path": "a.txt", "kind": "file",
 			"expires_in_seconds": 400 * 24 * 3600},
+		{"node_id": "nod_a", "mount_id": "media", "path": "a.txt", "kind": "file",
+			"expires_in_seconds": int64(1<<63 - 1)},
 	}
 	for _, body := range cases {
 		recorder := harness.do(t, http.MethodPost, "/api/v1/control-tower/shares", body)
@@ -327,6 +335,55 @@ func TestRangeRequestsCannotBypassTheDownloadBudget(t *testing.T) {
 	}
 }
 
+func TestShareConcurrentDownloadsReserveBeforeSendingBytes(t *testing.T) {
+	h := newShareHarness(t, fullAccessRules())
+	share, token := createShareFor(t, h, map[string]any{"node_id": "nod_a", "mount_id": "media", "path": "a.txt", "kind": "file", "max_downloads": 1})
+	var reached atomic.Int32
+	gate := make(chan struct{})
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		if reached.Add(1) == 2 {
+			close(gate)
+		}
+		<-gate
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("protected-data"))}, nil
+	})}
+	h.handler = newHandler(config.Config{EncryptionKey: make([]byte, 32), StaticDir: t.TempDir()}, h.storage, slog.New(slog.NewTextHandler(io.Discard, nil)), client)
+	var wg sync.WaitGroup
+	results := make(chan *httptest.ResponseRecorder, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w := httptest.NewRecorder()
+			h.handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/public/shares/"+token+"/content", nil))
+			results <- w
+		}()
+	}
+	wg.Wait()
+	close(results)
+	allowed, denied := 0, 0
+	for w := range results {
+		switch w.Code {
+		case http.StatusOK:
+			allowed++
+			if w.Body.String() != "protected-data" {
+				t.Fatalf("successful body: %q", w.Body)
+			}
+		case http.StatusGone:
+			denied++
+			if strings.Contains(w.Body.String(), "protected-data") {
+				t.Fatal("denied download leaked data")
+			}
+		default:
+			t.Fatalf("unexpected status=%d body=%s", w.Code, w.Body)
+		}
+	}
+	current, err := h.storage.GetShare(context.Background(), share.ID)
+	if err != nil || allowed != 1 || denied != 1 || current.DownloadCount != 1 {
+		t.Fatalf("allowed=%d denied=%d share=%+v err=%v", allowed, denied, current, err)
+	}
+}
+
 func TestPasswordProtectedShareRequiresUnlock(t *testing.T) {
 	harness := newShareHarness(t, fullAccessRules())
 	share, token := createShareFor(t, harness, map[string]any{
@@ -424,6 +481,33 @@ func TestDirectoryShareConfinesSubpaths(t *testing.T) {
 	}
 }
 
+func TestDirectoryShareRechecksListingPermission(t *testing.T) {
+	harness := newShareHarness(t, []rbac.Rule{
+		{Path: "control-tower/shares", Capabilities: []string{"create"}},
+		{Path: "nodes/nod_a/files/mounts/media/publico/**", Capabilities: []string{"read", "list"}},
+	})
+	_, token := createShareFor(t, harness, map[string]any{
+		"node_id": "nod_a", "mount_id": "media", "path": "publico", "kind": "directory",
+	})
+	policy := store.Policy{ID: "pol_share", Name: "share", UpdatedAt: time.Now().UTC(), Rules: []rbac.Rule{
+		{Path: "control-tower/shares", Capabilities: []string{"create"}},
+		{Path: "nodes/nod_a/files/mounts/media/publico/**", Capabilities: []string{"read"}},
+	}}
+	if err := harness.storage.UpdatePolicy(context.Background(), policy); err != nil {
+		t.Fatal(err)
+	}
+	before := len(harness.calls)
+	if got := harness.public(t, http.MethodGet, "/api/v1/public/shares/"+token+"/list?path=fotos", nil); got.Code != http.StatusGone {
+		t.Fatalf("listing after permission removal: %d %s", got.Code, got.Body.String())
+	}
+	if len(harness.calls) != before {
+		t.Fatal("listing reached node without current list permission")
+	}
+	if got := harness.public(t, http.MethodGet, "/api/v1/public/shares/"+token+"/content?path=fotos/a.txt", nil); got.Code != http.StatusOK {
+		t.Fatalf("read permission should remain effective: %d %s", got.Code, got.Body.String())
+	}
+}
+
 func TestFileShareRejectsASubpath(t *testing.T) {
 	harness := newShareHarness(t, fullAccessRules())
 	_, token := createShareFor(t, harness, map[string]any{
@@ -458,6 +542,15 @@ func TestShareDiesWithTheCreatorsAccess(t *testing.T) {
 		"/api/v1/public/shares/"+token+"/content", nil); recorder.Code != http.StatusGone {
 		t.Fatalf("share outlived the creator's access: %d", recorder.Code)
 	}
+	for _, tc := range []struct{ method, suffix string }{
+		{http.MethodGet, ""},
+		{http.MethodPost, "/unlock"},
+	} {
+		recorder := harness.public(t, tc.method, "/api/v1/public/shares/"+token+tc.suffix, nil)
+		if recorder.Code != http.StatusGone || strings.Contains(recorder.Body.String(), "a.txt") {
+			t.Fatalf("revoked metadata/unlock %s: %d %s", tc.suffix, recorder.Code, recorder.Body)
+		}
+	}
 }
 
 func TestShareDiesWithADisabledCreator(t *testing.T) {
@@ -476,6 +569,93 @@ func TestShareDiesWithADisabledCreator(t *testing.T) {
 	if recorder := harness.public(t, http.MethodGet,
 		"/api/v1/public/shares/"+token+"/content", nil); recorder.Code != http.StatusGone {
 		t.Fatalf("share outlived a disabled creator: %d", recorder.Code)
+	}
+}
+
+func TestAutomationShareRevalidatesAccountCredentialGroupsAndPolicies(t *testing.T) {
+	for _, change := range []string{"credential", "node", "group", "policy", "account"} {
+		t.Run(change, func(t *testing.T) {
+			h := newShareHarness(t, fullAccessRules())
+			ctx, now := context.Background(), time.Now().UTC()
+			account := store.ServiceAccount{ID: "svc_share", Name: "automation", Kind: "automation", Enabled: true, CreatedAt: now, UpdatedAt: now}
+			group := store.AccessGroup{ID: "grp_share", Name: "share-group", Enabled: true, CreatedAt: now, UpdatedAt: now}
+			if err := h.storage.CreateServiceAccount(ctx, account); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.storage.CreateAccessGroup(ctx, group); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.storage.SetAccessGroupNodes(ctx, group.ID, []string{h.nodeID}); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.storage.SetAccessGroupPolicies(ctx, group.ID, []string{"pol_share"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.storage.SetServiceAccountGroups(ctx, account.ID, []string{group.ID}); err != nil {
+				t.Fatal(err)
+			}
+			expiry := now.Add(20 * time.Second)
+			credential := store.ServiceAccountToken{ID: "sat_share", ServiceAccountID: account.ID, Name: "primary", TokenHash: security.Digest("test-automation-key"), ExpiresAt: &expiry, CreatedAt: now}
+			if err := h.storage.CreateServiceAccountToken(ctx, credential, false); err != nil {
+				t.Fatal(err)
+			}
+			body := `{"node_id":"nod_a","mount_id":"media","path":"public/a.txt","kind":"file"}`
+			r := httptest.NewRequest(http.MethodPost, "/api/v1/control-tower/shares", strings.NewReader(body))
+			r.Header.Set("Authorization", "Bearer test-automation-key")
+			r.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			h.handler.ServeHTTP(w, r)
+			var created struct {
+				Share store.Share `json:"share"`
+				Token string      `json:"token"`
+			}
+			if w.Code != http.StatusCreated || json.Unmarshal(w.Body.Bytes(), &created) != nil || created.Share.CreatedByType != "service_account" || strings.Contains(w.Body.String(), credential.ID) {
+				t.Fatalf("automation creation: %d %s", w.Code, w.Body)
+			}
+			stored, err := h.storage.GetShare(ctx, created.Share.ID)
+			if err != nil || stored.CreatedCredentialID != credential.ID {
+				t.Fatalf("credential not persisted: %+v %v", stored, err)
+			}
+			if version, err := h.storage.Metadata(ctx, "minimum_security_version"); err != nil || version != "3" {
+				t.Fatalf("security version=%q err=%v", version, err)
+			}
+			path := "/api/v1/public/shares/" + created.Token
+			if w := h.public(t, http.MethodGet, path+"/content", nil); w.Code != http.StatusOK {
+				t.Fatalf("active automation share: %d %s", w.Code, w.Body)
+			}
+			key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+			issuer := &Server{store: h.storage, config: config.Config{AuthorizationSigningKeyID: "key", AuthorizationSigningKey: key}}
+			signed, err := issuer.issueSignedShareRead(httptest.NewRequest(http.MethodGet, "/", nil), stored, "public/a.txt", "content", now)
+			if err != nil {
+				t.Fatalf("automation share signing: %v", err)
+			}
+			claims, _, err := signedauth.VerifyLocalRead(signed, map[string]ed25519.PublicKey{"key": key.Public().(ed25519.PublicKey)}, h.nodeID, "content", "media", "public/a.txt", now)
+			if err != nil || claims.Binding.ActorID != account.ID || claims.ExpiresAt != expiry.Unix() {
+				t.Fatalf("automation share claims=%+v err=%v", claims, err)
+			}
+			switch change {
+			case "credential":
+				err = h.storage.RevokeServiceAccountToken(ctx, account.ID, credential.ID)
+			case "node":
+				err = h.storage.SetAccessGroupNodes(ctx, group.ID, nil)
+			case "group":
+				group.Enabled = false
+				err = h.storage.UpdateAccessGroup(ctx, group)
+			case "policy":
+				err = h.storage.SetAccessGroupPolicies(ctx, group.ID, nil)
+			case "account":
+				account.Enabled = false
+				err = h.storage.UpdateServiceAccount(ctx, account)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, suffix := range []string{"", "/content"} {
+				if w := h.public(t, http.MethodGet, path+suffix, nil); w.Code != http.StatusGone {
+					t.Fatalf("%s still available after %s: %d %s", suffix, change, w.Code, w.Body)
+				}
+			}
+		})
 	}
 }
 

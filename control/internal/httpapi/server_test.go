@@ -26,6 +26,10 @@ func testUserHandler(t *testing.T, actor store.User) (http.Handler, *store.Store
 }
 
 func testUserHandlerWithClient(t *testing.T, actor store.User, client *http.Client) (http.Handler, *store.Store, string) {
+	return testUserHandlerConfigured(t, actor, client, nil)
+}
+
+func testUserHandlerConfigured(t *testing.T, actor store.User, client *http.Client, option func(*config.Config)) (http.Handler, *store.Store, string) {
 	t.Helper()
 	storage, err := store.Open(filepath.Join(t.TempDir(), "control.db"), make([]byte, 32))
 	if err != nil {
@@ -46,8 +50,11 @@ func testUserHandlerWithClient(t *testing.T, actor store.User, client *http.Clie
 	if err := storage.CreateSession(context.Background(), security.Digest(token), actor.ID, now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	handler := newHandler(config.Config{EncryptionKey: make([]byte, 32), StaticDir: t.TempDir()},
-		storage, slog.New(slog.NewTextHandler(io.Discard, nil)), client)
+	cfg := config.Config{EncryptionKey: make([]byte, 32), StaticDir: t.TempDir()}
+	if option != nil {
+		option(&cfg)
+	}
+	handler := newHandler(cfg, storage, slog.New(slog.NewTextHandler(io.Discard, nil)), client)
 	return handler, storage, token
 }
 
@@ -1574,6 +1581,42 @@ func TestMountFileRequirementsAreSubpathScoped(t *testing.T) {
 	mountWide := nodeAuthorizationRequirements("node-1", "mounts/m1/files", http.MethodGet, fileTargets{})
 	if len(mountWide) != 1 || mountWide[0].Path != "nodes/node-1/files/mounts/m1" {
 		t.Fatalf("unexpected mount-wide requirements: %+v", mountWide)
+	}
+}
+
+func TestCopyMoveRequirePermissionsForBothSidesAndOverwrite(t *testing.T) {
+	base := "nodes/node-1/files/mounts/m1/"
+	for _, tc := range []struct {
+		resource string
+		policy   string
+		want     []authorizationRequirement
+	}{
+		{"mounts/m1/files/copy", "fail", []authorizationRequirement{{Path: base + "source", Capability: "read"}, {Path: base + "destination", Capability: "create"}}},
+		{"mounts/m1/files/copy", "overwrite", []authorizationRequirement{{Path: base + "destination", Capability: "update"}}},
+		{"mounts/m1/files/copy/plan", "checksum", []authorizationRequirement{{Path: base + "destination", Capability: "update"}}},
+		{"mounts/m1/files/copy", "ask", []authorizationRequirement{{Path: strings.TrimSuffix(base, "/"), Capability: "create"}, {Path: strings.TrimSuffix(base, "/"), Capability: "update"}}},
+		{"mounts/m1/files/move", "fail", []authorizationRequirement{{Path: base + "source", Capability: "read"}, {Path: base + "source", Capability: "update"}, {Path: base + "destination", Capability: "create"}}},
+		{"mounts/m1/files/move", "overwrite", []authorizationRequirement{{Path: base + "destination", Capability: "update"}}},
+	} {
+		t.Run(tc.resource+"/"+tc.policy, func(t *testing.T) {
+			got := nodeAuthorizationRequirements("node-1", tc.resource, http.MethodPost, fileTargets{Source: "source", Destination: "destination", ConflictPolicy: tc.policy})
+			for _, want := range tc.want {
+				found := false
+				for _, requirement := range got {
+					if requirement == want {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("missing %+v in %+v", want, got)
+				}
+			}
+		})
+	}
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/nodes/node-1/mounts/m1/files/move", strings.NewReader(`{"source_path":"source","destination_path":"destination","overwrite":true,"conflict_policy":"fail"}`))
+	targets, err := fileTargetsFromRequest(r)
+	if err != nil || targets.ConflictPolicy != "overwrite" {
+		t.Fatalf("move overwrite was not recognized: %+v, %v", targets, err)
 	}
 }
 

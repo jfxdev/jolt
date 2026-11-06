@@ -1,0 +1,959 @@
+{
+ "mount": "nodes/n1/files/mounts/m",
+ "policy_sets": {
+  "keys-and-executables": [
+   {
+    "path": "nodes/n1/jobs",
+    "capabilities": [
+     "create",
+     "list"
+    ]
+   },
+   {
+    "path": "nodes/n1/files/mounts/m/**",
+    "capabilities": [
+     "read",
+     "list",
+     "create",
+     "update",
+     "delete"
+    ]
+   },
+   {
+    "path": "nodes/n1/files/mounts/m/**",
+    "capabilities": [
+     "deny",
+     "read"
+    ],
+    "file_types": {
+     "extensions": [
+      "pem"
+     ],
+     "names": [
+      ".env"
+     ]
+    },
+    "visibility": "hidden"
+   },
+   {
+    "path": "nodes/n1/files/mounts/m/**",
+    "capabilities": [
+     "deny",
+     "create",
+     "update",
+     "delete"
+    ],
+    "file_types": {
+     "classes": [
+      "executable"
+     ]
+    },
+    "visibility": "visible"
+   }
+  ],
+  "videos-only": [
+   {
+    "path": "nodes/n1/jobs",
+    "capabilities": [
+     "create",
+     "list"
+    ]
+   },
+   {
+    "path": "nodes/n1/files/mounts/m",
+    "capabilities": [
+     "list"
+    ]
+   },
+   {
+    "path": "nodes/n1/files/mounts/m/movies/**",
+    "capabilities": [
+     "read",
+     "list"
+    ],
+    "file_types": {
+     "classes": [
+      "video"
+     ]
+    },
+    "visibility": "visible"
+   }
+  ]
+ },
+ "cases": [
+  {
+   "name": "read of a hidden type reaches the node only with a signed context",
+   "set": "keys-and-executables",
+   "method": "GET",
+   "path": "files/content?path=docs/a.pem",
+   "outcome": [
+    "signed"
+   ]
+  },
+  {
+   "name": "upper case extension",
+   "set": "keys-and-executables",
+   "method": "GET",
+   "path": "files/content?path=docs/A.PEM",
+   "outcome": [
+    "signed"
+   ]
+  },
+  {
+   "name": "dot segment",
+   "set": "keys-and-executables",
+   "method": "GET",
+   "path": "files/content?path=docs/./a.pem",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "double slash",
+   "set": "keys-and-executables",
+   "method": "GET",
+   "path": "files/content?path=docs//a.pem",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "parent segment",
+   "set": "keys-and-executables",
+   "method": "GET",
+   "path": "files/content?path=docs/x/../a.pem",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "exact name rule",
+   "set": "keys-and-executables",
+   "method": "GET",
+   "path": "files/content?path=docs/.env",
+   "outcome": [
+    "signed"
+   ]
+  },
+  {
+   "name": "metadata",
+   "set": "keys-and-executables",
+   "method": "GET",
+   "path": "files/metadata?path=docs/a.pem",
+   "outcome": [
+    "signed"
+   ]
+  },
+  {
+   "name": "listing",
+   "set": "keys-and-executables",
+   "method": "GET",
+   "path": "files?path=docs",
+   "outcome": [
+    "signed"
+   ]
+  },
+  {
+   "name": "archive selection",
+   "set": "keys-and-executables",
+   "method": "GET",
+   "path": "files/archive?path=docs&name=a.pem&name=b.txt",
+   "outcome": [
+    "signed"
+   ]
+  },
+  {
+   "name": "search",
+   "set": "keys-and-executables",
+   "method": "GET",
+   "path": "files/search?path=docs&q=pem",
+   "outcome": [
+    "signed"
+   ]
+  },
+  {
+   "name": "disk usage",
+   "set": "keys-and-executables",
+   "method": "GET",
+   "path": "files/disk-usage?path=docs",
+   "outcome": [
+    "signed"
+   ]
+  },
+  {
+   "name": "escape from the mount",
+   "set": "keys-and-executables",
+   "method": "GET",
+   "path": "files/content?path=../outside/a.pem",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "escape through a descendant",
+   "set": "keys-and-executables",
+   "method": "GET",
+   "path": "files/content?path=docs/../../outside",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "NUL in the name",
+   "set": "keys-and-executables",
+   "method": "GET",
+   "path": "files/content?path=docs/a%00.pem",
+   "outcome": [
+    "refused",
+    "signed"
+   ]
+  },
+  {
+   "name": "backslash in the name",
+   "set": "keys-and-executables",
+   "method": "GET",
+   "path": "files/content?path=docs%5Ca.pem",
+   "outcome": [
+    "refused",
+    "signed"
+   ]
+  },
+  {
+   "name": "delete of an ordinary file",
+   "set": "keys-and-executables",
+   "method": "DELETE",
+   "path": "files?path=docs/a.txt",
+   "outcome": [
+    "plain"
+   ],
+   "node_path": "docs/a.txt"
+  },
+  {
+   "name": "delete of an executable",
+   "set": "keys-and-executables",
+   "method": "DELETE",
+   "path": "files?path=docs/run.sh",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "delete of an executable in capitals",
+   "set": "keys-and-executables",
+   "method": "DELETE",
+   "path": "files?path=docs/RUN.SH",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "delete through a dot segment",
+   "set": "keys-and-executables",
+   "method": "DELETE",
+   "path": "files?path=docs/./run.sh",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "delete through a parent segment",
+   "set": "keys-and-executables",
+   "method": "DELETE",
+   "path": "files?path=docs/ok.txt/../run.sh",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "delete with a trailing slash",
+   "set": "keys-and-executables",
+   "method": "DELETE",
+   "path": "files?path=docs/run.sh/",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "delete with surrounding spaces",
+   "set": "keys-and-executables",
+   "method": "DELETE",
+   "path": "files?path=%20docs/run.sh%20",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "delete with an encoded dot",
+   "set": "keys-and-executables",
+   "method": "DELETE",
+   "path": "files?path=docs/run%2Esh",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "delete of a double encoded name is a different file",
+   "set": "keys-and-executables",
+   "method": "DELETE",
+   "path": "files?path=docs/run%252Esh",
+   "outcome": [
+    "plain"
+   ],
+   "node_path": "docs/run%2Esh"
+  },
+  {
+   "name": "a repeated path parameter is read the same on both sides",
+   "set": "keys-and-executables",
+   "method": "DELETE",
+   "path": "files?path=docs/ok.txt&path=docs/run.sh",
+   "outcome": [
+    "plain"
+   ],
+   "node_path": "docs/ok.txt"
+  },
+  {
+   "name": "a double extension is judged by the last one",
+   "set": "keys-and-executables",
+   "method": "DELETE",
+   "path": "files?path=docs/run.sh.txt",
+   "outcome": [
+    "plain"
+   ],
+   "node_path": "docs/run.sh.txt"
+  },
+  {
+   "name": "a trailing dot is a different name",
+   "set": "keys-and-executables",
+   "method": "DELETE",
+   "path": "files?path=docs/run.sh.",
+   "outcome": [
+    "plain"
+   ],
+   "node_path": "docs/run.sh."
+  },
+  {
+   "name": "a directory named like an executable is refused conservatively",
+   "set": "keys-and-executables",
+   "method": "DELETE",
+   "path": "files?path=docs/dir.sh",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "rename of a key to an ordinary name",
+   "set": "keys-and-executables",
+   "method": "POST",
+   "path": "files/move",
+   "body": {
+    "source_path": "docs/a.pem",
+    "destination_path": "docs/a.txt"
+   },
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "rename of a key to an ordinary name in capitals",
+   "set": "keys-and-executables",
+   "method": "POST",
+   "path": "files/move",
+   "body": {
+    "source_path": "docs/A.Pem",
+    "destination_path": "docs/a.txt"
+   },
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "rename to an executable",
+   "set": "keys-and-executables",
+   "method": "POST",
+   "path": "files/move",
+   "body": {
+    "source_path": "docs/a.txt",
+    "destination_path": "docs/run.sh"
+   },
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "rename of an executable",
+   "set": "keys-and-executables",
+   "method": "POST",
+   "path": "files/move",
+   "body": {
+    "source_path": "docs/run.sh",
+    "destination_path": "docs/run.txt"
+   },
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "control: an ordinary rename is not refused",
+   "set": "keys-and-executables",
+   "method": "POST",
+   "path": "files/move",
+   "body": {
+    "source_path": "docs/a.txt",
+    "destination_path": "docs/b.txt"
+   },
+   "outcome": [
+    "signed",
+    "plain"
+   ]
+  },
+  {
+   "name": "control: an ordinary copy is not refused",
+   "set": "keys-and-executables",
+   "method": "POST",
+   "path": "files/copy",
+   "body": {
+    "source_path": "docs/a.txt",
+    "destination_path": "docs/b.txt"
+   },
+   "outcome": [
+    "prepared"
+   ]
+  },
+  {
+   "name": "rename through a parent segment",
+   "set": "keys-and-executables",
+   "method": "POST",
+   "path": "files/move",
+   "body": {
+    "source_path": "docs/x/../a.txt",
+    "destination_path": "docs/x/../run.sh"
+   },
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "move out of the mount",
+   "set": "keys-and-executables",
+   "method": "POST",
+   "path": "files/move",
+   "body": {
+    "source_path": "docs/a.txt",
+    "destination_path": "../outside/a.txt"
+   },
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "overwrite an executable by moving onto it",
+   "set": "keys-and-executables",
+   "method": "POST",
+   "path": "files/move",
+   "body": {
+    "source_path": "docs/a.txt",
+    "destination_path": "docs/run.sh",
+    "overwrite": true
+   },
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "copy of a key",
+   "set": "keys-and-executables",
+   "method": "POST",
+   "path": "files/copy",
+   "body": {
+    "source_path": "docs/a.pem",
+    "destination_path": "docs/b.txt"
+   },
+   "outcome": [
+    "prepared"
+   ]
+  },
+  {
+   "name": "copy to an executable name",
+   "set": "keys-and-executables",
+   "method": "POST",
+   "path": "files/copy",
+   "body": {
+    "source_path": "docs/a.txt",
+    "destination_path": "docs/x.sh"
+   },
+   "outcome": [
+    "prepared"
+   ]
+  },
+  {
+   "name": "copy with a rename conflict policy needs the parent",
+   "set": "keys-and-executables",
+   "method": "POST",
+   "path": "files/copy",
+   "body": {
+    "source_path": "docs/a.txt",
+    "destination_path": "docs/x.sh",
+    "conflict_policy": "rename"
+   },
+   "outcome": [
+    "prepared"
+   ]
+  },
+  {
+   "name": "upload of an executable",
+   "set": "keys-and-executables",
+   "method": "PUT",
+   "path": "files/content?path=docs/new.sh",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "create a directory named like an executable",
+   "set": "keys-and-executables",
+   "method": "PUT",
+   "path": "files?path=docs/new.sh",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "upload of an executable in capitals",
+   "set": "keys-and-executables",
+   "method": "PUT",
+   "path": "files/content?path=docs/NEW.SH",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "create a directory named like an executable in capitals",
+   "set": "keys-and-executables",
+   "method": "PUT",
+   "path": "files?path=docs/NEW.SH",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "overwrite of an executable",
+   "set": "keys-and-executables",
+   "method": "PUT",
+   "path": "files/content?path=docs/run.sh&overwrite=true",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "create a directory with overwrite over an executable name",
+   "set": "keys-and-executables",
+   "method": "PUT",
+   "path": "files?path=docs/run.sh&overwrite=true",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "upload of an ordinary file",
+   "set": "keys-and-executables",
+   "method": "PUT",
+   "path": "files/content?path=docs/new.txt",
+   "outcome": [
+    "signed",
+    "plain"
+   ]
+  },
+  {
+   "name": "a viewer reads a video the node may allow",
+   "set": "videos-only",
+   "method": "GET",
+   "path": "files/content?path=movies/a.mkv",
+   "outcome": [
+    "signed"
+   ]
+  },
+  {
+   "name": "a viewer asking for a non video still goes to the node, which decides",
+   "set": "videos-only",
+   "method": "GET",
+   "path": "files/content?path=movies/notes.txt",
+   "outcome": [
+    "signed"
+   ]
+  },
+  {
+   "name": "a viewer reads outside the typed allow",
+   "set": "videos-only",
+   "method": "GET",
+   "path": "files/content?path=music/a.mp3",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "control: a viewer lists the mount root",
+   "set": "videos-only",
+   "method": "GET",
+   "path": "files?path=",
+   "outcome": [
+    "signed"
+   ]
+  },
+  {
+   "name": "a viewer cannot delete",
+   "set": "videos-only",
+   "method": "DELETE",
+   "path": "files?path=movies/a.mkv",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a viewer cannot upload a video",
+   "set": "videos-only",
+   "method": "PUT",
+   "path": "files/content?path=movies/new.mkv",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a viewer cannot rename a video into another type",
+   "set": "videos-only",
+   "method": "POST",
+   "path": "files/move",
+   "body": {
+    "source_path": "movies/a.mkv",
+    "destination_path": "movies/a.txt"
+   },
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a viewer cannot copy a video to a name outside the allow",
+   "set": "videos-only",
+   "method": "POST",
+   "path": "files/copy",
+   "body": {
+    "source_path": "movies/a.mkv",
+    "destination_path": "movies/a.txt"
+   },
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a node that predates signed contexts: content of a hidden type",
+   "set": "keys-and-executables",
+   "profile": "legacy",
+   "method": "GET",
+   "path": "files/content?path=docs/a.pem",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a node that predates signed contexts: content of an ordinary file",
+   "set": "keys-and-executables",
+   "profile": "legacy",
+   "method": "GET",
+   "path": "files/content?path=docs/a.txt",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a node that predates signed contexts: listing",
+   "set": "keys-and-executables",
+   "profile": "legacy",
+   "method": "GET",
+   "path": "files?path=docs",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a node that predates signed contexts: search",
+   "set": "keys-and-executables",
+   "profile": "legacy",
+   "method": "GET",
+   "path": "files/search?path=docs&q=x",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a node that predates signed contexts: archive",
+   "set": "keys-and-executables",
+   "profile": "legacy",
+   "method": "GET",
+   "path": "files/archive?path=docs",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a node that predates signed contexts: disk usage",
+   "set": "keys-and-executables",
+   "profile": "legacy",
+   "method": "GET",
+   "path": "files/disk-usage?path=docs",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a node that predates signed contexts: upload",
+   "set": "keys-and-executables",
+   "profile": "legacy",
+   "method": "PUT",
+   "path": "files/content?path=docs/new.txt",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a node that predates signed contexts: copy",
+   "set": "keys-and-executables",
+   "profile": "legacy",
+   "method": "POST",
+   "path": "files/copy",
+   "outcome": [
+    "refused"
+   ],
+   "body": {
+    "source_path": "docs/a.txt",
+    "destination_path": "docs/b.txt"
+   }
+  },
+  {
+   "name": "a node that predates signed contexts: delete of an executable",
+   "set": "keys-and-executables",
+   "profile": "legacy",
+   "method": "DELETE",
+   "path": "files?path=docs/run.sh",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a node whose capabilities cannot be read: content of a hidden type",
+   "set": "keys-and-executables",
+   "profile": "probe-fails",
+   "method": "GET",
+   "path": "files/content?path=docs/a.pem",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a node whose capabilities cannot be read: content of an ordinary file",
+   "set": "keys-and-executables",
+   "profile": "probe-fails",
+   "method": "GET",
+   "path": "files/content?path=docs/a.txt",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a node whose capabilities cannot be read: listing",
+   "set": "keys-and-executables",
+   "profile": "probe-fails",
+   "method": "GET",
+   "path": "files?path=docs",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a node whose capabilities cannot be read: search",
+   "set": "keys-and-executables",
+   "profile": "probe-fails",
+   "method": "GET",
+   "path": "files/search?path=docs&q=x",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a node whose capabilities cannot be read: archive",
+   "set": "keys-and-executables",
+   "profile": "probe-fails",
+   "method": "GET",
+   "path": "files/archive?path=docs",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a node whose capabilities cannot be read: disk usage",
+   "set": "keys-and-executables",
+   "profile": "probe-fails",
+   "method": "GET",
+   "path": "files/disk-usage?path=docs",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a node whose capabilities cannot be read: upload",
+   "set": "keys-and-executables",
+   "profile": "probe-fails",
+   "method": "PUT",
+   "path": "files/content?path=docs/new.txt",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a node whose capabilities cannot be read: copy",
+   "set": "keys-and-executables",
+   "profile": "probe-fails",
+   "method": "POST",
+   "path": "files/copy",
+   "outcome": [
+    "refused"
+   ],
+   "body": {
+    "source_path": "docs/a.txt",
+    "destination_path": "docs/b.txt"
+   }
+  },
+  {
+   "name": "a node whose capabilities cannot be read: delete of an executable",
+   "set": "keys-and-executables",
+   "profile": "probe-fails",
+   "method": "DELETE",
+   "path": "files?path=docs/run.sh",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "reads without tree support: content still works",
+   "set": "keys-and-executables",
+   "profile": "reads-without-trees",
+   "method": "GET",
+   "path": "files/content?path=docs/a.txt",
+   "outcome": [
+    "signed"
+   ]
+  },
+  {
+   "name": "reads without tree support: search is refused",
+   "set": "keys-and-executables",
+   "profile": "reads-without-trees",
+   "method": "GET",
+   "path": "files/search?path=docs&q=x",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "reads without tree support: archive is refused",
+   "set": "keys-and-executables",
+   "profile": "reads-without-trees",
+   "method": "GET",
+   "path": "files/archive?path=docs",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "reads without tree support: disk usage is refused",
+   "set": "keys-and-executables",
+   "profile": "reads-without-trees",
+   "method": "GET",
+   "path": "files/disk-usage?path=docs",
+   "outcome": [
+    "refused"
+   ]
+  },
+  {
+   "name": "a node that never confirms the filter: content is not delivered",
+   "set": "keys-and-executables",
+   "profile": "never-confirms",
+   "method": "GET",
+   "path": "files/content?path=docs/a.pem",
+   "outcome": [
+    "signed"
+   ],
+   "must_not_contain": "LEAKED",
+   "status_not": [
+    200
+   ]
+  },
+  {
+   "name": "a node that never confirms the filter: listing is not delivered",
+   "set": "keys-and-executables",
+   "profile": "never-confirms",
+   "method": "GET",
+   "path": "files?path=docs",
+   "outcome": [
+    "signed"
+   ],
+   "must_not_contain": "LEAKED",
+   "status_not": [
+    200
+   ]
+  },
+  {
+   "name": "a node that never confirms the filter: search is not delivered",
+   "set": "keys-and-executables",
+   "profile": "never-confirms",
+   "method": "GET",
+   "path": "files/search?path=docs&q=x",
+   "outcome": [
+    "signed"
+   ],
+   "must_not_contain": "LEAKED",
+   "status_not": [
+    200
+   ]
+  }
+ ],
+ "node_profiles": {
+  "current": {
+   "capabilities": [
+    "signed_local_read_v1",
+    "signed_local_tree_read_v1",
+    "signed_simple_upload_v1",
+    "signed_upload_sessions_v1",
+    "signed_upload_reauthorize_v1",
+    "signed_local_copy_creation_v1",
+    "signed_local_copy_execution_v1",
+    "signed_job_options_binding_v1",
+    "signed_job_authorization_registration_v1",
+    "signed_job_authorization_status_v1",
+    "destructive_plans_v1"
+   ],
+   "confirms": true
+  },
+  "legacy": {
+   "capabilities": [],
+   "confirms": true
+  },
+  "reads-without-trees": {
+   "capabilities": [
+    "signed_local_read_v1"
+   ],
+   "confirms": true
+  },
+  "never-confirms": {
+   "capabilities": [
+    "signed_local_read_v1",
+    "signed_local_tree_read_v1",
+    "signed_simple_upload_v1",
+    "signed_local_copy_creation_v1"
+   ],
+   "confirms": false
+  },
+  "probe-fails": {
+   "capabilities": [],
+   "confirms": true,
+   "probe_status": 500
+  }
+ }
+}

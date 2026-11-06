@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/dialog";
 import type { AdminDialogProps } from "./types";
 import { AdminEntityDialog } from "./AdminEntityDialog";
+import { TemporaryPoliciesEditor } from "./TemporaryPoliciesEditor";
 
 interface UserForm {
   username: string;
@@ -491,6 +492,7 @@ export function UsersDialog({
               </fieldset>
             )}
 
+            {editingId && <TemporaryPoliciesEditor subject="users" subjectId={editingId} policies={policies} />}
             <label className="flex items-center gap-2 text-sm">
               <Checkbox
                 checked={form.enabled}

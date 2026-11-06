@@ -14,15 +14,24 @@ import (
 // status code: once the ZIP starts streaming the status is already committed
 // and a failure can only appear as a truncated download.
 func (s *Server) archive(w http.ResponseWriter, r *http.Request) {
+	scanSecrets := r.Header.Get("X-Jolt-Scan") == "secrets"
+	if scanSecrets {
+		w.Header().Set("X-Jolt-Scan-Applied", "secrets")
+	}
 	mountID := r.PathValue("mountID")
 	relative := r.URL.Query().Get("path")
 	options := filesystem.ArchiveOptions{
-		Names:      archiveNames(r),
-		Compress:   boolQuery(r, "compress"),
-		MaxEntries: s.config.ArchiveMaxEntries,
-		MaxBytes:   s.config.ArchiveMaxBytes,
+		Filter:      signedAccessFilter(r),
+		Names:       archiveNames(r),
+		Compress:    boolQuery(r, "compress"),
+		MaxEntries:  s.config.ArchiveMaxEntries,
+		MaxBytes:    s.config.ArchiveMaxBytes,
+		ScanSecrets: scanSecrets,
 	}
 	plan, err := s.files.PlanArchive(r.Context(), mountID, relative, options)
+	if plan.Canary && r.Header.Get("X-Jolt-Internal-Canary") == "1" {
+		w.Header().Set("X-Jolt-Canary", "1")
+	}
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -60,6 +69,7 @@ func (s *Server) archive(w http.ResponseWriter, r *http.Request) {
 func (s *Server) archivePlan(w http.ResponseWriter, r *http.Request) {
 	plan, err := s.files.PlanArchive(r.Context(), r.PathValue("mountID"), r.URL.Query().Get("path"),
 		filesystem.ArchiveOptions{
+			Filter:     signedAccessFilter(r),
 			Names:      archiveNames(r),
 			MaxEntries: s.config.ArchiveMaxEntries,
 			MaxBytes:   s.config.ArchiveMaxBytes,
@@ -91,7 +101,12 @@ func archiveNames(r *http.Request) []string {
 // here rather than in the service so the response can still be written: a
 // truncated result with a reason is more useful than a timeout error.
 func (s *Server) search(w http.ResponseWriter, r *http.Request) {
+	agentSearch := r.Header.Get("X-Jolt-Agent-Search") == "1"
+	if agentSearch {
+		w.Header().Set("X-Jolt-Agent-Search-Applied", "1")
+	}
 	options := filesystem.SearchOptions{
+		Filter:     signedAccessFilter(r),
 		Query:      r.URL.Query().Get("query"),
 		Type:       strings.ToLower(strings.TrimSpace(r.URL.Query().Get("type"))),
 		Extensions: splitList(r.URL.Query().Get("extensions")),
@@ -99,6 +114,19 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		MaxSize:    int64Query(r, "max_size"),
 		MaxResults: s.config.SearchMaxResults,
 		MaxEntries: s.config.SearchMaxEntries,
+	}
+	timeout := s.config.SearchTimeout
+	if agentSearch {
+		options.MaxDepth = 16
+		if options.MaxEntries > 10_000 {
+			options.MaxEntries = 10_000
+		}
+		if options.MaxResults > 200 {
+			options.MaxResults = 200
+		}
+		if timeout > 10*time.Second {
+			timeout = 10 * time.Second
+		}
 	}
 	if limit := int(int64Query(r, "limit")); limit > 0 && limit < options.MaxResults {
 		options.MaxResults = limit
@@ -119,7 +147,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 			"modified_before precisa ser uma data RFC 3339.", nil)
 		return
 	}
-	ctx, cancel := contextWithTimeout(r, s.config.SearchTimeout)
+	ctx, cancel := contextWithTimeout(r, timeout)
 	defer cancel()
 	result, err := s.files.Search(ctx, r.PathValue("mountID"), r.URL.Query().Get("path"), options)
 	if err != nil {
@@ -133,7 +161,7 @@ func (s *Server) diskUsage(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, s.config.DiskUsageTimeout)
 	defer cancel()
 	result, err := s.files.DiskUsage(ctx, r.PathValue("mountID"), r.URL.Query().Get("path"),
-		filesystem.DiskUsageOptions{MaxEntries: s.config.DiskUsageMaxEntries})
+		filesystem.DiskUsageOptions{MaxEntries: s.config.DiskUsageMaxEntries, Filter: signedAccessFilter(r)})
 	if err != nil {
 		s.fail(w, r, err)
 		return

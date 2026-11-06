@@ -55,6 +55,291 @@ func uploadCall(h http.Handler, method, path, body string) *httptest.ResponseRec
 	h.ServeHTTP(w, r)
 	return w
 }
+
+func TestAgentSearchAppliesDepthLimitAndSignalsSupport(t *testing.T) {
+	ctx := context.Background()
+	storage, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	root := t.TempDir()
+	parts := make([]string, 17)
+	for i := range parts {
+		parts[i] = "directory"
+	}
+	deep := filepath.Join(append([]string{root}, parts...)...)
+	if err := os.MkdirAll(deep, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deep, "match.txt"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	files := filesystem.New(storage)
+	mount, err := files.SaveMount(ctx, entities.Mount{Name: "files", LocalPath: root, Mode: "read_only", Enabled: true, Published: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := entities.Identity{NodeID: "test"}
+	handler := New(config.Config{ControlTowerToken: "test-token", SearchMaxResults: 500, SearchMaxEntries: 200000, SearchTimeout: 15 * time.Second}, identity, files, jobs.New(storage, files), pairing.New(storage, identity), grants.New(storage, files), slog.New(slog.NewTextHandler(io.Discard, nil)), storage, metrics.NewRegistry())
+	request := httptest.NewRequest("GET", "/api/v1/mounts/"+mount.ID+"/files/search?query=match", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("X-Jolt-Agent-Search", "1")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	var result filesystem.SearchResult
+	if response.Code != 200 || response.Header().Get("X-Jolt-Agent-Search-Applied") != "1" || json.Unmarshal(response.Body.Bytes(), &result) != nil || !result.Truncated || result.TruncatedReason != "depth" || len(result.Entries) != 0 {
+		t.Fatalf("agent search: %d %s %+v", response.Code, response.Body.String(), result)
+	}
+}
+
+func TestAgentScanChecksPrefixForRangeAndArchive(t *testing.T) {
+	ctx := context.Background()
+	storage, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	root := t.TempDir()
+	secret := "-----BEGIN PRIVATE KEY-----"
+	if err := os.WriteFile(filepath.Join(root, "secret.txt"), []byte(secret+strings.Repeat("x", 200)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	files := filesystem.New(storage)
+	mount, err := files.SaveMount(ctx, entities.Mount{Name: "files", LocalPath: root, Mode: "read_only", Enabled: true, Published: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := continuityHandler(storage)
+	for _, suffix := range []string{"/content?path=secret.txt", "/archive?path=."} {
+		request := httptest.NewRequest("GET", "/api/v1/mounts/"+mount.ID+"/files"+suffix, nil)
+		request.Header.Set("Authorization", "Bearer test-token")
+		request.Header.Set("X-Jolt-Scan", "secrets")
+		request.Header.Set("Range", "bytes=100-110")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden || response.Header().Get("X-Jolt-Scan-Applied") != "secrets" || response.Header().Get("X-Jolt-Secret-Kind") != "private_key" || !strings.Contains(response.Body.String(), "secret_detected") || strings.Contains(response.Body.String(), secret) {
+			t.Fatalf("%s: %d %s %v", suffix, response.Code, response.Body.String(), response.Header())
+		}
+	}
+}
+
+func TestRejectedUploadRecoveryNeverReportsPublished(t *testing.T) {
+	for _, tc := range []struct{ partialExists, createNew bool }{{false, false}, {true, false}, {true, true}} {
+		t.Run(fmt.Sprintf("partial=%t/create=%t", tc.partialExists, tc.createNew), func(t *testing.T) {
+			ctx := context.Background()
+			stateDir, root := filepath.Join(t.TempDir(), "state"), t.TempDir()
+			storage, err := db.Open(stateDir, make([]byte, 32))
+			if err != nil {
+				t.Fatal(err)
+			}
+			files := filesystem.New(storage)
+			mount, err := files.SaveMount(ctx, entities.Mount{Name: "files", LocalPath: root, Mode: "read_write", Enabled: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload := "MZxx"
+			if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte(payload), 0600); err != nil {
+				t.Fatal(err)
+			}
+			digest := sha256.Sum256([]byte(payload))
+			now := time.Now().UTC()
+			session := entities.UploadSession{ID: "rejected-upload", MountID: mount.ID, Destination: "file.txt", State: "rejected", Size: 4, Overwrite: true, PublishChecksum: hex.EncodeToString(digest[:]), CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour)}
+			if err := storage.CreateUploadSession(ctx, session); err != nil {
+				t.Fatal(err)
+			}
+			if tc.partialExists {
+				if _, err := files.AppendUpload(ctx, mount.ID, session.Destination, session.ID, 0, 4, strings.NewReader(payload)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := storage.Close(); err != nil {
+				t.Fatal(err)
+			}
+			storage, err = db.Open(stateDir, make([]byte, 32))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer storage.Close()
+			handler := continuityHandler(storage)
+			base := "/api/v1/mounts/" + mount.ID + "/files/uploads"
+			if tc.createNew {
+				response := uploadCall(handler, "POST", base, `{"path":"file.txt","size":4,"overwrite":true}`)
+				if response.Code != http.StatusCreated {
+					t.Fatalf("new upload after rejection: %d %s", response.Code, response.Body.String())
+				}
+			} else {
+				response := uploadCall(handler, "POST", base+"/"+session.ID+"/complete", `{}`)
+				if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "upload_content_rejected") {
+					t.Fatalf("recovery: %d %s", response.Code, response.Body.String())
+				}
+			}
+			if _, err := storage.GetUploadSession(ctx, session.ID); err == nil {
+				t.Fatal("rejected session remains")
+			}
+			data, err := os.ReadFile(filepath.Join(root, "file.txt"))
+			if err != nil || string(data) != payload {
+				t.Fatalf("existing destination changed: %q %v", data, err)
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("rejected partial remains: %+v %v", entries, err)
+			}
+		})
+	}
+}
+
+func TestUploadSessionIsHiddenAfterMountPolicyChange(t *testing.T) {
+	ctx := context.Background()
+	storage, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	files := filesystem.New(storage)
+	mount, err := files.SaveMount(ctx, entities.Mount{Name: "files", LocalPath: t.TempDir(), Mode: "read_write", Enabled: true, Published: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := continuityHandler(storage)
+	base := "/api/v1/mounts/" + mount.ID + "/files/uploads"
+	created := uploadCall(h, "POST", base, `{"path":"secret.pem","size":3}`)
+	var session entities.UploadSession
+	if created.Code != 201 || json.Unmarshal(created.Body.Bytes(), &session) != nil {
+		t.Fatalf("create: %d %s", created.Code, created.Body)
+	}
+	if response := uploadCall(h, "PATCH", base+"/"+session.ID, "abc"); response.Code != 200 {
+		t.Fatalf("append: %d %s", response.Code, response.Body)
+	}
+	mount.HiddenPatterns = []string{"*.pem"}
+	if _, err := files.SaveMount(ctx, mount); err != nil {
+		t.Fatal(err)
+	}
+	if response := uploadCall(h, "GET", base, ""); response.Code != 200 || strings.Contains(response.Body.String(), "secret.pem") {
+		t.Fatalf("list exposed upload: %d %s", response.Code, response.Body)
+	}
+	for _, target := range []string{base + "/" + session.ID, base + "/" + session.ID + "/complete"} {
+		method := "GET"
+		if strings.HasSuffix(target, "/complete") {
+			method = "POST"
+		}
+		if response := uploadCall(h, method, target, "{}"); response.Code != 404 {
+			t.Fatalf("hidden session: %d %s", response.Code, response.Body)
+		}
+	}
+	if err := files.AbortUpload(ctx, mount.ID, session.Destination, session.ID); err != nil {
+		t.Fatalf("internal cleanup: %v", err)
+	}
+}
+
+func TestCanarySignalsReadsAndArchivesWithoutOverridingHiddenRules(t *testing.T) {
+	ctx := context.Background()
+	storage, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	root := t.TempDir()
+	for _, name := range []string{"honey.txt", "hidden.pem"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("decoy"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := filesystem.New(storage)
+	mount, err := files.SaveMount(ctx, entities.Mount{Name: "files", LocalPath: root, Mode: "read_only", Enabled: true, Published: true, CanaryPaths: []string{"honey.txt", "hidden.pem"}, HiddenPatterns: []string{"*.pem"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := continuityHandler(storage)
+	base := "/api/v1/mounts/" + mount.ID + "/files"
+	for _, tc := range []struct {
+		path   string
+		status int
+	}{
+		{base + "/metadata?path=honey.txt", 200}, {base + "/content?path=honey.txt", 200},
+		{base + "/content?path=hidden.pem", 404}, {base + "/archive?path=.", 200},
+	} {
+		request := httptest.NewRequest("GET", tc.path, nil)
+		request.Header.Set("Authorization", "Bearer test-token")
+		request.Header.Set("X-Jolt-Internal-Canary", "1")
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, request)
+		if response.Code != tc.status || response.Header().Get("X-Jolt-Canary") != "1" {
+			t.Fatalf("%s: %d header=%q body=%s", tc.path, response.Code, response.Header().Get("X-Jolt-Canary"), response.Body)
+		}
+	}
+	if response := uploadCall(h, "GET", base+"/content?path=honey.txt", ""); response.Header().Get("X-Jolt-Canary") != "" {
+		t.Fatal("canary signal exposed to a normal node API request")
+	}
+}
+
+func TestHiddenNamesFailBeforeJobsAreCreated(t *testing.T) {
+	ctx := context.Background()
+	storage, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	files := filesystem.New(storage)
+	mount, err := files.SaveMount(ctx, entities.Mount{Name: "files", LocalPath: t.TempDir(), Mode: "read_write", Enabled: true, Published: true, HiddenPatterns: []string{"*.pem"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := continuityHandler(storage)
+	base := "/api/v1/mounts/" + mount.ID + "/files"
+	for _, tc := range []struct {
+		method, path, body string
+		status             int
+		code               string
+	}{
+		{"POST", base + "/directories", `{"path":"secret.pem"}`, 422, "hidden_name"},
+		{"POST", base + "/move", `{"source_path":"secret.pem","destination_path":"open"}`, 404, "not_found"},
+		{"PUT", base + "/content?path=secret.pem", "abc", 422, "hidden_name"},
+		{"POST", base + "/uploads", `{"path":"secret.pem","size":3}`, 422, "hidden_name"},
+	} {
+		response := uploadCall(h, tc.method, tc.path, tc.body)
+		if response.Code != tc.status || !strings.Contains(response.Body.String(), tc.code) {
+			t.Fatalf("%s %s: %d %s", tc.method, tc.path, response.Code, response.Body)
+		}
+	}
+	jobs, err := storage.ListJobs(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("hidden requests created jobs: %+v", jobs)
+	}
+}
+
+func TestHistoricalJobsDoNotRevealNewlyHiddenPaths(t *testing.T) {
+	ctx := context.Background()
+	storage, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	files := filesystem.New(storage)
+	mount, err := files.SaveMount(ctx, entities.Mount{Name: "files", LocalPath: t.TempDir(), Mode: "read_write", Enabled: true, Published: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	job := entities.Job{ID: "old-job", Type: "copy_local", MountID: mount.ID, SourcePath: "secret.pem", Destination: "copy.txt", State: "completed", CreatedAt: now, UpdatedAt: now}
+	if _, _, err := storage.CreateJob(ctx, job, ""); err != nil {
+		t.Fatal(err)
+	}
+	mount.HiddenPatterns = []string{"*.pem"}
+	if _, err := files.SaveMount(ctx, mount); err != nil {
+		t.Fatal(err)
+	}
+	h := continuityHandler(storage)
+	if response := uploadCall(h, "GET", "/api/v1/jobs", ""); response.Code != 200 || strings.Contains(response.Body.String(), "secret.pem") {
+		t.Fatalf("job list exposed path: %d %s", response.Code, response.Body)
+	}
+	if response := uploadCall(h, "GET", "/api/v1/jobs/old-job", ""); response.Code != 404 {
+		t.Fatalf("job detail: %d %s", response.Code, response.Body)
+	}
+}
 func TestUploadPublicationRecoversAcrossRestartAndReturnsStableReceipt(t *testing.T) {
 	for _, boundary := range []string{"intent", "published", "empty-published"} {
 		t.Run(boundary, func(t *testing.T) {

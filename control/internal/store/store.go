@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +21,8 @@ var (
 	ErrLastAdmin = errors.New("at least one enabled administrator is required")
 )
 
+const supportedSecurityVersion = 10
+
 type User struct {
 	ID           string    `json:"user_id"`
 	Username     string    `json:"username"`
@@ -30,6 +34,7 @@ type User struct {
 }
 
 type ServiceAccount struct {
+	Kind        string    `json:"kind"`
 	ID          string    `json:"service_account_id"`
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
@@ -54,14 +59,35 @@ type AccessGroup struct {
 }
 
 type ServiceAccountToken struct {
-	ID               string     `json:"token_id"`
-	ServiceAccountID string     `json:"service_account_id"`
-	Name             string     `json:"name"`
-	TokenHash        string     `json:"-"`
-	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
-	LastUsedAt       *time.Time `json:"last_used_at,omitempty"`
-	RevokedAt        *time.Time `json:"revoked_at,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
+	AgentLimits      *AgentLimits `json:"agent_limits,omitempty"`
+	ID               string       `json:"token_id"`
+	ServiceAccountID string       `json:"service_account_id"`
+	Name             string       `json:"name"`
+	TokenHash        string       `json:"-"`
+	ExpiresAt        *time.Time   `json:"expires_at,omitempty"`
+	LastUsedAt       *time.Time   `json:"last_used_at,omitempty"`
+	RevokedAt        *time.Time   `json:"revoked_at,omitempty"`
+	CreatedAt        time.Time    `json:"created_at"`
+}
+
+// AgentLimits are per-credential server-enforced ceilings.
+type AgentLimits struct {
+	RequestsPerMinute int       `json:"requests_per_minute"`
+	Burst             int       `json:"burst"`
+	MaxConcurrent     int       `json:"max_concurrent"`
+	MaxResponseBytes  int64     `json:"max_response_bytes"`
+	DailyBytes        int64     `json:"daily_bytes"`
+	AllowedCIDRs      []string  `json:"allowed_cidrs,omitempty"`
+	ReadMediaTypes    []string  `json:"read_media_types,omitempty"`
+	Capabilities      *[]string `json:"capabilities,omitempty"`
+	// RequestDeletes lets the credential ask a person to delete a file. It
+	// still cannot delete: only a rule that needs approval can be asked, and a
+	// person decides.
+	RequestDeletes bool `json:"request_deletes,omitempty"`
+}
+
+func DefaultAgentLimits() AgentLimits {
+	return AgentLimits{RequestsPerMinute: 60, Burst: 10, MaxConcurrent: 2, MaxResponseBytes: 16 << 20, DailyBytes: 1 << 30}
 }
 
 type Policy struct {
@@ -114,20 +140,26 @@ type Connection struct {
 }
 
 type AuditEvent struct {
-	ID            int64     `json:"event_id"`
-	ActorID       string    `json:"actor_id"`
-	ActorType     string    `json:"actor_type"`
-	Action        string    `json:"action"`
-	Resource      string    `json:"resource"`
-	Result        string    `json:"result"`
-	CorrelationID string    `json:"correlation_id"`
-	PolicyIDs     []string  `json:"policy_ids"`
-	EvaluatedPath string    `json:"evaluated_path,omitempty"`
-	Capability    string    `json:"capability,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
+	ChainData     string         `json:"chain_data,omitempty"`
+	ChainHash     string         `json:"chain_hash,omitempty"`
+	SourceIP      string         `json:"source_ip,omitempty"`
+	Detail        map[string]any `json:"detail,omitempty"`
+	ID            int64          `json:"event_id"`
+	ActorID       string         `json:"actor_id"`
+	ActorType     string         `json:"actor_type"`
+	Action        string         `json:"action"`
+	Resource      string         `json:"resource"`
+	Result        string         `json:"result"`
+	CorrelationID string         `json:"correlation_id"`
+	PolicyIDs     []string       `json:"policy_ids"`
+	EvaluatedPath string         `json:"evaluated_path,omitempty"`
+	Capability    string         `json:"capability,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
 }
 
 type AuditQuery struct {
+	AfterID       int64
+	Ascending     bool
 	BeforeID      int64
 	Limit         int
 	ActorType     string
@@ -155,7 +187,15 @@ func Open(path string, encryptionKey []byte) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{db: database}
+	if err := s.checkSecurityVersion(); err != nil {
+		database.Close()
+		return nil, err
+	}
 	if err := s.migrate(); err != nil {
+		database.Close()
+		return nil, err
+	}
+	if err := recoverPendingOperations(database); err != nil {
 		database.Close()
 		return nil, err
 	}
@@ -211,6 +251,74 @@ CREATE TABLE IF NOT EXISTS service_account_tokens (
  created_at TEXT NOT NULL,
  FOREIGN KEY(service_account_id) REFERENCES service_accounts(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS agent_usage (
+ token_id TEXT NOT NULL, day TEXT NOT NULL, charged_bytes INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(token_id,day), FOREIGN KEY(token_id) REFERENCES service_account_tokens(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS workload_identities (
+ credential_id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, issuer TEXT NOT NULL,
+ subject TEXT NOT NULL, audience TEXT NOT NULL, enabled INTEGER NOT NULL,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ UNIQUE(provider_id,issuer,subject,audience),
+ FOREIGN KEY(credential_id) REFERENCES service_account_tokens(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS job_authorization_links (
+ node_id TEXT NOT NULL, job_id TEXT NOT NULL, actor_type TEXT NOT NULL, actor_id TEXT NOT NULL,
+ credential_id TEXT NOT NULL, credential_digest TEXT NOT NULL, binding TEXT NOT NULL,
+ confirmed_revision INTEGER NOT NULL DEFAULT 0, confirmed_digest TEXT NOT NULL DEFAULT '', confirmed_expiry_ns INTEGER NOT NULL DEFAULT 0,
+ pending_revision INTEGER NOT NULL DEFAULT 0,
+ pending_envelope TEXT NOT NULL DEFAULT '', pending_expiry_ns INTEGER NOT NULL DEFAULT 0,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ PRIMARY KEY(node_id,job_id), FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS job_authorization_scopes (
+ node_id TEXT NOT NULL, job_id TEXT NOT NULL, scope TEXT NOT NULL, created_at TEXT NOT NULL,
+ PRIMARY KEY(node_id,job_id), FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS job_authorization_finished (
+ node_id TEXT NOT NULL, job_id TEXT NOT NULL, finished_at TEXT NOT NULL,
+ PRIMARY KEY(node_id,job_id), FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS pending_operations (
+ id TEXT PRIMARY KEY, requester_type TEXT NOT NULL, requester_id TEXT NOT NULL,
+ method TEXT NOT NULL, node_id TEXT NOT NULL, resource TEXT NOT NULL, raw_query TEXT NOT NULL,
+ body BLOB NOT NULL, body_sha256 TEXT NOT NULL, summary TEXT NOT NULL, requirements TEXT NOT NULL,
+ state TEXT NOT NULL, created_at TEXT NOT NULL, expires_at_ns INTEGER NOT NULL,
+ decided_by_type TEXT NOT NULL DEFAULT '', decided_by_id TEXT NOT NULL DEFAULT '', decided_at TEXT NOT NULL DEFAULT '',
+ note TEXT NOT NULL DEFAULT '', result_status INTEGER NOT NULL DEFAULT 0, result_body TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS pending_operations_state ON pending_operations(state, expires_at_ns);
+CREATE TABLE IF NOT EXISTS join_tokens (
+ id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL UNIQUE, node_name TEXT NOT NULL, approval TEXT NOT NULL,
+ created_by TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+ used_at TEXT NOT NULL DEFAULT '', enrollment_id TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS enrollments (
+ id TEXT PRIMARY KEY, token_id TEXT NOT NULL, state TEXT NOT NULL, node_name TEXT NOT NULL, node_id TEXT NOT NULL,
+ node_fingerprint TEXT NOT NULL, api_endpoint TEXT NOT NULL, remote_addr TEXT NOT NULL, csr_pem TEXT NOT NULL, csr_hash TEXT NOT NULL,
+ operational_encrypted TEXT NOT NULL, poll_hash TEXT NOT NULL, decided_by TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+ response TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, expires_at TEXT NOT NULL, decided_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS enrollments_state ON enrollments(state, expires_at);
+CREATE TABLE IF NOT EXISTS managed_nodes (
+ node_id TEXT PRIMARY KEY, enrolled_at TEXT NOT NULL, bundle_version INTEGER NOT NULL DEFAULT 0, cert_serial TEXT NOT NULL DEFAULT '',
+ cert_not_before TEXT NOT NULL DEFAULT '', cert_not_after TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '', last_error_at TEXT NOT NULL DEFAULT '',
+ FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS pki_objects (
+ id TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, serial TEXT NOT NULL DEFAULT '',
+ fingerprint TEXT NOT NULL DEFAULT '', public TEXT NOT NULL, secret TEXT NOT NULL DEFAULT '',
+ not_before TEXT NOT NULL, not_after TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS signed_copy_intents (
+ node_id TEXT NOT NULL, job_id TEXT NOT NULL, actor_type TEXT NOT NULL, actor_id TEXT NOT NULL,
+ credential_id TEXT NOT NULL, credential_digest TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+ binding TEXT NOT NULL, request_body TEXT NOT NULL, options TEXT NOT NULL,
+ envelope TEXT NOT NULL, expiry_ns INTEGER NOT NULL, accepted INTEGER NOT NULL DEFAULT 0,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ PRIMARY KEY(node_id,job_id), UNIQUE(node_id,actor_type,actor_id,idempotency_key),
+ FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS policies (
  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL,
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -225,6 +333,13 @@ CREATE TABLE IF NOT EXISTS policy_assignments (
  created_at TEXT NOT NULL, PRIMARY KEY(policy_id,subject_type,subject_id),
  FOREIGN KEY(policy_id) REFERENCES policies(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS temporary_policy_assignments (
+ policy_id TEXT NOT NULL, subject_type TEXT NOT NULL, subject_id TEXT NOT NULL,
+ created_at TEXT NOT NULL, created_by TEXT NOT NULL, expires_at_ns INTEGER NOT NULL,
+ PRIMARY KEY(policy_id,subject_type,subject_id),
+ FOREIGN KEY(policy_id) REFERENCES policies(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_temporary_policy_subject ON temporary_policy_assignments(subject_type,subject_id,expires_at_ns);
 CREATE TABLE IF NOT EXISTS roles (
  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL,
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -257,6 +372,12 @@ CREATE TABLE IF NOT EXISTS audit_events (
  policy_ids TEXT NOT NULL DEFAULT '[]', evaluated_path TEXT NOT NULL DEFAULT '',
  capability TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS audit_chain_state (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), last_id INTEGER NOT NULL, last_hash TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS audit_chain_checkpoints (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL, event_hash TEXT NOT NULL, created_at TEXT NOT NULL, reason TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS metadata (
  key TEXT PRIMARY KEY, value TEXT NOT NULL
 );
@@ -265,7 +386,7 @@ CREATE TABLE IF NOT EXISTS shares (
  mount_id TEXT NOT NULL, path TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL,
  password_hash TEXT NOT NULL DEFAULT '', allow_archive INTEGER NOT NULL DEFAULT 1,
  max_downloads INTEGER NOT NULL DEFAULT 0, download_count INTEGER NOT NULL DEFAULT 0,
- created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+ created_by TEXT NOT NULL, created_by_type TEXT NOT NULL DEFAULT 'user', created_credential_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
  expires_at TEXT, revoked_at TEXT, last_access_at TEXT
 );
 CREATE INDEX IF NOT EXISTS shares_created_by ON shares(created_by);
@@ -325,9 +446,25 @@ WHERE path LIKE 'workers/%'`); err != nil {
 		return err
 	}
 	for _, statement := range []string{
+		`ALTER TABLE policy_rules ADD COLUMN file_types TEXT NOT NULL DEFAULT 'null'`,
+		`ALTER TABLE policy_rules ADD COLUMN visibility TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE policy_rules ADD COLUMN needs_approval TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE pending_operations ADD COLUMN kind TEXT NOT NULL DEFAULT 'replay'`,
+		`ALTER TABLE pending_operations ADD COLUMN credential_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE shares ADD COLUMN created_by_type TEXT NOT NULL DEFAULT 'user'`,
+		`ALTER TABLE shares ADD COLUMN created_credential_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE service_accounts ADD COLUMN kind TEXT NOT NULL DEFAULT 'automation'`,
+		`ALTER TABLE service_account_tokens ADD COLUMN agent_limits TEXT NOT NULL DEFAULT 'null'`,
+		`ALTER TABLE audit_events ADD COLUMN source_ip TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE audit_events ADD COLUMN detail TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE audit_events ADD COLUMN chain_data TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE audit_events ADD COLUMN chain_hash TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE audit_events ADD COLUMN policy_ids TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE audit_events ADD COLUMN evaluated_path TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE audit_events ADD COLUMN capability TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE managed_nodes ADD COLUMN cert_fingerprint TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE managed_nodes ADD COLUMN cert_issuer TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE managed_nodes ADD COLUMN auth_mode TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := s.db.Exec(statement); err != nil &&
 			!strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
@@ -365,7 +502,7 @@ func (s *Store) renameColumnIfNeeded(table, oldName, newName string) error {
 	return err
 }
 
-const serviceAccountSelect = `SELECT id,name,description,enabled,created_at,updated_at FROM service_accounts`
+const serviceAccountSelect = `SELECT id,name,description,enabled,created_at,updated_at,kind FROM service_accounts`
 
 func searchPattern(query string) string {
 	escaped := strings.NewReplacer(
@@ -380,7 +517,7 @@ func scanServiceAccount(scanner interface{ Scan(...any) error }) (ServiceAccount
 	var account ServiceAccount
 	var enabled int
 	var createdAt, updatedAt string
-	err := scanner.Scan(&account.ID, &account.Name, &account.Description, &enabled, &createdAt, &updatedAt)
+	err := scanner.Scan(&account.ID, &account.Name, &account.Description, &enabled, &createdAt, &updatedAt, &account.Kind)
 	account.Enabled = enabled != 0
 	account.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	account.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
@@ -424,13 +561,57 @@ func (s *Store) GetServiceAccount(ctx context.Context, id string) (ServiceAccoun
 }
 
 func (s *Store) CreateServiceAccount(ctx context.Context, account ServiceAccount) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO service_accounts(id,name,description,enabled,created_at,updated_at)
-VALUES(?,?,?,?,?,?)`, account.ID, account.Name, account.Description, boolInt(account.Enabled),
-		account.CreatedAt.Format(time.RFC3339Nano), account.UpdatedAt.Format(time.RFC3339Nano))
+	if account.Kind == "" {
+		account.Kind = "automation"
+	}
+	if account.Kind != "automation" && account.Kind != "agent" {
+		return ErrConflict
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `INSERT INTO service_accounts(id,name,description,enabled,created_at,updated_at,kind)
+VALUES(?,?,?,?,?,?,?)`, account.ID, account.Name, account.Description, boolInt(account.Enabled),
+		account.CreatedAt.Format(time.RFC3339Nano), account.UpdatedAt.Format(time.RFC3339Nano), account.Kind)
 	if isUniqueConstraint(err) {
 		return ErrConflict
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if account.Kind == "agent" {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO metadata(key,value) VALUES('minimum_security_version','1') ON CONFLICT(key) DO UPDATE SET value=CASE WHEN CAST(value AS INTEGER)<1 THEN '1' ELSE value END`); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// Older releases did not check this marker; operators must still use a
+// pre-feature backup when rolling back to one of those releases.
+func (s *Store) checkSecurityVersion() error {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='metadata'`).Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		return nil
+	}
+	var raw string
+	err := s.db.QueryRow(`SELECT value FROM metadata WHERE key='minimum_security_version'`).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	version, err := strconv.Atoi(raw)
+	if err != nil || version < 1 || version > supportedSecurityVersion {
+		return errors.New("database requires an unsupported security version")
+	}
+	return nil
 }
 
 func (s *Store) UpdateServiceAccount(ctx context.Context, account ServiceAccount) error {
@@ -457,6 +638,9 @@ func (s *Store) DeleteServiceAccount(ctx context.Context, id string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM policy_assignments WHERE subject_type='service_account' AND subject_id=?`, id); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM temporary_policy_assignments WHERE subject_type='service_account' AND subject_id=?`, id); err != nil {
+		return err
+	}
 	result, err := tx.ExecContext(ctx, `DELETE FROM service_accounts WHERE id=?`, id)
 	if err != nil {
 		return err
@@ -481,16 +665,28 @@ func (s *Store) CreateServiceAccountToken(ctx context.Context, token ServiceAcco
 	}
 	if revokeExisting {
 		now := token.CreatedAt.Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx, `UPDATE service_account_tokens SET revoked_at=? WHERE service_account_id=? AND revoked_at IS NULL`,
+		if _, err := tx.ExecContext(ctx, `UPDATE service_account_tokens SET revoked_at=? WHERE service_account_id=? AND revoked_at IS NULL AND NOT EXISTS(SELECT 1 FROM workload_identities w WHERE w.credential_id=service_account_tokens.id)`,
 			now, token.ServiceAccountID); err != nil {
 			return err
 		}
 	}
+	limits, err := json.Marshal(token.AgentLimits)
+	if err != nil {
+		return err
+	}
+	if token.AgentLimits != nil && token.AgentLimits.RequestDeletes {
+		// An older binary would read the credential as read-only without
+		// noticing the field, which is the safe way to misread it; the marker
+		// still keeps it from opening a database that asks for approvals.
+		if _, err := tx.ExecContext(ctx, `INSERT INTO metadata(key,value) VALUES('minimum_security_version','8') ON CONFLICT(key) DO UPDATE SET value=CASE WHEN CAST(value AS INTEGER)<8 THEN '8' ELSE value END`); err != nil {
+			return err
+		}
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO service_account_tokens(
-id,service_account_id,name,token_hash,expires_at,last_used_at,revoked_at,created_at
-) VALUES(?,?,?,?,?,?,?,?)`, token.ID, token.ServiceAccountID, token.Name, token.TokenHash,
+id,service_account_id,name,token_hash,expires_at,last_used_at,revoked_at,created_at,agent_limits
+) VALUES(?,?,?,?,?,?,?,?,?)`, token.ID, token.ServiceAccountID, token.Name, token.TokenHash,
 		nullableTime(token.ExpiresAt), nullableTime(token.LastUsedAt), nullableTime(token.RevokedAt),
-		token.CreatedAt.Format(time.RFC3339Nano))
+		token.CreatedAt.Format(time.RFC3339Nano), string(limits))
 	if isUniqueConstraint(err) {
 		return ErrConflict
 	}
@@ -504,8 +700,8 @@ func (s *Store) ListServiceAccountTokens(ctx context.Context, accountID string) 
 	if _, err := s.GetServiceAccount(ctx, accountID); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,service_account_id,name,token_hash,expires_at,last_used_at,revoked_at,created_at
-FROM service_account_tokens WHERE service_account_id=? ORDER BY created_at DESC`, accountID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,service_account_id,name,token_hash,expires_at,last_used_at,revoked_at,created_at,agent_limits
+FROM service_account_tokens t WHERE service_account_id=? AND NOT EXISTS (SELECT 1 FROM workload_identities w WHERE w.credential_id=t.id) ORDER BY created_at DESC`, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -521,12 +717,45 @@ FROM service_account_tokens WHERE service_account_id=? ORDER BY created_at DESC`
 	return tokens, rows.Err()
 }
 
+// GetActiveServiceAccountToken rechecks a persisted credential without
+// exposing or needing its secret. Callers must separately validate the account.
+func (s *Store) GetActiveServiceAccountToken(ctx context.Context, accountID, tokenID string, now time.Time) (ServiceAccountToken, error) {
+	var expiry, revoked sql.NullString
+	var limits string
+	err := s.db.QueryRowContext(ctx, `SELECT expires_at,revoked_at,agent_limits FROM service_account_tokens WHERE id=? AND service_account_id=?`, tokenID, accountID).Scan(&expiry, &revoked, &limits)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ServiceAccountToken{}, ErrNotFound
+	}
+	if err != nil {
+		return ServiceAccountToken{}, err
+	}
+	if revoked.Valid {
+		return ServiceAccountToken{}, ErrNotFound
+	}
+	token := ServiceAccountToken{ID: tokenID, ServiceAccountID: accountID}
+	if err := json.Unmarshal([]byte(limits), &token.AgentLimits); err != nil {
+		return ServiceAccountToken{}, err
+	}
+	if expiry.Valid {
+		parsed, err := time.Parse(time.RFC3339Nano, expiry.String)
+		if err != nil || !parsed.After(now) {
+			return ServiceAccountToken{}, ErrNotFound
+		}
+		token.ExpiresAt = &parsed
+	}
+	return token, nil
+}
+
 func scanServiceAccountToken(scanner interface{ Scan(...any) error }) (ServiceAccountToken, error) {
 	var token ServiceAccountToken
 	var expiresAt, lastUsedAt, revokedAt sql.NullString
 	var createdAt string
+	var limits string
 	err := scanner.Scan(&token.ID, &token.ServiceAccountID, &token.Name, &token.TokenHash,
-		&expiresAt, &lastUsedAt, &revokedAt, &createdAt)
+		&expiresAt, &lastUsedAt, &revokedAt, &createdAt, &limits)
+	if err == nil {
+		err = json.Unmarshal([]byte(limits), &token.AgentLimits)
+	}
 	token.ExpiresAt = parseNullableTime(expiresAt)
 	token.LastUsedAt = parseNullableTime(lastUsedAt)
 	token.RevokedAt = parseNullableTime(revokedAt)
@@ -535,29 +764,39 @@ func scanServiceAccountToken(scanner interface{ Scan(...any) error }) (ServiceAc
 }
 
 func (s *Store) AuthenticateServiceAccount(ctx context.Context, tokenHash string) (ServiceAccount, ServiceAccountToken, error) {
-	query := `SELECT a.id,a.name,a.description,a.enabled,a.created_at,a.updated_at,
-t.id,t.service_account_id,t.name,t.token_hash,t.expires_at,t.last_used_at,t.revoked_at,t.created_at
+	query := `SELECT a.id,a.name,a.description,a.enabled,a.created_at,a.updated_at,a.kind,
+t.id,t.service_account_id,t.name,t.token_hash,t.expires_at,t.last_used_at,t.revoked_at,t.created_at,t.agent_limits
 FROM service_account_tokens t JOIN service_accounts a ON a.id=t.service_account_id
-WHERE t.token_hash=? AND a.enabled=1 AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at>?)`
-	row := s.db.QueryRowContext(ctx, query, tokenHash, time.Now().UTC().Format(time.RFC3339Nano))
+WHERE t.token_hash=? AND a.enabled=1 AND t.revoked_at IS NULL`
+	row := s.db.QueryRowContext(ctx, query, tokenHash)
 	var account ServiceAccount
 	var enabled int
 	var accountCreated, accountUpdated string
 	var token ServiceAccountToken
 	var expiresAt, lastUsedAt, revokedAt sql.NullString
 	var tokenCreated string
-	err := row.Scan(&account.ID, &account.Name, &account.Description, &enabled, &accountCreated, &accountUpdated,
-		&token.ID, &token.ServiceAccountID, &token.Name, &token.TokenHash, &expiresAt, &lastUsedAt, &revokedAt, &tokenCreated)
+	var limits string
+	err := row.Scan(&account.ID, &account.Name, &account.Description, &enabled, &accountCreated, &accountUpdated, &account.Kind,
+		&token.ID, &token.ServiceAccountID, &token.Name, &token.TokenHash, &expiresAt, &lastUsedAt, &revokedAt, &tokenCreated, &limits)
 	if errors.Is(err, sql.ErrNoRows) {
 		return account, token, ErrNotFound
 	}
 	if err != nil {
 		return account, token, err
 	}
+	if err := json.Unmarshal([]byte(limits), &token.AgentLimits); err != nil {
+		return account, token, err
+	}
 	account.Enabled = enabled != 0
 	account.CreatedAt, _ = time.Parse(time.RFC3339Nano, accountCreated)
 	account.UpdatedAt, _ = time.Parse(time.RFC3339Nano, accountUpdated)
-	token.ExpiresAt = parseNullableTime(expiresAt)
+	if expiresAt.Valid {
+		expiry, err := time.Parse(time.RFC3339Nano, expiresAt.String)
+		if err != nil || !expiry.After(time.Now().UTC()) {
+			return ServiceAccount{}, ServiceAccountToken{}, ErrNotFound
+		}
+		token.ExpiresAt = &expiry
+	}
 	token.LastUsedAt = parseNullableTime(lastUsedAt)
 	token.RevokedAt = parseNullableTime(revokedAt)
 	token.CreatedAt, _ = time.Parse(time.RFC3339Nano, tokenCreated)
@@ -926,7 +1165,7 @@ func (s *Store) GetPolicy(ctx context.Context, id string) (Policy, error) {
 }
 
 func (s *Store) policyRules(ctx context.Context, policyID string) ([]rbac.Rule, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT path,capabilities FROM policy_rules WHERE policy_id=? ORDER BY position,id`, policyID)
+	rows, err := s.db.QueryContext(ctx, `SELECT path,capabilities,file_types,visibility,needs_approval FROM policy_rules WHERE policy_id=? ORDER BY position,id`, policyID)
 	if err != nil {
 		return nil, err
 	}
@@ -934,11 +1173,28 @@ func (s *Store) policyRules(ctx context.Context, policyID string) ([]rbac.Rule, 
 	var rules []rbac.Rule
 	for rows.Next() {
 		var rule rbac.Rule
-		var encoded string
-		if err := rows.Scan(&rule.Path, &encoded); err != nil {
+		var encoded, selector, approval string
+		if err := rows.Scan(&rule.Path, &encoded, &selector, &rule.Visibility, &approval); err != nil {
 			return nil, err
 		}
+		if approval != "" && approval != "[]" {
+			if err := json.Unmarshal([]byte(approval), &rule.NeedsApproval); err != nil {
+				return nil, err
+			}
+		}
 		if err := json.Unmarshal([]byte(encoded), &rule.Capabilities); err != nil {
+			return nil, err
+		}
+		decoder := json.NewDecoder(strings.NewReader(selector))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&rule.FileTypes); err != nil {
+			return nil, err
+		}
+		var extra any
+		if err := decoder.Decode(&extra); err != io.EOF {
+			return nil, errors.New("invalid trailing file type selector data")
+		}
+		if err := validatePolicyTypeRule(rule); err != nil {
 			return nil, err
 		}
 		rules = append(rules, rule)
@@ -994,16 +1250,59 @@ func (s *Store) UpdatePolicy(ctx context.Context, policy Policy) error {
 
 func insertPolicyRules(ctx context.Context, tx *sql.Tx, policyID string, rules []rbac.Rule) error {
 	for position, rule := range rules {
+		if err := validatePolicyTypeRule(rule); err != nil {
+			return err
+		}
 		encoded, err := json.Marshal(rule.Capabilities)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO policy_rules(policy_id,path,capabilities,position) VALUES(?,?,?,?)`,
-			policyID, rule.Path, string(encoded), position); err != nil {
+		selector, err := json.Marshal(rule.FileTypes)
+		if err != nil {
+			return err
+		}
+		if rule.FileTypes != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO metadata(key,value) VALUES('minimum_security_version','2') ON CONFLICT(key) DO UPDATE SET value=CASE WHEN CAST(value AS INTEGER)<2 THEN '2' ELSE value END`); err != nil {
+				return err
+			}
+		}
+		approval := []byte("[]")
+		if len(rule.NeedsApproval) > 0 {
+			if approval, err = json.Marshal(rule.NeedsApproval); err != nil {
+				return err
+			}
+			// An older binary would read the rule as a plain grant and skip the
+			// approval, so keep it from opening a database that holds one.
+			if _, err := tx.ExecContext(ctx, `INSERT INTO metadata(key,value) VALUES('minimum_security_version','8') ON CONFLICT(key) DO UPDATE SET value=CASE WHEN CAST(value AS INTEGER)<8 THEN '8' ELSE value END`); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO policy_rules(policy_id,path,capabilities,position,file_types,visibility,needs_approval) VALUES(?,?,?,?,?,?,?)`,
+			policyID, rule.Path, string(encoded), position, string(selector), rule.Visibility, string(approval)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func validatePolicyTypeRule(rule rbac.Rule) error {
+	if !rbac.ValidNeedsApproval(rule) {
+		return errors.New("invalid approval marks")
+	}
+	if rule.FileTypes == nil {
+		if rule.Visibility != "" {
+			return errors.New("visibility requires file types")
+		}
+		return nil
+	}
+	if rule.Visibility != "" && rule.Visibility != "hidden" && rule.Visibility != "visible" {
+		return errors.New("invalid file type visibility")
+	}
+	parts := strings.Split(rbac.NormalizePath(rule.Path), "/")
+	if !rbac.ValidPath(rule.Path) || len(parts) < 5 || parts[0] != "nodes" || parts[2] != "files" || parts[3] != "mounts" || parts[1] == "**" || parts[4] == "**" {
+		return errors.New("file types require a mount file path")
+	}
+	return rule.FileTypes.Validate()
 }
 
 func (s *Store) DeletePolicy(ctx context.Context, id string) error {
@@ -1292,18 +1591,20 @@ WHERE a.subject_type=? AND a.subject_id=?`
 	if subjectType == "user" {
 		query = `SELECT DISTINCT p.id,p.name FROM policies p
 LEFT JOIN policy_assignments a ON a.policy_id=p.id AND a.subject_type='user' AND a.subject_id=?
+LEFT JOIN temporary_policy_assignments t ON t.policy_id=p.id AND t.subject_type='user' AND t.subject_id=? AND t.expires_at_ns>?
 LEFT JOIN role_policies rp ON rp.policy_id=p.id
 LEFT JOIN user_roles ur ON ur.role_id=rp.role_id AND ur.user_id=?
-WHERE a.policy_id IS NOT NULL OR ur.user_id IS NOT NULL`
-		args = []any{subjectID, subjectID}
+WHERE a.policy_id IS NOT NULL OR t.policy_id IS NOT NULL OR ur.user_id IS NOT NULL`
+		args = []any{subjectID, subjectID, time.Now().UTC().UnixNano(), subjectID}
 	} else if subjectType == "service_account" {
 		query = `SELECT DISTINCT p.id,p.name FROM policies p
 LEFT JOIN policy_assignments a ON a.policy_id=p.id AND a.subject_type='service_account' AND a.subject_id=?
+LEFT JOIN temporary_policy_assignments t ON t.policy_id=p.id AND t.subject_type='service_account' AND t.subject_id=? AND t.expires_at_ns>?
 LEFT JOIN service_account_groups sg ON sg.service_account_id=?
 LEFT JOIN access_groups g ON g.id=sg.group_id AND g.enabled=1
-LEFT JOIN access_group_policies gp ON gp.policy_id=p.id AND gp.group_id=sg.group_id
-WHERE a.policy_id IS NOT NULL OR gp.policy_id IS NOT NULL`
-		args = []any{subjectID, subjectID}
+LEFT JOIN access_group_policies gp ON gp.policy_id=p.id AND gp.group_id=g.id
+WHERE a.policy_id IS NOT NULL OR t.policy_id IS NOT NULL OR gp.policy_id IS NOT NULL`
+		args = []any{subjectID, subjectID, time.Now().UTC().UnixNano(), subjectID}
 	}
 	query += ` ORDER BY p.id`
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -1404,11 +1705,7 @@ id,username,password_hash,role,enabled,created_at,updated_at) VALUES(?,?,?,?,1,?
 		return AdminRecoveryResult{}, err
 	}
 	revoked, _ := sessionResult.RowsAffected()
-	_, err = tx.ExecContext(ctx, `INSERT INTO audit_events(
-actor_id,actor_type,action,resource,result,correlation_id,created_at,policy_ids,evaluated_path,capability
-) VALUES(?,?,?,?,?,?,?,?,?,?)`, user.ID, "recovery", "recover_admin",
-		"control-tower/users/"+user.ID, "allowed", correlationID, now.Format(time.RFC3339Nano),
-		"[]", "control-tower/users", "sudo")
+	err = appendAuditTx(ctx, tx, auditRecord{actorID: user.ID, actorType: "recovery", action: "recover_admin", resource: "control-tower/users/" + user.ID, result: "allowed", correlationID: correlationID, createdAt: now.Format(time.RFC3339Nano), evaluatedPath: "control-tower/users", capability: "sudo"})
 	if err != nil {
 		return AdminRecoveryResult{}, err
 	}
@@ -1439,11 +1736,7 @@ last_seen_at=NULL,updated_at=? WHERE id=?`, encryptedToken, now.Format(time.RFC3
 	if count, _ := result.RowsAffected(); count == 0 {
 		return Node{}, ErrNotFound
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO audit_events(
-actor_id,actor_type,action,resource,result,correlation_id,created_at,policy_ids,evaluated_path,capability
-) VALUES(?,?,?,?,?,?,?,?,?,?)`, nodeID, "recovery", "recover_node_token",
-		"control-tower/nodes/"+nodeID+"/token", "allowed", correlationID,
-		now.Format(time.RFC3339Nano), "[]", "control-tower/nodes/"+nodeID+"/token", "sudo")
+	err = appendAuditTx(ctx, tx, auditRecord{actorID: nodeID, actorType: "recovery", action: "recover_node_token", resource: "control-tower/nodes/" + nodeID + "/token", result: "allowed", correlationID: correlationID, createdAt: now.Format(time.RFC3339Nano), evaluatedPath: "control-tower/nodes/" + nodeID + "/token", capability: "sudo"})
 	if err != nil {
 		return Node{}, err
 	}
@@ -1608,6 +1901,9 @@ func (s *Store) DeleteUser(ctx context.Context, id string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM policy_assignments WHERE subject_type='user' AND subject_id=?`, id); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM temporary_policy_assignments WHERE subject_type='user' AND subject_id=?`, id); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id=?`, id); err != nil {
 		return err
 	}
@@ -1621,20 +1917,33 @@ func (s *Store) CreateSession(ctx context.Context, hash, userID string, expires 
 }
 
 func (s *Store) SessionUser(ctx context.Context, hash string) (User, error) {
+	user, _, err := s.SessionUserAndExpiry(ctx, hash)
+	return user, err
+}
+
+// SessionUserAndExpiry revalidates the session and returns its current user and
+// expiry together so short-lived authorizations cannot outlive the session.
+func (s *Store) SessionUserAndExpiry(ctx context.Context, hash string) (User, time.Time, error) {
 	var user User
 	var enabled int
-	var createdAt, updatedAt string
-	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.password_hash,u.role,u.enabled,u.created_at,u.updated_at
-FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?`,
-		hash, time.Now().UTC().Format(time.RFC3339Nano)).
-		Scan(&user.ID, &user.Username, &user.PasswordHash, &user.Role, &enabled, &createdAt, &updatedAt)
+	var createdAt, updatedAt, expiresAt string
+	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.password_hash,u.role,u.enabled,u.created_at,u.updated_at,s.expires_at
+FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=?`, hash).
+		Scan(&user.ID, &user.Username, &user.PasswordHash, &user.Role, &enabled, &createdAt, &updatedAt, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return user, ErrNotFound
+		return user, time.Time{}, ErrNotFound
+	}
+	if err != nil {
+		return user, time.Time{}, err
 	}
 	user.Enabled = enabled != 0
 	user.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	user.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
-	return user, err
+	expiry, err := time.Parse(time.RFC3339Nano, expiresAt)
+	if err != nil || !expiry.After(time.Now().UTC()) {
+		return User{}, time.Time{}, ErrNotFound
+	}
+	return user, expiry, nil
 }
 
 func (s *Store) DeleteSession(ctx context.Context, hash string) error {
@@ -1803,17 +2112,13 @@ func (s *Store) Audit(ctx context.Context, actorID, action, resource, result, co
 }
 
 func (s *Store) AuditActor(ctx context.Context, actorID, actorType, action, resource, result, correlationID string) {
-	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_events(actor_id,actor_type,action,resource,result,correlation_id,created_at) VALUES(?,?,?,?,?,?,?)`,
-		actorID, actorType, action, resource, result, correlationID, time.Now().UTC().Format(time.RFC3339Nano))
+	_ = s.appendAudit(ctx, auditRecord{actorID: actorID, actorType: actorType, action: action, resource: resource, result: result, correlationID: correlationID})
 }
 
 func (s *Store) AuditDecision(ctx context.Context, actorID, actorType, action, resource, result, correlationID string,
 	policyIDs []string, evaluatedPath, capability string) {
 	encodedPolicies, _ := json.Marshal(policyIDs)
-	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_events(
-actor_id,actor_type,action,resource,result,correlation_id,created_at,policy_ids,evaluated_path,capability
-) VALUES(?,?,?,?,?,?,?,?,?,?)`, actorID, actorType, action, resource, result, correlationID,
-		time.Now().UTC().Format(time.RFC3339Nano), string(encodedPolicies), evaluatedPath, capability)
+	_ = s.appendAudit(ctx, auditRecord{actorID: actorID, actorType: actorType, action: action, resource: resource, result: result, correlationID: correlationID, policyIDs: string(encodedPolicies), evaluatedPath: evaluatedPath, capability: capability})
 }
 
 func (s *Store) ListAuditEvents(ctx context.Context, query AuditQuery) ([]AuditEvent, bool, error) {
@@ -1825,6 +2130,10 @@ func (s *Store) ListAuditEvents(ctx context.Context, query AuditQuery) ([]AuditE
 	}
 	clauses := []string{"1=1"}
 	arguments := make([]any, 0, 6)
+	if query.Ascending {
+		clauses = append(clauses, "id > ?")
+		arguments = append(arguments, query.AfterID)
+	}
 	if query.BeforeID > 0 {
 		clauses = append(clauses, "id < ?")
 		arguments = append(arguments, query.BeforeID)
@@ -1846,9 +2155,13 @@ func (s *Store) ListAuditEvents(ctx context.Context, query AuditQuery) ([]AuditE
 		arguments = append(arguments, query.CorrelationID)
 	}
 	arguments = append(arguments, query.Limit+1)
+	order := "DESC"
+	if query.Ascending {
+		order = "ASC"
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id,COALESCE(actor_id,''),actor_type,action,resource,result,
-correlation_id,created_at,policy_ids,evaluated_path,capability
-FROM audit_events WHERE `+strings.Join(clauses, " AND ")+` ORDER BY id DESC LIMIT ?`, arguments...)
+correlation_id,created_at,policy_ids,evaluated_path,capability,source_ip,detail,chain_data,chain_hash
+FROM audit_events WHERE `+strings.Join(clauses, " AND ")+` ORDER BY id `+order+` LIMIT ?`, arguments...)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1856,15 +2169,18 @@ FROM audit_events WHERE `+strings.Join(clauses, " AND ")+` ORDER BY id DESC LIMI
 	events := make([]AuditEvent, 0, query.Limit)
 	for rows.Next() {
 		var event AuditEvent
-		var createdAt, policyIDs string
+		var createdAt, policyIDs, detail string
 		if err := rows.Scan(&event.ID, &event.ActorID, &event.ActorType, &event.Action, &event.Resource,
 			&event.Result, &event.CorrelationID, &createdAt, &policyIDs, &event.EvaluatedPath,
-			&event.Capability); err != nil {
+			&event.Capability, &event.SourceIP, &detail, &event.ChainData, &event.ChainHash); err != nil {
 			return nil, false, err
 		}
 		event.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 		if err := json.Unmarshal([]byte(policyIDs), &event.PolicyIDs); err != nil {
 			event.PolicyIDs = []string{}
+		}
+		if err := json.Unmarshal([]byte(detail), &event.Detail); err != nil {
+			return nil, false, err
 		}
 		events = append(events, event)
 	}

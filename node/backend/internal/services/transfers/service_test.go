@@ -443,6 +443,9 @@ func TestParallelPullRetriesNetworkInterruptionFromDurableBatch(t *testing.T) {
 	if _, err := destination.jobs.Start(workerContext, 1); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := destination.jobs.Resume(context.Background(), job.ID); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		stop()
 		shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -617,6 +620,205 @@ func TestDirectoryPullPlansAndTransfersNestedItems(t *testing.T) {
 	t.Fatal("timed out waiting for remote directory transfer")
 }
 
+func TestSourceGrantExclusionsApplyBeforeManifestPaginationAndMove(t *testing.T) {
+	source, destination := newTransferTestNode(t, "source"), newTransferTestNode(t, "destination")
+	for _, name := range []string{"library/visible.txt", "library/secret.PEM", "library/private/nested.txt", "library/nested/public.txt"} {
+		full := filepath.Join(source.root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(full), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("content"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	trustPeer(t, destination, source, "https://source.test")
+	trustPeer(t, source, destination, "https://destination.invalid:8443")
+	destination.transfers.ConfigureDialContext(pipeTLSDialer(mtlsapi.New(source.identity, "source", source.transfers), source.certificates.TLSConfig()))
+	grant, err := source.grants.Create(context.Background(), grants.Input{PeerNodeID: destination.identity.NodeID, MountID: source.mountID, Path: ".", Direction: "send", Permissions: entities.GrantPermissions{Read: true, Delete: true}, Exclude: []string{"*.pem", "private"}, VisibleToPeer: true, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := source.transfers.OpenManifest(context.Background(), destination.identity.NodeID, grant.ID, "library", false, 0, 2)
+	if err != nil || first.Total != 4 || len(first.Items) != 2 || first.NextAfter != 2 {
+		t.Fatalf("first page: %+v %v", first, err)
+	}
+	second, err := source.transfers.OpenManifest(context.Background(), destination.identity.NodeID, grant.ID, "library", false, first.NextAfter, 2)
+	if err != nil || second.Total != 4 || len(second.Items) != 2 || second.NextAfter != 0 {
+		t.Fatalf("second page: %+v %v", second, err)
+	}
+	for _, item := range append(first.Items, second.Items...) {
+		if strings.Contains(strings.ToLower(item.Path), ".pem") || strings.Contains(item.Path, "private") {
+			t.Fatalf("excluded manifest entry: %+v", item)
+		}
+	}
+	if _, err := source.transfers.OpenSource(context.Background(), destination.identity.NodeID, grant.ID, "library/secret.PEM", false); !errors.Is(err, transfers.ErrForbidden) {
+		t.Fatalf("excluded read: %v", err)
+	}
+	if _, err := source.transfers.OpenManifest(context.Background(), destination.identity.NodeID, grant.ID, "library/private", false, 0, 10); !errors.Is(err, transfers.ErrForbidden) {
+		t.Fatalf("excluded directory: %v", err)
+	}
+	if err := source.transfers.ValidateMoveSource(context.Background(), destination.identity.NodeID, grant.ID, "library"); !errors.Is(err, filesystem.ErrProtectedTree) {
+		t.Fatalf("move preflight: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(source.root, "library", "secret.PEM")); err != nil {
+		t.Fatalf("move preflight changed source: %v", err)
+	}
+	receive, err := destination.grants.Create(context.Background(), grants.Input{PeerNodeID: source.identity.NodeID, MountID: destination.mountID, Path: ".", Direction: "receive", Permissions: entities.GrantPermissions{Write: true}, Exclude: []string{"*.pem"}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filtered, err := destination.transfers.PlanDirectoryPull(context.Background(), transfers.PullRequest{PeerNodeID: source.identity.NodeID, SourceGrantID: grant.ID, SourcePath: "library", DestinationGrantID: receive.ID, DestinationPath: "copy", ConflictPolicy: "fail"})
+	if err != nil || len(filtered.Items) != 4 || filtered.FilesTotal != 2 {
+		t.Fatalf("receiving exclusions rejected allowed files: %+v %v", filtered, err)
+	}
+	if err := os.Mkdir(filepath.Join(destination.root, "incoming"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	plain, err := destination.grants.Create(context.Background(), grants.Input{PeerNodeID: source.identity.NodeID, MountID: destination.mountID, Path: "incoming", Direction: "receive", Permissions: entities.GrantPermissions{Write: true}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := destination.transfers.PlanDirectoryPull(context.Background(), transfers.PullRequest{PeerNodeID: source.identity.NodeID, SourceGrantID: grant.ID, SourcePath: "library", DestinationGrantID: plain.ID, DestinationPath: "copy", ConflictPolicy: "fail"})
+	if err != nil || len(plan.Items) != 4 || plan.FilesTotal != 2 {
+		t.Fatalf("mTLS filtered plan: %+v %v", plan, err)
+	}
+}
+
+func TestReceiveGrantExclusionsFilterCopiesAndRejectMovesAndResumes(t *testing.T) {
+	ctx := context.Background()
+	source, destination := newTransferTestNode(t, "source"), newTransferTestNode(t, "destination")
+	for _, name := range []string{"library/public.txt", "library/private.pem", "library/secret/nested.txt"} {
+		full := filepath.Join(source.root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(full), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("content"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	trustPeer(t, destination, source, "https://source.test")
+	trustPeer(t, source, destination, "https://destination.invalid:8443")
+	destination.transfers.ConfigureDialContext(pipeTLSDialer(mtlsapi.New(source.identity, "source", source.transfers), source.certificates.TLSConfig()))
+	send, err := source.grants.Create(ctx, grants.Input{PeerNodeID: destination.identity.NodeID, MountID: source.mountID, Path: ".", Direction: "send", Permissions: entities.GrantPermissions{Read: true, Delete: true}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := grants.Input{PeerNodeID: source.identity.NodeID, MountID: destination.mountID, Path: ".", Direction: "receive", Permissions: entities.GrantPermissions{Write: true}, ConflictPolicies: []string{"fail", "overwrite", "rename"}, Enabled: true}
+	receive, err := destination.grants.Create(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := transfers.PullRequest{PeerNodeID: source.identity.NodeID, SourceGrantID: send.ID, SourcePath: "library", DestinationGrantID: receive.ID, DestinationPath: "copy", ConflictPolicy: "fail"}
+	job, _, err := destination.transfers.CreateDirectoryPull(ctx, req, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Exclude = []string{"*.pem", "secret", "* (1).txt"}
+	if _, err := destination.grants.Update(ctx, receive.ID, input); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := destination.transfers.ExecuteDirectoryPull(ctx, job, func(int64, int64, int, int) error { return nil }); !errors.Is(err, transfers.ErrForbidden) {
+		t.Fatalf("resume with newly excluded items: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(destination.root, "copy")); !os.IsNotExist(err) {
+		t.Fatalf("resume modified destination: %v", err)
+	}
+	plan, err := destination.transfers.PlanDirectoryPull(ctx, req)
+	if err != nil || len(plan.Items) != 2 || plan.FilesTotal != 1 {
+		t.Fatalf("filtered copy plan: %+v %v", plan, err)
+	}
+	for _, item := range plan.Items {
+		if strings.Contains(strings.ToLower(item.DestinationPath), ".pem") || strings.Contains(item.DestinationPath, "secret") {
+			t.Fatalf("excluded item in plan: %+v", item)
+		}
+	}
+	filteredJob, _, err := destination.transfers.CreateDirectoryPull(ctx, req, "filtered-copy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := destination.transfers.ExecuteDirectoryPull(ctx, filteredJob, func(int64, int64, int, int) error { return nil }); err != nil {
+		t.Fatalf("filtered copy failed: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(destination.root, "copy", "public.txt")); err != nil || string(data) != "content" {
+		t.Fatalf("allowed file missing: %q %v", data, err)
+	}
+	for _, name := range []string{"private.pem", "secret"} {
+		if _, err := os.Stat(filepath.Join(destination.root, "copy", name)); !os.IsNotExist(err) {
+			t.Fatalf("excluded destination appeared: %s %v", name, err)
+		}
+	}
+	_, err = destination.transfers.PlanBatchPull(ctx, transfers.BatchPullRequest{PullRequest: transfers.PullRequest{PeerNodeID: source.identity.NodeID, SourceGrantID: send.ID, DestinationGrantID: receive.ID, DestinationPath: ".", ConflictPolicy: "fail"}, SourcePaths: []string{"library"}, Operation: "move"})
+	if !errors.Is(err, transfers.ErrForbidden) {
+		t.Fatalf("move with excluded destination: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(source.root, "library", "private.pem")); err != nil {
+		t.Fatalf("failed move changed source: %v", err)
+	}
+	_, _, err = destination.transfers.CreatePull(ctx, transfers.PullRequest{PeerNodeID: source.identity.NodeID, SourceGrantID: send.ID, SourcePath: "library/public.txt", DestinationGrantID: receive.ID, DestinationPath: "blocked.PEM", ConflictPolicy: "fail"}, "")
+	if !errors.Is(err, transfers.ErrForbidden) {
+		t.Fatalf("excluded direct target: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(destination.root, "report.txt"), []byte("existing"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	renamed, _, err := destination.transfers.CreatePull(ctx, transfers.PullRequest{PeerNodeID: source.identity.NodeID, SourceGrantID: send.ID, SourcePath: "library/public.txt", DestinationGrantID: receive.ID, DestinationPath: "report.txt", ConflictPolicy: "rename"}, "")
+	if err != nil || renamed.Destination != "report (2).txt" {
+		t.Fatalf("excluded rename candidate: %+v %v", renamed, err)
+	}
+}
+
+func TestReceiveGrantRecheckedBeforePublication(t *testing.T) {
+	for _, parallel := range []bool{false, true} {
+		t.Run(fmt.Sprintf("parallel=%t", parallel), func(t *testing.T) {
+			ctx := context.Background()
+			source, destination := newTransferTestNode(t, "source"), newTransferTestNode(t, "destination")
+			if err := os.WriteFile(filepath.Join(source.root, "source.txt"), []byte("new-content"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(destination.root, "target.txt"), []byte("old-content"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			trustPeer(t, destination, source, "https://source.test")
+			trustPeer(t, source, destination, "https://destination.invalid:8443")
+			destination.transfers.ConfigureDialContext(pipeTLSDialer(mtlsapi.New(source.identity, "source", source.transfers), source.certificates.TLSConfig()))
+			send, err := source.grants.Create(ctx, grants.Input{PeerNodeID: destination.identity.NodeID, MountID: source.mountID, Path: ".", Direction: "send", Permissions: entities.GrantPermissions{Read: true}, Enabled: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := grants.Input{PeerNodeID: source.identity.NodeID, MountID: destination.mountID, Path: ".", Direction: "receive", Permissions: entities.GrantPermissions{Write: true}, ConflictPolicies: []string{"overwrite"}, Enabled: true}
+			receive, err := destination.grants.Create(ctx, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			chunks := 1
+			if parallel {
+				chunks = 2
+			}
+			job, _, err := destination.transfers.CreatePull(ctx, transfers.PullRequest{PeerNodeID: source.identity.NodeID, SourceGrantID: send.ID, SourcePath: "source.txt", DestinationGrantID: receive.ID, DestinationPath: "target.txt", ConflictPolicy: "overwrite", MaxParallelChunks: chunks}, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			updated := false
+			_, err = destination.transfers.ExecutePull(ctx, job, func(int64, int64) error {
+				if !updated {
+					updated = true
+					input.Exclude = []string{"*.txt"}
+					_, err := destination.grants.Update(ctx, receive.ID, input)
+					return err
+				}
+				return nil
+			})
+			if !updated || !errors.Is(err, transfers.ErrForbidden) {
+				t.Fatalf("publication did not revalidate: updated=%t err=%v", updated, err)
+			}
+			data, err := os.ReadFile(filepath.Join(destination.root, "target.txt"))
+			if err != nil || string(data) != "old-content" {
+				t.Fatalf("destination replaced: %q %v", data, err)
+			}
+		})
+	}
+}
+
 func TestBatchMoveCopiesAllRootsThenDeletesSourceWithDurableCheckpoints(t *testing.T) {
 	source, destination := newTransferTestNode(t, "source"), newTransferTestNode(t, "destination")
 	for name, contents := range map[string]string{
@@ -672,6 +874,9 @@ func TestBatchMoveCopiesAllRootsThenDeletesSourceWithDurableCheckpoints(t *testi
 	if _, err := destination.jobs.Start(workerContext, 1); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := destination.jobs.Resume(context.Background(), job.ID); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		stop()
 		shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -716,6 +921,71 @@ func TestBatchMoveCopiesAllRootsThenDeletesSourceWithDurableCheckpoints(t *testi
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting for batch move")
+}
+
+func TestBatchMoveRefusesProtectedTreeBeforeCopy(t *testing.T) {
+	ctx := context.Background()
+	source, destination := newTransferTestNode(t, "source"), newTransferTestNode(t, "destination")
+	mount, err := source.files.GetMount(ctx, source.mountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mount.HiddenPatterns = []string{"*.pem"}
+	if _, err := source.files.SaveMount(ctx, mount); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(source.root, "folder"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"visible.txt": "visible", "secret.PEM": "secret"} {
+		if err := os.WriteFile(filepath.Join(source.root, "folder", name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	trustPeer(t, destination, source, "https://source.test")
+	trustPeer(t, source, destination, "https://destination.invalid:8443")
+	destination.transfers.ConfigureDialContext(pipeTLSDialer(mtlsapi.New(source.identity, "source", source.transfers), source.certificates.TLSConfig()))
+	sourceGrant, err := source.grants.Create(ctx, grants.Input{PeerNodeID: destination.identity.NodeID, MountID: source.mountID, Path: ".", Direction: "send", Permissions: entities.GrantPermissions{Read: true, Delete: true}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destinationGrant, err := destination.grants.Create(ctx, grants.Input{PeerNodeID: source.identity.NodeID, MountID: destination.mountID, Path: ".", Direction: "receive", Permissions: entities.GrantPermissions{Write: true}, ConflictPolicies: []string{"fail"}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := transfers.BatchPullRequest{PullRequest: transfers.PullRequest{PeerNodeID: source.identity.NodeID, SourceGrantID: sourceGrant.ID, DestinationGrantID: destinationGrant.ID, ConflictPolicy: "fail"}, SourcePaths: []string{"folder"}, Operation: "move"}
+	if _, err := source.transfers.OpenSource(ctx, destination.identity.NodeID, sourceGrant.ID, "folder/secret.PEM", false); !errors.Is(err, filesystem.ErrNotFound) {
+		t.Fatalf("direct peer access to hidden file: %v", err)
+	}
+	if err := source.transfers.DeleteSource(ctx, destination.identity.NodeID, sourceGrant.ID, "folder/visible.txt", nil, "", false); !errors.Is(err, transfers.ErrPeerUpgradeRequired) {
+		t.Fatalf("legacy peer cleanup was not refused: %v", err)
+	}
+	sourceRoot := "folder"
+	if err := source.transfers.DeleteSource(ctx, destination.identity.NodeID, sourceGrant.ID, "folder/visible.txt", &sourceRoot, "", false); !errors.Is(err, filesystem.ErrProtectedTree) {
+		t.Fatalf("peer cleanup bypassed protected root: %v", err)
+	}
+	copyRequest := request
+	copyRequest.Operation = "copy"
+	copyPlan, err := destination.transfers.PlanBatchPull(ctx, copyRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range copyPlan.Items {
+		if strings.Contains(strings.ToLower(item.SourcePath), ".pem") {
+			t.Fatalf("hidden file in peer manifest: %+v", item)
+		}
+	}
+	if _, err := destination.transfers.PlanBatchPull(ctx, request); !errors.Is(err, filesystem.ErrProtectedTree) {
+		t.Fatalf("move with protected descendant: %v", err)
+	}
+	for _, name := range []string{"visible.txt", "secret.PEM"} {
+		if _, err := os.Stat(filepath.Join(source.root, "folder", name)); err != nil {
+			t.Fatalf("source changed: %s: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(destination.root, "folder")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination changed: %v", err)
+	}
 }
 
 func TestBatchPlanPreservesNameForASelectedGrantRoot(t *testing.T) {
@@ -894,6 +1164,9 @@ func TestPullWaitsWithoutSpendingRetryBudgetAndWakesWhenPeerReturns(t *testing.T
 	workerContext, stop := context.WithCancel(context.Background())
 	defer stop()
 	if _, err := destination.jobs.Start(workerContext, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := destination.jobs.Resume(context.Background(), job.ID); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

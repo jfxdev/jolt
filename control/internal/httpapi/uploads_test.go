@@ -19,9 +19,15 @@ func uploadProxyFixture(t *testing.T, role string) (http.Handler, *store.Store, 
 	t.Helper()
 	mutations := 0
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		body := `{"upload_id":"upl_public","mount_id":"media","destination_path":"public/file.txt","offset":4}`
+		body := `{"upload_id":"upl_public","mount_id":"media","destination_path":"public/file.txt","overwrite":false,"offset":4}`
 		if strings.Contains(r.URL.Path, "upl_private") {
-			body = `{"upload_id":"upl_private","mount_id":"media","destination_path":"private/secret.txt"}`
+			body = `{"upload_id":"upl_private","mount_id":"media","destination_path":"private/secret.txt","overwrite":false}`
+		}
+		if strings.Contains(r.URL.Path, "upl_overwrite") {
+			body = `{"upload_id":"upl_overwrite","mount_id":"media","destination_path":"public/file.txt","overwrite":true}`
+		}
+		if strings.Contains(r.URL.Path, "upl_unknown") {
+			body = `{"upload_id":"upl_unknown","mount_id":"media","destination_path":"public/file.txt"}`
 		}
 		if strings.HasSuffix(r.URL.Path, "/uploads") {
 			body = `{"sessions":[` + body + `,{"upload_id":"upl_private","mount_id":"media","destination_path":"private/secret.txt"}]}`
@@ -57,6 +63,65 @@ func uploadProxyFixture(t *testing.T, role string) (http.Handler, *store.Store, 
 		t.Fatal(err)
 	}
 	return handler, storage, session, &mutations
+}
+
+func TestUploadOverwriteRequiresUpdateAtPersistedDestination(t *testing.T) {
+	h, storage, session, calls := uploadProxyFixture(t, "operator")
+	base := "/api/v1/nodes/node/mounts/media/files"
+	cases := []struct {
+		method, path, body string
+	}{
+		{http.MethodPut, base + "/content?path=public/file.txt&overwrite=1", "data"},
+		{http.MethodPut, base + "/content?path=public/file.txt&overwrite=TRUE", "data"},
+		{http.MethodPost, base + "/uploads", `{"path":"public/file.txt","size":4,"overwrite":true}`},
+		{http.MethodPatch, base + "/uploads/upl_overwrite?path=public/other.txt", "data"},
+		{http.MethodPost, base + "/uploads/upl_overwrite/complete?path=public/other.txt", `{}`},
+	}
+	for _, tc := range cases {
+		r := authenticatedRequest(tc.method, tc.path, session, []byte(tc.body))
+		if tc.method == http.MethodPatch {
+			r.Header.Set("Content-Range", "bytes 0-3/4")
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusForbidden || *calls != 0 {
+			t.Fatalf("%s %s: status=%d mutations=%d body=%s", tc.method, tc.path, w.Code, *calls, w.Body.String())
+		}
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, authenticatedRequest(http.MethodPost, base+"/uploads/upl_unknown/complete", session, []byte(`{}`)))
+	if w.Code != http.StatusConflict || *calls != 0 || !strings.Contains(w.Body.String(), "node_upgrade_required") {
+		t.Fatalf("missing overwrite metadata: status=%d calls=%d body=%s", w.Code, *calls, w.Body.String())
+	}
+	now := time.Now().UTC()
+	if err := storage.CreatePolicy(context.Background(), store.Policy{ID: "update", Name: "update", CreatedAt: now, UpdatedAt: now, Rules: []rbac.Rule{{Path: "nodes/node/files/mounts/media/public/file.txt", Capabilities: []string{"update"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.SetSubjectPolicies(context.Background(), "user", "operator", []string{"uploads", "update"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range cases {
+		r := authenticatedRequest(tc.method, tc.path, session, []byte(tc.body))
+		if tc.method == http.MethodPatch {
+			r.Header.Set("Content-Range", "bytes 0-3/4")
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("authorized %s %s: status=%d body=%s", tc.method, tc.path, w.Code, w.Body.String())
+		}
+	}
+	if *calls != len(cases) {
+		t.Fatalf("authorized mutations=%d", *calls)
+	}
+	if err := storage.SetSubjectPolicies(context.Background(), "user", "operator", []string{"uploads"}); err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, authenticatedRequest(http.MethodPost, base+"/uploads/upl_overwrite/complete", session, []byte(`{}`)))
+	if w.Code != http.StatusForbidden || *calls != len(cases) {
+		t.Fatalf("revoked update: status=%d mutations=%d", w.Code, *calls)
+	}
 }
 
 func TestUploadProxySupportsChunksForAdminAndSubpathOperator(t *testing.T) {
@@ -115,5 +180,14 @@ func TestUploadSessionListingDoesNotLeakOtherSubpaths(t *testing.T) {
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || w.Code != 200 || len(response.Sessions) != 1 || response.Sessions[0].ID != "upl_public" {
 		t.Fatalf("status=%d body=%s error=%v", w.Code, w.Body.String(), err)
+	}
+}
+
+func TestRejectedUploadRecoveryIsNotReportedAsUnavailable(t *testing.T) {
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+	(&Server{}).writeUploadLookupError(w, r, &nodeAPIError{StatusCode: http.StatusUnprocessableEntity, Code: "upload_content_rejected"})
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "upload_content_rejected") {
+		t.Fatalf("rejection was not preserved: %d %s", w.Code, w.Body.String())
 	}
 }

@@ -155,6 +155,7 @@ export function RelationshipAccessPanel({ node, otherName, peer, canListGrants, 
           <div className="flex min-w-0 items-center gap-2 text-sm"><Folder className="size-4 shrink-0 text-muted-foreground" /><span className="truncate font-medium" title={mountName}>{mountName}</span><span className="min-w-0 truncate text-muted-foreground" title={grant.path || "/"}>{grant.path && grant.path !== "." ? `/${grant.path}` : "Todas as pastas"}</span></div>
           <CollapsibleContent className="grid gap-2 border-t pt-3 text-xs text-muted-foreground">
             <p className="break-all">Pasta: {grant.path && grant.path !== "." ? `/${grant.path}` : "Todo o mount"}</p>
+            {!!grant.exclude?.length && <p className="break-words">Exclusões: {grant.exclude.join(", ")}</p>}
             {grant.conflict_policies.length > 0 && <div className="flex flex-wrap items-center gap-1"><span>Conflitos</span>{grant.conflict_policies.map((policy) => <Badge key={policy} variant="outline">{CONFLICT_OPTIONS.find((option) => option.value === policy)?.label || policy}</Badge>)}</div>}
             <p>{grant.visible_to_peer ? `Visível para ${otherName}` : `Oculta na descoberta de ${otherName}`}</p>
           </CollapsibleContent>

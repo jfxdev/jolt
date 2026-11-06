@@ -11,23 +11,25 @@ import (
 // is never stored: only its digest, so a leaked database cannot be turned into
 // working links.
 type Share struct {
-	ID            string     `json:"share_id"`
-	TokenHash     string     `json:"-"`
-	NodeID        string     `json:"node_id"`
-	MountID       string     `json:"mount_id"`
-	Path          string     `json:"path"`
-	Kind          string     `json:"kind"`
-	Name          string     `json:"name"`
-	PasswordHash  string     `json:"-"`
-	HasPassword   bool       `json:"has_password"`
-	AllowArchive  bool       `json:"allow_archive"`
-	MaxDownloads  int64      `json:"max_downloads"`
-	DownloadCount int64      `json:"download_count"`
-	CreatedBy     string     `json:"created_by"`
-	CreatedAt     time.Time  `json:"created_at"`
-	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
-	RevokedAt     *time.Time `json:"revoked_at,omitempty"`
-	LastAccessAt  *time.Time `json:"last_access_at,omitempty"`
+	ID                  string     `json:"share_id"`
+	TokenHash           string     `json:"-"`
+	NodeID              string     `json:"node_id"`
+	MountID             string     `json:"mount_id"`
+	Path                string     `json:"path"`
+	Kind                string     `json:"kind"`
+	Name                string     `json:"name"`
+	PasswordHash        string     `json:"-"`
+	HasPassword         bool       `json:"has_password"`
+	AllowArchive        bool       `json:"allow_archive"`
+	MaxDownloads        int64      `json:"max_downloads"`
+	DownloadCount       int64      `json:"download_count"`
+	CreatedBy           string     `json:"created_by"`
+	CreatedByType       string     `json:"created_by_type"`
+	CreatedCredentialID string     `json:"-"`
+	CreatedAt           time.Time  `json:"created_at"`
+	ExpiresAt           *time.Time `json:"expires_at,omitempty"`
+	RevokedAt           *time.Time `json:"revoked_at,omitempty"`
+	LastAccessAt        *time.Time `json:"last_access_at,omitempty"`
 }
 
 // Active reports whether a share may still serve content.
@@ -35,7 +37,7 @@ func (s Share) Active(now time.Time) bool {
 	if s.RevokedAt != nil {
 		return false
 	}
-	if s.ExpiresAt != nil && now.After(*s.ExpiresAt) {
+	if s.ExpiresAt != nil && !now.Before(*s.ExpiresAt) {
 		return false
 	}
 	if s.MaxDownloads > 0 && s.DownloadCount >= s.MaxDownloads {
@@ -45,16 +47,35 @@ func (s Share) Active(now time.Time) bool {
 }
 
 const shareColumns = `id,token_hash,node_id,mount_id,path,kind,name,password_hash,allow_archive,
- max_downloads,download_count,created_by,created_at,expires_at,revoked_at,last_access_at`
+ max_downloads,download_count,created_by,created_by_type,created_credential_id,created_at,expires_at,revoked_at,last_access_at`
 
 func (s *Store) CreateShare(ctx context.Context, share Share) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO shares (`+shareColumns+`)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	if share.CreatedByType == "" {
+		share.CreatedByType = "user"
+	}
+	if share.CreatedByType != "user" && share.CreatedByType != "service_account" || share.CreatedByType == "service_account" && share.CreatedCredentialID == "" || share.CreatedByType == "user" && share.CreatedCredentialID != "" {
+		return errors.New("invalid share creator identity")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if share.CreatedByType == "service_account" {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO metadata(key,value) VALUES('minimum_security_version','3') ON CONFLICT(key) DO UPDATE SET value=CASE WHEN CAST(value AS INTEGER)<3 THEN '3' ELSE value END`); err != nil {
+			return err
+		}
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO shares (`+shareColumns+`)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		share.ID, share.TokenHash, share.NodeID, share.MountID, share.Path, share.Kind, share.Name,
 		share.PasswordHash, boolToInt(share.AllowArchive), share.MaxDownloads, share.DownloadCount,
-		share.CreatedBy, share.CreatedAt.Format(time.RFC3339Nano),
+		share.CreatedBy, share.CreatedByType, share.CreatedCredentialID, share.CreatedAt.Format(time.RFC3339Nano),
 		nullableTime(share.ExpiresAt), nullableTime(share.RevokedAt), nullableTime(share.LastAccessAt))
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ShareByTokenHash resolves a public token. Lookup is by digest so the token
@@ -79,12 +100,12 @@ func (s *Store) GetShare(ctx context.Context, id string) (Share, error) {
 
 // ListShares returns shares newest first. A non-empty createdBy restricts the
 // listing to one owner, which is how a non-administrator sees only their own.
-func (s *Store) ListShares(ctx context.Context, createdBy string) ([]Share, error) {
+func (s *Store) ListShares(ctx context.Context, createdBy, actorType string) ([]Share, error) {
 	query := `SELECT ` + shareColumns + ` FROM shares`
 	arguments := []any{}
 	if createdBy != "" {
-		query += ` WHERE created_by=?`
-		arguments = append(arguments, createdBy)
+		query += ` WHERE created_by=? AND created_by_type=?`
+		arguments = append(arguments, createdBy, actorType)
 	}
 	query += ` ORDER BY created_at DESC`
 	rows, err := s.db.QueryContext(ctx, query, arguments...)
@@ -126,15 +147,28 @@ func (s *Store) DeleteShare(ctx context.Context, id string) error {
 }
 
 // RegisterShareDownload counts one download and refuses to exceed the
-// configured maximum. The check and the increment share one statement so two
-// concurrent downloads cannot both pass a limit of one.
+// configured maximum. The update checks the exact expiry value read and
+// increments atomically, so concurrent downloads cannot exceed the limit.
 func (s *Store) RegisterShareDownload(ctx context.Context, id string, now time.Time) error {
+	var expiry sql.NullString
+	if err := s.db.QueryRowContext(ctx, `SELECT expires_at FROM shares WHERE id=?`, id).Scan(&expiry); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrShareExhausted
+		}
+		return err
+	}
+	if expiry.Valid {
+		deadline, err := time.Parse(time.RFC3339Nano, expiry.String)
+		if err != nil || !deadline.After(now) {
+			return ErrShareExhausted
+		}
+	}
 	result, err := s.db.ExecContext(ctx, `UPDATE shares
 SET download_count=download_count+1,last_access_at=?
 WHERE id=? AND revoked_at IS NULL
-  AND (expires_at IS NULL OR expires_at > ?)
+  AND expires_at IS ?
   AND (max_downloads<=0 OR download_count < max_downloads)`,
-		now.Format(time.RFC3339Nano), id, now.Format(time.RFC3339Nano))
+		now.UTC().Format(time.RFC3339Nano), id, expiry)
 	if err != nil {
 		return err
 	}
@@ -159,13 +193,43 @@ func (s *Store) TouchShare(ctx context.Context, id string, now time.Time) error 
 // PurgeExpiredShares removes shares that expired before the cutoff so the table
 // does not grow without bound.
 func (s *Store) PurgeExpiredShares(ctx context.Context, before time.Time) (int64, error) {
-	result, err := s.db.ExecContext(ctx,
-		`DELETE FROM shares WHERE expires_at IS NOT NULL AND expires_at < ?`,
-		before.Format(time.RFC3339Nano))
+	rows, err := s.db.QueryContext(ctx, `SELECT id,expires_at FROM shares WHERE expires_at IS NOT NULL`)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	type candidate struct{ id, expiry string }
+	var expired []candidate
+	for rows.Next() {
+		var item candidate
+		if err := rows.Scan(&item.id, &item.expiry); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		deadline, err := time.Parse(time.RFC3339Nano, item.expiry)
+		if err == nil && deadline.Before(before) {
+			expired = append(expired, item)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	var removed int64
+	for _, item := range expired {
+		result, err := s.db.ExecContext(ctx, `DELETE FROM shares WHERE id=? AND expires_at=?`, item.id, item.expiry)
+		if err != nil {
+			return removed, err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return removed, err
+		}
+		removed += count
+	}
+	return removed, nil
 }
 
 // ErrShareExhausted reports that a share is revoked, expired, or has no
@@ -179,15 +243,27 @@ func scanShare(row scanner) (Share, error) {
 	var expires, revoked, lastAccess sql.NullString
 	err := row.Scan(&share.ID, &share.TokenHash, &share.NodeID, &share.MountID, &share.Path,
 		&share.Kind, &share.Name, &share.PasswordHash, &allowArchive, &share.MaxDownloads,
-		&share.DownloadCount, &share.CreatedBy, &created, &expires, &revoked, &lastAccess)
+		&share.DownloadCount, &share.CreatedBy, &share.CreatedByType, &share.CreatedCredentialID, &created, &expires, &revoked, &lastAccess)
 	if err != nil {
 		return share, err
 	}
 	share.AllowArchive = allowArchive != 0
 	share.HasPassword = share.PasswordHash != ""
 	share.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-	share.ExpiresAt = parseNullableTime(expires)
-	share.RevokedAt = parseNullableTime(revoked)
+	if expires.Valid {
+		expiry, err := time.Parse(time.RFC3339Nano, expires.String)
+		if err != nil {
+			return Share{}, err
+		}
+		share.ExpiresAt = &expiry
+	}
+	if revoked.Valid {
+		revokedAt, err := time.Parse(time.RFC3339Nano, revoked.String)
+		if err != nil {
+			return Share{}, err
+		}
+		share.RevokedAt = &revokedAt
+	}
 	share.LastAccessAt = parseNullableTime(lastAccess)
 	return share, nil
 }

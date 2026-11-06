@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
+	"github.com/jfxdev/jolt/backend/internal/filepolicy"
 )
 
 // ErrTruncated reports that a bounded traversal stopped before covering the
@@ -34,13 +35,16 @@ type ArchiveOptions struct {
 	// already compressed, and Store saturates the link instead of a CPU core.
 	Compress bool
 	// MaxEntries and MaxBytes cap the archive. Zero means unlimited.
-	MaxEntries int
-	MaxBytes   int64
-	Limiter    ByteRateLimiter
+	MaxEntries  int
+	MaxBytes    int64
+	Limiter     ByteRateLimiter
+	ScanSecrets bool
+	Filter      *AccessFilter
 }
 
 // ArchiveResult reports what a completed archive contained.
 type ArchiveResult struct {
+	Canary         bool `json:"-"`
 	Entries        int
 	Bytes          int64
 	SkippedSymlink int
@@ -65,9 +69,22 @@ func (s *Service) PlanArchive(ctx context.Context, mountID, relative string, opt
 	}
 	result := ArchiveResult{}
 	for _, root := range roots {
-		if err := walkArchive(ctx, root, func(_ string, entry fs.DirEntry, info os.FileInfo) error {
+		if err := validateArchiveRoot(options.Filter, root); err != nil {
+			return result, err
+		}
+		if err := walkArchive(ctx, root, func(current string, entry fs.DirEntry, info os.FileInfo) error {
+			access := archiveAccess(options.Filter, root, current, info)
+			if info.IsDir() && !access.traversable {
+				return fs.SkipDir
+			}
+			if !info.IsDir() && !archiveFileReadable(access, root, current) {
+				return nil
+			}
 			if entry.IsDir() {
 				return nil
+			}
+			if relative, err := filepath.Rel(root.mount.LocalPath, current); err == nil && filepolicy.IsCanary(root.mount.CanaryPaths, filepath.ToSlash(relative)) {
+				result.Canary = true
 			}
 			result.Entries++
 			result.Bytes += info.Size()
@@ -77,9 +94,20 @@ func (s *Service) PlanArchive(ctx context.Context, mountID, relative string, opt
 			if options.MaxBytes > 0 && result.Bytes > options.MaxBytes {
 				return fmt.Errorf("%w: a seleção excede o tamanho máximo do arquivo compactado", ErrInvalid)
 			}
+			if options.ScanSecrets {
+				file, err := safeOpen(current)
+				if err != nil {
+					return err
+				}
+				err = ScanSecretPrefix(file)
+				file.Close()
+				if err != nil {
+					return err
+				}
+			}
 			return nil
 		}, func() { result.SkippedSymlink++ }); err != nil {
-			return ArchiveResult{}, err
+			return result, err
 		}
 	}
 	return result, nil
@@ -93,6 +121,11 @@ func (s *Service) Archive(ctx context.Context, mountID, relative string, options
 	roots, err := s.archiveRoots(ctx, mountID, relative, options.Names)
 	if err != nil {
 		return ArchiveResult{}, err
+	}
+	for _, root := range roots {
+		if err := validateArchiveRoot(options.Filter, root); err != nil {
+			return ArchiveResult{}, err
+		}
 	}
 	archive := zip.NewWriter(writer)
 	result := ArchiveResult{}
@@ -115,6 +148,13 @@ func (s *Service) Archive(ctx context.Context, mountID, relative string, options
 func (s *Service) archiveRoot(ctx context.Context, archive *zip.Writer, root archiveRoot,
 	options ArchiveOptions, result *ArchiveResult) error {
 	return walkArchive(ctx, root, func(current string, entry fs.DirEntry, info os.FileInfo) error {
+		access := archiveAccess(options.Filter, root, current, info)
+		if info.IsDir() && !access.traversable {
+			return fs.SkipDir
+		}
+		if !info.IsDir() && !archiveFileReadable(access, root, current) {
+			return nil
+		}
 		name, err := archiveEntryName(root, current, entry.IsDir())
 		if err != nil {
 			return err
@@ -129,6 +169,19 @@ func (s *Service) archiveRoot(ctx context.Context, archive *zip.Writer, root arc
 			}
 			if options.MaxBytes > 0 && result.Bytes+info.Size() > options.MaxBytes {
 				return fmt.Errorf("%w: a seleção excede o tamanho máximo do arquivo compactado", ErrInvalid)
+			}
+		}
+		var file *os.File
+		if !entry.IsDir() {
+			file, err = safeOpen(current)
+			if err != nil {
+				return err
+			}
+			defer file.Close()
+			if options.ScanSecrets {
+				if err := ScanSecretPrefix(file); err != nil {
+					return err
+				}
 			}
 		}
 		header := &zip.FileHeader{Name: name, Modified: info.ModTime()}
@@ -149,11 +202,6 @@ func (s *Service) archiveRoot(ctx context.Context, archive *zip.Writer, root arc
 		if err != nil {
 			return err
 		}
-		file, err := safeOpen(current)
-		if err != nil {
-			return err
-		}
-		defer file.Close()
 		var source io.Reader = &contextReader{ctx: ctx, reader: file}
 		if options.Limiter != nil {
 			source = &limitedReader{ctx: ctx, reader: source, limiter: options.Limiter}
@@ -164,7 +212,41 @@ func (s *Service) archiveRoot(ctx context.Context, archive *zip.Writer, root arc
 	}, func() { result.SkippedSymlink++ })
 }
 
+func archiveAccess(filter *AccessFilter, root archiveRoot, current string, info os.FileInfo) accessDecision {
+	if filter == nil {
+		return filter.decide("", info)
+	}
+	relative, err := filepath.Rel(root.mount.LocalPath, current)
+	if err != nil {
+		return accessDecision{}
+	}
+	return filter.decide(filepath.ToSlash(relative), info)
+}
+
+// A recursive archive must not disclose names that cannot be listed. An
+// explicitly selected file is already named by the caller and may be read
+// when direct read is allowed, even without permission to list that file.
+func archiveFileReadable(access accessDecision, root archiveRoot, current string) bool {
+	return access.readable && (access.visible || (!root.isDir && root.prefix != "" && current == root.absolute))
+}
+
+func validateArchiveRoot(filter *AccessFilter, root archiveRoot) error {
+	if filter == nil {
+		return nil
+	}
+	info, err := safeStat(root.absolute)
+	if err != nil {
+		return err
+	}
+	relative, err := filepath.Rel(root.mount.LocalPath, root.absolute)
+	if err != nil {
+		return err
+	}
+	return filter.checkRoot(filepath.ToSlash(relative), info)
+}
+
 type archiveRoot struct {
+	mount entities.Mount
 	// absolute is the resolved path on disk.
 	absolute string
 	// prefix is the directory name the root is stored under inside the archive.
@@ -177,7 +259,7 @@ type archiveRoot struct {
 // through the mount's containment checks. Each selected name is resolved on its
 // own so a crafted name cannot reach outside the mount.
 func (s *Service) archiveRoots(ctx context.Context, mountID, relative string, names []string) ([]archiveRoot, error) {
-	_, base, err := s.resolve(ctx, mountID, relative, false)
+	mount, base, err := s.resolve(ctx, mountID, relative, false)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +271,7 @@ func (s *Service) archiveRoots(ctx context.Context, mountID, relative string, na
 		if !baseInfo.IsDir() {
 			return nil, fmt.Errorf("%w: only directories can be archived without a selection", ErrInvalid)
 		}
-		return []archiveRoot{{absolute: base, isDir: true}}, nil
+		return []archiveRoot{{absolute: base, isDir: true, mount: mount}}, nil
 	}
 	roots := make([]archiveRoot, 0, len(names))
 	seen := make(map[string]struct{}, len(names))
@@ -216,7 +298,7 @@ func (s *Service) archiveRoots(ctx context.Context, mountID, relative string, na
 		if info.Mode()&os.ModeSymlink != 0 {
 			return nil, fmt.Errorf("%w: symlinks cannot be archived", ErrInvalid)
 		}
-		roots = append(roots, archiveRoot{absolute: resolved, prefix: name, isDir: info.IsDir()})
+		roots = append(roots, archiveRoot{absolute: resolved, prefix: name, isDir: info.IsDir(), mount: mount})
 	}
 	return roots, nil
 }
@@ -265,6 +347,12 @@ func walkArchive(ctx context.Context, root archiveRoot,
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if current != root.absolute && hiddenName(root.mount, entry.Name()) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			onSymlink()
 			if entry.IsDir() {
@@ -275,10 +363,6 @@ func walkArchive(ctx context.Context, root archiveRoot,
 		if !entry.IsDir() && !entry.Type().IsRegular() {
 			// Sockets, devices and FIFOs have no meaningful archive
 			// representation and would block on read.
-			return nil
-		}
-		if isInternalPartialName(entry.Name()) {
-			// An in-flight upload or transfer checkpoint is not content.
 			return nil
 		}
 		info, err := entry.Info()
@@ -293,7 +377,8 @@ func walkArchive(ctx context.Context, root archiveRoot,
 // an unbounded walk over a large NAS mount would pin a disk and a worker for
 // minutes on a single request.
 type SearchOptions struct {
-	Query string
+	Filter *AccessFilter
+	Query  string
 	// Type filters results: "file", "directory", or empty for both.
 	Type string
 	// Extensions matches the lowercase extension without the dot.
@@ -305,6 +390,8 @@ type SearchOptions struct {
 	MaxResults     int
 	// MaxEntries caps how many filesystem entries may be inspected.
 	MaxEntries int
+	// MaxDepth limits traversal relative to the requested root; zero is unlimited.
+	MaxDepth int
 }
 
 // SearchResult carries the matches plus why the walk stopped, so the UI can
@@ -313,7 +400,7 @@ type SearchResult struct {
 	Entries   []entities.FileEntry `json:"entries"`
 	Scanned   int                  `json:"scanned"`
 	Truncated bool                 `json:"truncated"`
-	// TruncatedReason is "results", "entries" or "timeout" when Truncated.
+	// TruncatedReason is "results", "entries", "depth" or "timeout" when Truncated.
 	TruncatedReason string `json:"truncated_reason,omitempty"`
 }
 
@@ -322,7 +409,7 @@ type SearchResult struct {
 // the walk loop, and a link out of the mount would leak paths the caller has no
 // authorization for.
 func (s *Service) Search(ctx context.Context, mountID, relative string, options SearchOptions) (SearchResult, error) {
-	_, root, err := s.resolve(ctx, mountID, relative, false)
+	mount, root, err := s.resolve(ctx, mountID, relative, false)
 	if err != nil {
 		return SearchResult{}, err
 	}
@@ -332,6 +419,9 @@ func (s *Service) Search(ctx context.Context, mountID, relative string, options 
 	}
 	if !info.IsDir() {
 		return SearchResult{}, fmt.Errorf("%w: search requires a directory", ErrInvalid)
+	}
+	if err := options.Filter.checkRoot(cleanRelativeSlash(relative), info); err != nil {
+		return SearchResult{}, err
 	}
 	needle := strings.ToLower(strings.TrimSpace(options.Query))
 	if needle == "" && len(options.Extensions) == 0 && options.Type == "" &&
@@ -355,7 +445,25 @@ func (s *Service) Search(ctx context.Context, mountID, relative string, options 
 
 	result := SearchResult{Entries: make([]entities.FileEntry, 0, 32)}
 	stop := errors.New("stop")
-	walkErr := safeWalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
+	examined := 0
+	walk := safeWalkDir
+	if options.MaxDepth > 0 || options.Filter != nil {
+		walk = safeWalkDirStreaming
+	}
+	walkErr := walk(root, func(current string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			result.Truncated, result.TruncatedReason = true, "timeout"
+			return stop
+		}
+		// Count all visited entries, including hidden names, without disclosing
+		// their number in the public scanned count.
+		if current != root {
+			examined++
+			if examined > options.MaxEntries {
+				result.Truncated, result.TruncatedReason = true, "entries"
+				return stop
+			}
+		}
 		if walkErr != nil {
 			// An unreadable subdirectory must not abort the whole search: a NAS
 			// mount routinely holds directories the node cannot enter.
@@ -364,9 +472,11 @@ func (s *Service) Search(ctx context.Context, mountID, relative string, options 
 			}
 			return nil
 		}
-		if err := ctx.Err(); err != nil {
-			result.Truncated, result.TruncatedReason = true, "timeout"
-			return stop
+		if current != root && hiddenName(mount, entry.Name()) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			if entry.IsDir() {
@@ -374,41 +484,66 @@ func (s *Service) Search(ctx context.Context, mountID, relative string, options 
 			}
 			return nil
 		}
-		if isInternalPartialName(entry.Name()) {
-			return nil
-		}
 		relativePath, err := filepath.Rel(root, current)
 		if err != nil || relativePath == "." {
 			return nil
 		}
+		access := accessDecision{visible: true, readable: true, traversable: true}
+		if options.Filter != nil {
+			info, err := safeLstat(current)
+			if err != nil {
+				if entry.IsDir() {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			entryPath := filepath.ToSlash(filepath.Join(cleanRelative(relative), relativePath))
+			access = options.Filter.decide(entryPath, info)
+			if !access.visible {
+				if entry.IsDir() {
+					return fs.SkipDir
+				}
+				return nil
+			}
+		}
+		atDepthLimit := options.MaxDepth > 0 && entry.IsDir() &&
+			strings.Count(filepath.ToSlash(relativePath), "/")+1 >= options.MaxDepth
+		finish := func() error {
+			if entry.IsDir() && !access.traversable {
+				return fs.SkipDir
+			}
+			if atDepthLimit {
+				if !result.Truncated {
+					result.Truncated, result.TruncatedReason = true, "depth"
+				}
+				return fs.SkipDir
+			}
+			return nil
+		}
 		result.Scanned++
-		if result.Scanned > options.MaxEntries {
-			result.Truncated, result.TruncatedReason = true, "entries"
-			return stop
-		}
 		if !matchesSearch(entry, needle, options, extensions) {
-			return nil
+			return finish()
 		}
-		info, err := entry.Info()
-		if err != nil {
-			return nil
+		info, err := safeLstat(current)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			return finish()
 		}
 		if !matchesSearchInfo(info, options) {
-			return nil
+			return finish()
 		}
 		if len(result.Entries) >= options.MaxResults {
 			result.Truncated, result.TruncatedReason = true, "results"
 			return stop
 		}
 		itemType := "file"
-		if entry.IsDir() {
+		if info.IsDir() {
 			itemType = "directory"
 		}
 		result.Entries = append(result.Entries, entities.FileEntry{
 			Name: entry.Name(), Path: filepath.ToSlash(relativePath), Type: itemType,
-			Size: info.Size(), ModifiedAt: info.ModTime().UTC(),
+			Size: info.Size(), ModifiedAt: info.ModTime().UTC(), Blocked: access.blocked,
 		})
-		return nil
+		return finish()
 	})
 	if walkErr != nil && !errors.Is(walkErr, stop) {
 		return result, walkErr

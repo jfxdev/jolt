@@ -8,6 +8,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/jfxdev/jolt/backend/internal/entities"
 )
 
 // Filesystem writers use a separate scope from the HTTP/state lifecycle lock.
@@ -21,6 +25,74 @@ func lockUpload(ctx context.Context, uploadID string) (func(), error) {
 // leave a hole or overwrite verified bytes, so the client is told the real
 // offset and is expected to seek there and retry.
 var ErrOffsetMismatch = errors.New("upload offset does not match the stored partial")
+
+// ValidateUploadDestinationFiltered checks the persisted session destination
+// before admission or resumption. The caller must load the session from state.
+func (s *Service) ValidateUploadDestinationFiltered(ctx context.Context, session entities.UploadSession, filter *AccessFilter) error {
+	if filter == nil || filter.context == nil || session.ID == "" || cleanRelative(session.Destination) == "." {
+		return ErrInvalid
+	}
+	mount, destination, err := s.resolve(ctx, session.MountID, session.Destination, true)
+	if err != nil {
+		return err
+	}
+	if err := writable(mount); err != nil {
+		return err
+	}
+	return validateFilteredFileDestination(ctx, mount, destination, session.Overwrite, filter)
+}
+
+// ValidateUploadCleanupFiltered authorizes removing only the session's partial,
+// without requiring the destination to be absent or overwritable.
+func (s *Service) ValidateUploadCleanupFiltered(ctx context.Context, session entities.UploadSession, filter *AccessFilter) error {
+	if filter == nil || filter.context == nil || session.ID == "" || cleanRelative(session.Destination) == "." {
+		return ErrInvalid
+	}
+	mount, destination, err := s.resolve(ctx, session.MountID, session.Destination, true)
+	if err != nil {
+		return err
+	}
+	relative, err := filepath.Rel(mount.LocalPath, destination)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return ErrInvalid
+	}
+	relative = filepath.ToSlash(relative)
+	if err := filter.checkAncestors(relative); err != nil {
+		return err
+	}
+	if !filter.context.Evaluate(filter.base+"/"+relative, "create", "file").Allowed {
+		return ErrFilteredBlocked
+	}
+	return ctx.Err()
+}
+
+func (s *Service) ValidateUploadReauthorizationFiltered(ctx context.Context, session entities.UploadSession, filter *AccessFilter) error {
+	if err := s.ValidateUploadCleanupFiltered(ctx, session, filter); err != nil {
+		return err
+	}
+	if session.Overwrite && !filter.context.Evaluate(filter.base+"/"+filepath.ToSlash(session.Destination), "update", "file").Allowed {
+		return ErrFilteredBlocked
+	}
+	return ctx.Err()
+}
+
+// AppendUploadFiltered checks the persisted target before accepting a chunk.
+// It remains internal until the API supplies a verified authorization context.
+func (s *Service) AppendUploadFiltered(ctx context.Context, session entities.UploadSession, offset int64, input io.Reader, filter *AccessFilter, limiters ...ByteRateLimiter) (int64, error) {
+	if err := s.ValidateUploadDestinationFiltered(ctx, session, filter); err != nil {
+		return offset, err
+	}
+	return s.AppendUpload(ctx, session.MountID, session.Destination, session.ID, offset, session.Size, input, limiters...)
+}
+
+// PrepareUploadFiltered checks the session destination before hashing the
+// partial or creating the empty partial used by zero-length uploads.
+func (s *Service) PrepareUploadFiltered(ctx context.Context, session entities.UploadSession, filter *AccessFilter) (string, error) {
+	if err := s.ValidateUploadDestinationFiltered(ctx, session, filter); err != nil {
+		return "", err
+	}
+	return s.PrepareUpload(ctx, session)
+}
 
 // UploadOffset returns how many bytes of a resumable upload already landed. A
 // missing partial file is reported as offset zero rather than an error: that is
@@ -113,6 +185,20 @@ func (s *Service) AppendUpload(ctx context.Context, mountID, destination, upload
 // good file at the destination.
 func (s *Service) CompleteUpload(ctx context.Context, mountID, destination, uploadID string,
 	expectedSize int64, expectedChecksum string, overwrite bool) (int64, string, error) {
+	return s.completeUpload(ctx, mountID, destination, uploadID, expectedSize, expectedChecksum, overwrite, nil)
+}
+
+// CompleteUploadFiltered revalidates the persisted target before publishing.
+// It is internal until all upload handlers carry a verified context.
+func (s *Service) CompleteUploadFiltered(ctx context.Context, session entities.UploadSession, expectedChecksum string, filter *AccessFilter) (int64, string, error) {
+	if filter == nil || filter.context == nil || session.ID == "" {
+		return 0, "", ErrInvalid
+	}
+	return s.completeUpload(ctx, session.MountID, session.Destination, session.ID, session.Size, expectedChecksum, session.Overwrite, filter)
+}
+
+func (s *Service) completeUpload(ctx context.Context, mountID, destination, uploadID string,
+	expectedSize int64, expectedChecksum string, overwrite bool, filter *AccessFilter) (int64, string, error) {
 	mount, dst, err := s.resolve(ctx, mountID, destination, true)
 	if err != nil {
 		return 0, "", err
@@ -125,6 +211,11 @@ func (s *Service) CompleteUpload(ctx context.Context, mountID, destination, uplo
 		return 0, "", err
 	}
 	defer unlock()
+	if filter != nil {
+		if err := validateFilteredFileDestination(ctx, mount, dst, overwrite, filter); err != nil {
+			return 0, "", err
+		}
+	}
 	partialPath := resumablePartialPath(dst, uploadID)
 	// A zero-byte upload sends no chunk at all, so its partial file was never
 	// created. Materializing it here lets an empty file publish through the
@@ -167,18 +258,28 @@ func (s *Service) CompleteUpload(ctx context.Context, mountID, destination, uplo
 			return info.Size(), checksum, fmt.Errorf("%w: upload checksum mismatch", ErrInvalid)
 		}
 	}
+	if err := s.inspectUpload(partial); err != nil {
+		return info.Size(), checksum, err
+	}
 	if err := partial.Close(); err != nil {
 		return info.Size(), checksum, err
 	}
 	// The conflict check is repeated here because the destination may have
 	// appeared while the upload was in flight.
-	if existing, statErr := safeLstat(dst); statErr == nil {
+	if filter != nil {
+		if err := validateFilteredFileDestination(ctx, mount, dst, overwrite, filter); err != nil {
+			return info.Size(), checksum, err
+		}
+	} else if existing, statErr := safeLstat(dst); statErr == nil {
 		if existing.IsDir() {
 			return info.Size(), checksum, ErrConflict
 		}
 		if !overwrite {
 			return info.Size(), checksum, ErrConflict
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return info.Size(), checksum, err
 	}
 	if err := publishPath(partialPath, dst, overwrite); err != nil {
 		return info.Size(), checksum, err
@@ -190,6 +291,19 @@ func (s *Service) CompleteUpload(ctx context.Context, mountID, destination, uplo
 // an error: aborting an upload that never sent a byte must still succeed.
 func (s *Service) AbortUpload(ctx context.Context, mountID, destination, uploadID string) error {
 	_, dst, err := s.resolve(ctx, mountID, destination, true)
+	if errors.Is(err, ErrHiddenName) {
+		// The operator may hide a destination while an upload is in progress.
+		// Cleanup can unlink only its internal partial, never the destination.
+		mount, mountErr := s.GetMount(ctx, mountID)
+		if mountErr != nil {
+			return mountErr
+		}
+		clean := cleanRelative(destination)
+		if filepath.IsAbs(destination) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return ErrTraversal
+		}
+		dst, err = filepath.Join(mount.LocalPath, clean), nil
+	}
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			// The destination's parent is gone, so the partial is gone with it.
@@ -202,6 +316,9 @@ func (s *Service) AbortUpload(ctx context.Context, mountID, destination, uploadI
 		return err
 	}
 	defer unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := safeRemove(resumablePartialPath(dst, uploadID)); err != nil && !os.IsNotExist(err) {
 		return err
 	}

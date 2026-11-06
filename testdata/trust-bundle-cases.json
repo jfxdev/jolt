@@ -1,0 +1,1187 @@
+[
+  {
+    "name": "first bundle under the pinned root",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "k2",
+          "key": "otgw5/7ejsgwdwI8WInvWzdVgBuNcQe3qE81Hwn5dVY=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "k1",
+        "value": "At6p9Kmz7Q861w4OyFZgdOWp3SHBFV/ZqVw3/tz0GlRTHmrtpAAqo8an7CwhIyjvyMuxaxIaS2gJHq7+SiBSAw=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": true
+  },
+  {
+    "name": "first bundle under another pin",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "k2",
+          "key": "otgw5/7ejsgwdwI8WInvWzdVgBuNcQe3qE81Hwn5dVY=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "k1",
+        "value": "At6p9Kmz7Q861w4OyFZgdOWp3SHBFV/ZqVw3/tz0GlRTHmrtpAAqo8an7CwhIyjvyMuxaxIaS2gJHq7+SiBSAw=="
+      }
+    },
+    "pin": "c7fac61492a6f16d33339dc51cd5ab2279fcfdefa2182ecd372976f41c0fff5c",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "first bundle without a pin",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "k2",
+          "key": "otgw5/7ejsgwdwI8WInvWzdVgBuNcQe3qE81Hwn5dVY=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "k1",
+        "value": "At6p9Kmz7Q861w4OyFZgdOWp3SHBFV/ZqVw3/tz0GlRTHmrtpAAqo8an7CwhIyjvyMuxaxIaS2gJHq7+SiBSAw=="
+      }
+    },
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "first bundle signed by a key it does not list",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "k2",
+          "key": "otgw5/7ejsgwdwI8WInvWzdVgBuNcQe3qE81Hwn5dVY=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": null,
+      "signature": {
+        "key_id": "stranger",
+        "value": "At6p9Kmz7Q861w4OyFZgdOWp3SHBFV/ZqVw3/tz0GlRTHmrtpAAqo8an7CwhIyjvyMuxaxIaS2gJHq7+SiBSAw=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "successor signed by a listed key",
+    "bundle": {
+      "version": 6,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "k2",
+          "key": "otgw5/7ejsgwdwI8WInvWzdVgBuNcQe3qE81Hwn5dVY=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "k1",
+        "value": "4MxcgxMOou8AgkB8owhq9oYf2Wo8vXU8jdj7BhIzdDJwG/Oy4p6SmmVL8/coKBu+SvGM28G6J76MK6Po0MRqAQ=="
+      }
+    },
+    "previous": {
+      "version": 5,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "k1",
+        "value": "LM+CtMwQb3rNs12hJnOL7FaDuNE3gO3qKhd9SDqNApihlAsBJRK0AGKpdK8Yw3ZIKhIPmh2JluECjmOnbuY+Dw=="
+      }
+    },
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": true
+  },
+  {
+    "name": "successor with the same version",
+    "bundle": {
+      "version": 5,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "k1",
+        "value": "LM+CtMwQb3rNs12hJnOL7FaDuNE3gO3qKhd9SDqNApihlAsBJRK0AGKpdK8Yw3ZIKhIPmh2JluECjmOnbuY+Dw=="
+      }
+    },
+    "previous": {
+      "version": 5,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "k1",
+        "value": "LM+CtMwQb3rNs12hJnOL7FaDuNE3gO3qKhd9SDqNApihlAsBJRK0AGKpdK8Yw3ZIKhIPmh2JluECjmOnbuY+Dw=="
+      }
+    },
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "successor with an older version",
+    "bundle": {
+      "version": 4,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "k1",
+        "value": "CTbvLVugSvX8pVFTkltNb1OmmbFR8RxzRXMJhCro1Ze8c8n89foD5e2gr60dLWoWhbIsAuK1ecOBm/wNB3zQCg=="
+      }
+    },
+    "previous": {
+      "version": 5,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "k1",
+        "value": "LM+CtMwQb3rNs12hJnOL7FaDuNE3gO3qKhd9SDqNApihlAsBJRK0AGKpdK8Yw3ZIKhIPmh2JluECjmOnbuY+Dw=="
+      }
+    },
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "successor signed by the key it adds",
+    "bundle": {
+      "version": 6,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "k2",
+          "key": "otgw5/7ejsgwdwI8WInvWzdVgBuNcQe3qE81Hwn5dVY=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "k2",
+        "value": "rhrh8Gltk1F+RlWtugh86ZvOadNPHKf4aS2qQwJK4oZyuiWd0Xnz2X90r5sNE8xXKLthezbHZRdKw8VJMbtIDg=="
+      }
+    },
+    "previous": {
+      "version": 5,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "k1",
+        "value": "LM+CtMwQb3rNs12hJnOL7FaDuNE3gO3qKhd9SDqNApihlAsBJRK0AGKpdK8Yw3ZIKhIPmh2JluECjmOnbuY+Dw=="
+      }
+    },
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "successor signed by an unknown key",
+    "bundle": {
+      "version": 6,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k3",
+          "key": "m62ejcPY8cQ+Mc6vTnhA7nfCuckQ4xU/ZMHjISOiZFo=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "k3",
+        "value": "BVb7snp6ZcwgdmITnwJ8nwUJsBVOnYP9Ryp+vUJve2fNEMS5/wOveO4bmHih9+8Ul9qhilTvdzOldj+jqw1XAg=="
+      }
+    },
+    "previous": {
+      "version": 5,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "k1",
+        "value": "LM+CtMwQb3rNs12hJnOL7FaDuNE3gO3qKhd9SDqNApihlAsBJRK0AGKpdK8Yw3ZIKhIPmh2JluECjmOnbuY+Dw=="
+      }
+    },
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "successor after the signing key expired",
+    "bundle": {
+      "version": 6,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "k1",
+        "value": "8pqBuJzKMLVA5SJMJd3ugiUhkq6V3eexu1nvTNvvQvv4w865psxg6C65TTqUd/HXFdKz49CRpSo4ZBtzmV6+CA=="
+      }
+    },
+    "previous": {
+      "version": 5,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "k1",
+        "value": "LM+CtMwQb3rNs12hJnOL7FaDuNE3gO3qKhd9SDqNApihlAsBJRK0AGKpdK8Yw3ZIKhIPmh2JluECjmOnbuY+Dw=="
+      }
+    },
+    "now": "2027-02-05T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "successor with an unrelated root",
+    "bundle": {
+      "version": 6,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoDCCAUegAwIBAgIQFwKtyYK7h2LY7qE09zxr0TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMTcwMmFkYzkwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMTcwMmFkYzkwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAAT5ezxY/xnm2e45VPsToe/5aMB6aCJ2MH4UqLEAdnEtG1jV0bG1cHxl\nTWrjva8S7lSYF3MUzZRYLi0gn4MX770so0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUaDoxLuS5yN1DPATHaDz3BRwhCKkw\nCgYIKoZIzj0EAwIDRwAwRAIgKIpXPVePX2xqpfL9cNNmijnC/xXIxhKvkKD+sqLK\nnDsCIDV3EI90kYs06mB4iKNWywR1rGw3w1HX8/g5TxLzJREJ\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzTCCAXSgAwIBAgIQSsSlBoUvRoLHGkHB+36wFjAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMTcwMmFkYzkwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0YWM0YTUwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAAQf+wc70wv+Ef1rN/Ky16SNjbQS7exoimCBbhkl\nO9BZJHv2Ae9P7QiuiQJDN1eLniagtpuT7Mewt3IeAnIiTrsuo2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUIMNtyK7FDF8Q\n0vwVc1l0saTRqfEwHwYDVR0jBBgwFoAUaDoxLuS5yN1DPATHaDz3BRwhCKkwCgYI\nKoZIzj0EAwIDRwAwRAIgA1rY5DynIvF5jLGYZzKdJekQp0FpoU3s5T+dvE5myS0C\nIH8afrsHifZ+lrE+vRTMy11r+4yNDoWgcVRA9JuoDJyF\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "k1",
+        "value": "cCtPHXFFH5bD5l7nvIyi5Slb6rkMA0dFeXq/o6Ph5cqVmCQJXCpdInBEIZd2J7gfAq45GunuTuNs2MRZchnbCQ=="
+      }
+    },
+    "previous": {
+      "version": 5,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "k1",
+        "value": "LM+CtMwQb3rNs12hJnOL7FaDuNE3gO3qKhd9SDqNApihlAsBJRK0AGKpdK8Yw3ZIKhIPmh2JluECjmOnbuY+Dw=="
+      }
+    },
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "successor with a second root beside the first",
+    "bundle": {
+      "version": 6,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n",
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQLGr09f+xX2vBi/sI3Y+gYzAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMmM2YWY0ZjUwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMmM2YWY0ZjUwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATQOX/J1ubf/ZWZLV9nsUO3AmdgxrXzOQno+yAx4L6u1K2ATi/uFTKp\n/ce5ber/H1C0Uzs+8j8SOP7TIXtz1Qqdo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUsWTQp2mCY872gdUqW9dby9ByIuUw\nCgYIKoZIzj0EAwIDSAAwRQIhAN9SEiT1MW6EFRToWAmWS2WK174fFGGvnNPqEOo3\n6QghAiAhyjVv9RefSkNVlYI4B8BvNeeHeUwjjfpfxhJkOPZn1A==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n",
+        "-----BEGIN CERTIFICATE-----\nMIIBzjCCAXSgAwIBAgIQD+uxnKNwJtNbTyX8IV9HxzAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMmM2YWY0ZjUwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiBmZWJiMTkwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAASjhgg6lRhrv/v9otfLBW3bsWcqQtR8LgsMs9Nc\n9kK8CBbQ/v0WUvGrJYKwB1QC7j2E1312cJNS5B1nwbY3MRHEo2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUbjfPmAaGv4cU\n5x2Nb9LQc/dzxlEwHwYDVR0jBBgwFoAUsWTQp2mCY872gdUqW9dby9ByIuUwCgYI\nKoZIzj0EAwIDSAAwRQIhAPCXNqsRYsL64p4vAWJvSgGvilg6RwbXz0lJh5RGzO4g\nAiAlotV2CynwRB6ja/ySbGUqQeNTHfjUy8eXlW7tPBX88Q==\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": null,
+      "signature": {
+        "key_id": "k1",
+        "value": "4u5olWqfe9LF2MclmXrc/Fsl0vp3aKR3P4FWPDudO/rhnzjVcIpSlPs4rh+02zy0P0j1IysjYBW4uysNsvnvCg=="
+      }
+    },
+    "previous": {
+      "version": 5,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "k1",
+        "value": "LM+CtMwQb3rNs12hJnOL7FaDuNE3gO3qKhd9SDqNApihlAsBJRK0AGKpdK8Yw3ZIKhIPmh2JluECjmOnbuY+Dw=="
+      }
+    },
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": true
+  },
+  {
+    "name": "intermediate from another root",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzjCCAXSgAwIBAgIQQH7SUKPjVxkHBzour3D5fTAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgY2EzMDkzNGIwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0MDdlZDIwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAARjueei1LGYQzTEX7mgJPbsZ2siuIwEG7Xa/BBM\nZymp6T4EecSKMzibzIFgBuN9nnKlv218pePRHO/4SDf7FbEro2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUfj6pRvfF7tAb\nRqgi1PObB4sF5sAwHwYDVR0jBBgwFoAUiNI8JaWC0RkRUxtOoATNuKPNWIUwCgYI\nKoZIzj0EAwIDSAAwRQIgOzRir0dcxPpuDvMk7gP2gk6l5n2RnW/O/lCYZk57qFQC\nIQCFnnD/gvLFPk23kX8eOQsRY5xT6a4ohh7Or+QbHzDOOw==\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": null,
+      "signature": {
+        "key_id": "k1",
+        "value": "7PNKcSRXUwK39x3yPbyA+Ssmv7bYpbQkNj8ehBT2Cp7eIOGBvJ0PCm6v6/7UEIQ6QPsKBQljLiUCOlonjGKFAg=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "root listed as an intermediate",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": null,
+      "signature": {
+        "key_id": "k1",
+        "value": "JbQyYMdHNYDRW9KNiXCsaQLrOpl2YknFGmIjY3UFCxBAIWse2/TmfszzXBJlRK2LgRxCds0RMnhsJ9U/lW06Bg=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "tampered: swapped key material",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "k2",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": null,
+      "signature": {
+        "key_id": "k1",
+        "value": "At6p9Kmz7Q861w4OyFZgdOWp3SHBFV/ZqVw3/tz0GlRTHmrtpAAqo8an7CwhIyjvyMuxaxIaS2gJHq7+SiBSAw=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "tampered: renamed key",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "renamed",
+          "key": "otgw5/7ejsgwdwI8WInvWzdVgBuNcQe3qE81Hwn5dVY=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": null,
+      "signature": {
+        "key_id": "k1",
+        "value": "At6p9Kmz7Q861w4OyFZgdOWp3SHBFV/ZqVw3/tz0GlRTHmrtpAAqo8an7CwhIyjvyMuxaxIaS2gJHq7+SiBSAw=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "tampered: added revoked serial",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "k2",
+          "key": "otgw5/7ejsgwdwI8WInvWzdVgBuNcQe3qE81Hwn5dVY=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [
+        "ab"
+      ],
+      "signature": {
+        "key_id": "k1",
+        "value": "At6p9Kmz7Q861w4OyFZgdOWp3SHBFV/ZqVw3/tz0GlRTHmrtpAAqo8an7CwhIyjvyMuxaxIaS2gJHq7+SiBSAw=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "tampered: changed version",
+    "bundle": {
+      "version": 2,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "k2",
+          "key": "otgw5/7ejsgwdwI8WInvWzdVgBuNcQe3qE81Hwn5dVY=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": null,
+      "signature": {
+        "key_id": "k1",
+        "value": "At6p9Kmz7Q861w4OyFZgdOWp3SHBFV/ZqVw3/tz0GlRTHmrtpAAqo8an7CwhIyjvyMuxaxIaS2gJHq7+SiBSAw=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "tampered: changed issue time",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:01Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "k2",
+          "key": "otgw5/7ejsgwdwI8WInvWzdVgBuNcQe3qE81Hwn5dVY=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": null,
+      "signature": {
+        "key_id": "k1",
+        "value": "At6p9Kmz7Q861w4OyFZgdOWp3SHBFV/ZqVw3/tz0GlRTHmrtpAAqo8an7CwhIyjvyMuxaxIaS2gJHq7+SiBSAw=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "tampered: added root",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n",
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQLGr09f+xX2vBi/sI3Y+gYzAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMmM2YWY0ZjUwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMmM2YWY0ZjUwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATQOX/J1ubf/ZWZLV9nsUO3AmdgxrXzOQno+yAx4L6u1K2ATi/uFTKp\n/ce5ber/H1C0Uzs+8j8SOP7TIXtz1Qqdo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUsWTQp2mCY872gdUqW9dby9ByIuUw\nCgYIKoZIzj0EAwIDSAAwRQIhAN9SEiT1MW6EFRToWAmWS2WK174fFGGvnNPqEOo3\n6QghAiAhyjVv9RefSkNVlYI4B8BvNeeHeUwjjfpfxhJkOPZn1A==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "k2",
+          "key": "otgw5/7ejsgwdwI8WInvWzdVgBuNcQe3qE81Hwn5dVY=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": null,
+      "signature": {
+        "key_id": "k1",
+        "value": "At6p9Kmz7Q861w4OyFZgdOWp3SHBFV/ZqVw3/tz0GlRTHmrtpAAqo8an7CwhIyjvyMuxaxIaS2gJHq7+SiBSAw=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "tampered: added intermediate",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n",
+        "-----BEGIN CERTIFICATE-----\nMIIBzjCCAXSgAwIBAgIQD+uxnKNwJtNbTyX8IV9HxzAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMmM2YWY0ZjUwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiBmZWJiMTkwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAASjhgg6lRhrv/v9otfLBW3bsWcqQtR8LgsMs9Nc\n9kK8CBbQ/v0WUvGrJYKwB1QC7j2E1312cJNS5B1nwbY3MRHEo2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUbjfPmAaGv4cU\n5x2Nb9LQc/dzxlEwHwYDVR0jBBgwFoAUsWTQp2mCY872gdUqW9dby9ByIuUwCgYI\nKoZIzj0EAwIDSAAwRQIhAPCXNqsRYsL64p4vAWJvSgGvilg6RwbXz0lJh5RGzO4g\nAiAlotV2CynwRB6ja/ySbGUqQeNTHfjUy8eXlW7tPBX88Q==\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "k2",
+          "key": "otgw5/7ejsgwdwI8WInvWzdVgBuNcQe3qE81Hwn5dVY=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": null,
+      "signature": {
+        "key_id": "k1",
+        "value": "At6p9Kmz7Q861w4OyFZgdOWp3SHBFV/ZqVw3/tz0GlRTHmrtpAAqo8an7CwhIyjvyMuxaxIaS2gJHq7+SiBSAw=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "tampered: extended key expiry",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "k2",
+          "key": "otgw5/7ejsgwdwI8WInvWzdVgBuNcQe3qE81Hwn5dVY=",
+          "not_after": "2027-02-05T12:00:00Z"
+        }
+      ],
+      "revoked_serials": null,
+      "signature": {
+        "key_id": "k1",
+        "value": "At6p9Kmz7Q861w4OyFZgdOWp3SHBFV/ZqVw3/tz0GlRTHmrtpAAqo8an7CwhIyjvyMuxaxIaS2gJHq7+SiBSAw=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "tampered: changed signer",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "k2",
+          "key": "otgw5/7ejsgwdwI8WInvWzdVgBuNcQe3qE81Hwn5dVY=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": null,
+      "signature": {
+        "key_id": "k2",
+        "value": "At6p9Kmz7Q861w4OyFZgdOWp3SHBFV/ZqVw3/tz0GlRTHmrtpAAqo8an7CwhIyjvyMuxaxIaS2gJHq7+SiBSAw=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "tampered: flipped signature bit",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "k2",
+          "key": "otgw5/7ejsgwdwI8WInvWzdVgBuNcQe3qE81Hwn5dVY=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": null,
+      "signature": {
+        "key_id": "k1",
+        "value": "A96p9Kmz7Q861w4OyFZgdOWp3SHBFV/ZqVw3/tz0GlRTHmrtpAAqo8an7CwhIyjvyMuxaxIaS2gJHq7+SiBSAw=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "seventeen signing keys",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "keya",
+          "key": "CnIS/vs+S0c9z3wyCypox77zHvdYPRpPR++jtFDr6xk=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "keyb",
+          "key": "E+LyiX36ECnPlAymcsr/j/1RcZNNEY4ibtBbjVEEgno=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "keyc",
+          "key": "zDZp1KQTos+PRWyq05R7DtUB9yTCmG5DX4EiGiI6CSs=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "keyd",
+          "key": "cP6dqf18k8H5XSiZ9LwyAO50nnrug7Lxg4MWjZYEnY8=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "keye",
+          "key": "cEl2b0pAJLjbPZmUCy0Ol3pTFHZrgmFIkDjSWfY0qRc=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "keyf",
+          "key": "2zalx8YfTLj1Hlm6MtfLbRmb9b2/CtBP/bF0w8Cmb4M=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "keyg",
+          "key": "37U83Cs4JyeKtlbh436Gw0HS/itKUqSOOldbGJdJdvU=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "keyh",
+          "key": "jfqhlB68pVRJhXknE+XOZm6RK5LEIklbmwuxQs6dk2c=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "keyi",
+          "key": "aDpGeqi7WIAA0/CEiUdiuJh8MTHw78WuZ3Lu0sIWuyA=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "keyj",
+          "key": "197bKGkcVkgH+CcbMe+bEbZhNzdxtBtvYBsxat3YA4A=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "keyk",
+          "key": "zbasLw3gpUAnB2vAJtJDyc4eysvhvqxaauAO+SvJbM4=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "keyl",
+          "key": "Djg6hLp3C1u4n/hagvImGJXpAXy5xX6wyjQZB7T3tD4=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "keym",
+          "key": "DlEtwlpNEnblEo1j5UnCU3ihYO4pOX3j+rYl2P8ANek=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "keyn",
+          "key": "NyQYILMxS+dcD+YoMc8TgJu+n5+91Smt4uJcIkv+0uo=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "keyo",
+          "key": "8DFhKntjS3ANTCxc6C5WMNVZGXLGfDtcxIzh381ummE=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "keyp",
+          "key": "Xp5q9wZtyEudk/bVrh86e8Fe6Wz7toEbNNEoh4OW4v8=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "keyq",
+          "key": "6UlFZCOGj3zuG3DxBELc+qg2YQ3fXWCVeC+zqVYiUjc=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [],
+      "signature": {
+        "key_id": "keya",
+        "value": "SuKQ2LmFmAhp3Aja4VKcXAslNjxM5nvGS/1zfINHAhZi6Zm42O/gtbEJmsJm04ZMMD0nF0oDzR73zpVQEEmHDw=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "duplicate key id",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        },
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": null,
+      "signature": {
+        "key_id": "k1",
+        "value": "nvIxCwKwh/aXmcLgPlPOjz2pQOeZgdSBnWTfBX+OLSuC1TWiyyPo5emBGQwb46U9o0ZrMZ8fZVEN75FK2/aXBg=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "revoked serial that is not hex",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [
+        "xyz"
+      ],
+      "signature": {
+        "key_id": "k1",
+        "value": "yOQHCouu2Bg8aMz2dE52AF6oT+BLOnfRz3PbvlopP/9VNN8Qm5OTpuHBMUfgbQ6y8eCmFxdcZ6JXF0c/bpcSDA=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "revoked serial of odd length",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [
+        "abc",
+        "0a1b"
+      ],
+      "signature": {
+        "key_id": "k1",
+        "value": "+H4XZqbbeF+alXizd01vtXxjLNFm7A40Kc4EAwb58v/MqcEa7o5qP/ddtyv6SuYoPbixG43qkbf1a4M1JEWvDA=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": true
+  },
+  {
+    "name": "revoked serial in uppercase",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "k1",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": [
+        "ABC"
+      ],
+      "signature": {
+        "key_id": "k1",
+        "value": "BYMzWMXWzxyG8zqa1HXjDf4Q8x9qY+0B/pfsuI+FTeofEbTigao2zaBdWLC2FfBVUzonPjkTgZqTL8za3fW2Bw=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  },
+  {
+    "name": "key id with a space",
+    "bundle": {
+      "version": 1,
+      "issued_at": "2026-11-06T12:00:00Z",
+      "roots": [
+        "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIQKJujzGY09CxhLIeQz63v+TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMzYxMTAzMTIwMDAwWjAvMQ0wCwYDVQQKEwRKb2x0MR4w\nHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATbGGSTJzCsDaMZ4SBRAkKRbJ4W6AZ0wU1wbtozldnFmv1suPamEdFH\nbrRySByksmT1MDfiKTuOZuCObqg+weSjo0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYD\nVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUnmB0V+8mfrnduV/c6hR9JrAxzyIw\nCgYIKoZIzj0EAwIDSAAwRQIgVC8HeJ3KJZoOT0sVrJ5MdtkoH8v4k45FgyA/OL6g\nYOYCIQDK8kZVH3qVMEdyFgEKt+gJ/6P3Tjhy2+Z4E87rqtjstg==\n-----END CERTIFICATE-----\n"
+      ],
+      "intermediates": [
+        "-----BEGIN CERTIFICATE-----\nMIIBzzCCAXSgAwIBAgIQR/FmGjJi8pMF93Tqzoca4TAKBggqhkjOPQQDAjAvMQ0w\nCwYDVQQKEwRKb2x0MR4wHAYDVQQDExVKb2x0IFJvb3QgQ0EgMjg5YmEzY2MwHhcN\nMjYxMTA2MTE1NTAwWhcNMjgxMTA1MTIwMDAwWjA7MQ0wCwYDVQQKEwRKb2x0MSow\nKAYDVQQDEyFKb2x0IElzc3VpbmcgQ0EgMjAyNi0xMS0wNiA0N2YxNjYwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAATu0mw5vM0hSJvQ9wBvrPb5VVWFkCjWLQVlcKeG\n+L6vmLxL1uITGHJ5LvXi2QuJcfMgrvpoPrfhRjhThVRx+F+Go2YwZDAOBgNVHQ8B\nAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQUTof/zqldx1nL\nhNVk9VY81LW/osUwHwYDVR0jBBgwFoAUnmB0V+8mfrnduV/c6hR9JrAxzyIwCgYI\nKoZIzj0EAwIDSQAwRgIhAPZgG8sRpXes5nAfbwf/W2DsaZ41B+ylPQgrivnGwGWS\nAiEApjvI7rbMBo+s2dtaPJSJ3Zut5UCvVyI/5PP9R/XVXv0=\n-----END CERTIFICATE-----\n"
+      ],
+      "signing_keys": [
+        {
+          "id": "a b",
+          "key": "dYnBK3dgvisae88L/hIXCuW/d5ju+ezMRHwbr89qncM=",
+          "not_after": "2027-02-04T12:00:00Z"
+        }
+      ],
+      "revoked_serials": null,
+      "signature": {
+        "key_id": "k1",
+        "value": "BSxtxgOwKvub0txE139c7jnPq14nm6Hl7WZ1ENbArgH8SOP1upMvn9ytkrG2t/A7oBCpFFZm0mhxvoKGtA/mCQ=="
+      }
+    },
+    "pin": "b7698f3cd47ac49cfedaef6344f279e09ee4e2c2b55e80672b2db53b9af07c42",
+    "now": "2026-11-06T12:00:00Z",
+    "accepted": false
+  }
+]

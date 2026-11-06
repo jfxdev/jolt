@@ -66,6 +66,38 @@ func TestInvalidRecordCannotPoisonCommittedState(t *testing.T) {
 	}
 }
 
+func TestMountHiddenPatternsSurviveStateRestart(t *testing.T) {
+	s, dir := openTest(t)
+	ctx := context.Background()
+	mount := entities.Mount{ID: "files", Name: "Files", LocalPath: t.TempDir(), Mode: "read_write", Enabled: true, HiddenPatterns: []string{".env", "*.pem"}, CanaryPaths: []string{"decoys/token.txt"}}
+	grant := entities.TransferPathGrant{ID: "grant", PeerNodeID: "peer", MountID: mount.ID, Path: ".", Direction: "send", Enabled: true, Permissions: entities.GrantPermissions{Read: true}, Exclude: []string{"*.key", "private"}}
+	if err := s.ApplyConfiguration(ctx, "hidden-revision", []entities.Mount{mount}, []entities.TransferPathGrant{grant}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(dir, testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	got, err := reopened.GetMount(ctx, mount.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.HiddenPatterns, mount.HiddenPatterns) {
+		t.Fatalf("patterns after reopen: %+v", got.HiddenPatterns)
+	}
+	if !reflect.DeepEqual(got.CanaryPaths, mount.CanaryPaths) {
+		t.Fatalf("canaries after reopen: %+v", got.CanaryPaths)
+	}
+	reloadedGrant, err := reopened.GetTransferGrant(ctx, grant.ID)
+	if err != nil || !reflect.DeepEqual(reloadedGrant.Exclude, grant.Exclude) {
+		t.Fatalf("grant exclusions after reopen: %+v %v", reloadedGrant.Exclude, err)
+	}
+}
+
 func TestOpenExistingIsReadOnlyWithoutLockFileOrHeadRepair(t *testing.T) {
 	s, dir := openTest(t)
 	ctx := context.Background()

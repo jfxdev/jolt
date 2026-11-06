@@ -311,8 +311,11 @@ Status legend:
 - Persistent encrypted YAML queue with atomic claims and bounded node concurrency
   configured by `max_concurrent_jobs` in `node.yaml`.
 - Durable jobs for mkdir, local copy, move, delete, and direct remote file pull.
-- Recovery converts jobs left in executing/requested states to
-  `waiting_validation`; explicit validation/resume is required.
+- On node startup, recovery moves jobs left queued, executing, or waiting for a
+  peer or mount to `waiting_validation`; explicit validation/resume is required.
+  Checkpoints remain available, and a later peer/mount wakeup cannot bypass this
+  validation. Remote jobs cannot yet be resumed through the Control Tower until
+  renewable authorization is implemented.
 - Every queued durable job revalidates its destination mount immediately before
   execution.
 - Jobs whose required mount is disabled, missing, unreadable, or unwritable enter

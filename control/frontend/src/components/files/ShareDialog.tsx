@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Check, Copy, Link2 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { fileEntryDisplayName } from "@/lib/display-name";
 import type { CreatedShare, FileEntry, Mount } from "@/lib/types";
 import { useApiError } from "@/hooks/useApiError";
 import { Button } from "@/components/ui/button";
@@ -114,7 +115,7 @@ export function ShareDialog({ entry, mount, nodeId, onClose }: Props) {
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Link2 className="size-4" /> Compartilhar “{entry?.name}”
+            <Link2 className="size-4" /> Compartilhar “{entry && fileEntryDisplayName(entry)}”
           </DialogTitle>
           <DialogDescription>
             Gera um link público somente de leitura. Quem tiver o link acessa sem

@@ -147,6 +147,93 @@ func TestRenameConflictRequiresTheDestinationParentScope(t *testing.T) {
 	t.Fatal("no destination authorization")
 }
 
+func TestTransferRequiresUpdateForMovesAndPossibleOverwrites(t *testing.T) {
+	forwarded := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body := `{}`
+		switch r.URL.Path {
+		case "/api/v1/node":
+			id := "destination"
+			if r.URL.Host == "source.test" {
+				id = "source"
+			}
+			body = `{"node_id":"` + id + `","fingerprint":"FP"}`
+		case "/api/v1/grants":
+			if r.URL.Host == "source.test" {
+				body = `{"items":[{"grant_id":"src","peer_node_id":"destination","mount_id":"media","path":".","direction":"send","enabled":true,"permissions":{"read":true,"delete":true}}]}`
+			} else {
+				body = `{"items":[{"grant_id":"dst","peer_node_id":"source","mount_id":"incoming","path":".","direction":"receive","enabled":true,"permissions":{"write":true},"conflict_policies":["fail","overwrite","checksum","ask"]}]}`
+			}
+		case "/api/v1/transfers/pull/batch/plan", "/api/v1/transfers/pull/batch", "/api/v1/transfers/pull":
+			forwarded++
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	actor := store.User{ID: "transfer-op", Username: "transfer-op", Role: "operator", Enabled: true}
+	handler, storage, session := testUserHandlerWithClient(t, actor, client)
+	ctx, now := context.Background(), time.Now().UTC()
+	token, err := security.Encrypt(make([]byte, 32), "node-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"source", "destination"} {
+		if err := storage.SaveNode(ctx, store.Node{ID: id, Name: id, Endpoint: "http://" + id + ".test", TokenEncrypted: token, State: "online", CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	policy := store.Policy{ID: "transfer-policy", Name: "transfer-policy", CreatedAt: now, UpdatedAt: now}
+	if err := storage.CreatePolicy(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.SetSubjectPolicies(ctx, "user", actor.ID, []string{policy.ID}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, route, body               string
+		sourceUpdate, destinationUpdate bool
+		want                            int
+	}{
+		{"logical fail requires no update", "transfers/plan", `{"source":{"node_id":"source","mount_id":"media","paths":["file"]},"destination":{"mount_id":"incoming","path":"archive"},"conflict_policy":"fail"}`, false, false, 200},
+		{"logical overwrite denied", "transfers/plan", `{"source":{"node_id":"source","mount_id":"media","paths":["file"]},"destination":{"mount_id":"incoming","path":"archive"},"conflict_policy":"overwrite"}`, false, false, 403},
+		{"logical checksum allowed with update", "transfers/plan", `{"source":{"node_id":"source","mount_id":"media","paths":["file"]},"destination":{"mount_id":"incoming","path":"archive"},"conflict_policy":"checksum"}`, false, true, 200},
+		{"logical move denied", "transfers", `{"operation":"move","source":{"node_id":"source","mount_id":"media","paths":["file"]},"destination":{"mount_id":"incoming","path":"archive"},"conflict_policy":"fail"}`, false, false, 403},
+		{"logical move allowed", "transfers", `{"operation":"move","source":{"node_id":"source","mount_id":"media","paths":["file"]},"destination":{"mount_id":"incoming","path":"archive"},"conflict_policy":"fail"}`, true, false, 202},
+		{"direct normalized overwrite denied", "transfers/pull", `{"peer_node_id":"source","source_grant_id":"src","destination_grant_id":"dst","source_path":"file","destination_path":"archive/file","conflict_policy":" OVERWRITE "}`, false, false, 403},
+		{"direct ask allowed with update", "transfers/pull", `{"peer_node_id":"source","source_grant_id":"src","destination_grant_id":"dst","source_path":"file","destination_path":"archive/file","conflict_policy":"ask"}`, false, true, 200},
+		{"direct move denied", "transfers/pull/batch", `{"peer_node_id":"source","source_grant_id":"src","destination_grant_id":"dst","source_paths":["file"],"destination_path":"archive","operation":"move","conflict_policy":"fail"}`, false, false, 403},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sourceCaps := []string{"read", "delete"}
+			destCaps := []string{"create"}
+			if tc.sourceUpdate {
+				sourceCaps = append(sourceCaps, "update")
+			}
+			if tc.destinationUpdate {
+				destCaps = append(destCaps, "update")
+			}
+			policy.Rules = []rbac.Rule{
+				{Path: "nodes/source/files/mounts/media/**", Capabilities: sourceCaps},
+				{Path: "nodes/destination/files/mounts/incoming/**", Capabilities: destCaps},
+				{Path: "nodes/destination/transfers", Capabilities: []string{"create", "execute"}},
+			}
+			if err := storage.UpdatePolicy(ctx, policy); err != nil {
+				t.Fatal(err)
+			}
+			before := forwarded
+			w := httptest.NewRecorder()
+			request := authenticatedRequest(http.MethodPost, "/api/v1/nodes/destination/"+tc.route, session, []byte(tc.body))
+			request.Header.Set("Idempotency-Key", "transfer-test")
+			handler.ServeHTTP(w, request)
+			if w.Code != tc.want {
+				t.Fatalf("status=%d want=%d body=%s", w.Code, tc.want, w.Body.String())
+			}
+			if tc.want == http.StatusForbidden && forwarded != before {
+				t.Fatal("denied transfer reached the node")
+			}
+		})
+	}
+}
+
 func useServiceAccount(t *testing.T, h *shareHarness) {
 	t.Helper()
 	ctx := context.Background()

@@ -2,9 +2,12 @@ package state
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"github.com/jfxdev/jolt/backend/internal/entities"
+	"github.com/jfxdev/jolt/backend/internal/signedauth"
 	"sort"
 	"time"
 )
@@ -22,6 +25,9 @@ func (s *Store) CreateJobWithItems(ctx context.Context, j entities.Job, items []
 	return s.CreateJobWithItemsHashed(ctx, j, items, key, "")
 }
 func (s *Store) CreateJobWithItemsHashed(ctx context.Context, j entities.Job, items []entities.JobItem, key, hash string) (entities.Job, bool, error) {
+	if j.DestructivePlanID != "" || j.SignedAuthBound || j.RequiresSignedAuth || j.SignedAuthActorID != "" || j.SignedAuthCredentialID != "" {
+		return entities.Job{}, false, ErrInUse
+	}
 	reused := false
 	err := s.update(ctx, func(tx *transaction) error {
 		if key != "" {
@@ -31,6 +37,9 @@ func (s *Store) CreateJobWithItemsHashed(ctx context.Context, j entities.Job, it
 					return ErrIdempotencyConflict
 				}
 				j, err = get[entities.Job](s, "jobs", v.JobID)
+				if err == nil && (j.RequiresSignedAuth || j.SignedAuthBound || j.DestructivePlanID != "") {
+					return ErrIdempotencyConflict
+				}
 				reused = err == nil
 				return err
 			} else if !errors.Is(err, ErrNotFound) {
@@ -62,6 +71,100 @@ func (s *Store) CreateJobWithItemsHashed(ctx context.Context, j entities.Job, it
 	})
 	return j, reused, err
 }
+
+// CreateJobAwaitingAuthorization persists an actor-bound local job in a
+// non-runnable state. This is internal groundwork; the caller must validate
+// request permissions and supply a collision-resistant request hash.
+func (s *Store) CreateJobAwaitingAuthorization(ctx context.Context, j entities.Job, actorID, credentialID, key, hash string) (entities.Job, bool, error) {
+	if j.Type != "delete" && j.Type != "copy_local" && j.Type != "move_local" {
+		return entities.Job{}, false, ErrInUse
+	}
+	return s.createJobAwaitingAuthorization(ctx, j, nil, actorID, credentialID, key, hash, nil)
+}
+
+// CreatePlannedJobAwaitingAuthorization does the same for a node-to-node copy,
+// persisting its plan items in the same transaction so the job can never run
+// without them.
+func (s *Store) CreatePlannedJobAwaitingAuthorization(ctx context.Context, j entities.Job, items []entities.JobItem, actorID, credentialID, key, hash string) (entities.Job, bool, error) {
+	if j.Type != "transfer_pull_batch" || len(items) == 0 {
+		return entities.Job{}, false, ErrInUse
+	}
+	return s.createJobAwaitingAuthorization(ctx, j, items, actorID, credentialID, key, hash, nil)
+}
+
+// MovePlanBinding is the confirmation a node-to-node move consumes; see entities.
+type MovePlanBinding = entities.MovePlanBinding
+
+// CreatePlannedMoveAwaitingAuthorization persists a node-to-node move together
+// with its plan items and consumes its one-use confirmation, in one transaction.
+// The plan must belong to the lease's actor, carry the token and the same digest
+// of planned entries, and not have expired; a repeated request returns the job.
+func (s *Store) CreatePlannedMoveAwaitingAuthorization(ctx context.Context, j entities.Job, items []entities.JobItem, actorID, credentialID, key, hash string, plan MovePlanBinding) (entities.Job, bool, error) {
+	if j.Type != "transfer_move_batch" || len(items) == 0 || !signedauth.ValidKeyID(plan.PlanID) || !planDigest(plan.TokenHash) || !planDigest(plan.Digest) || plan.Now.IsZero() {
+		return entities.Job{}, false, ErrInUse
+	}
+	return s.createJobAwaitingAuthorization(ctx, j, items, actorID, credentialID, key, hash, &plan)
+}
+
+func (s *Store) createJobAwaitingAuthorization(ctx context.Context, j entities.Job, items []entities.JobItem, actorID, credentialID, key, hash string, plan *MovePlanBinding) (entities.Job, bool, error) {
+	if !signedauth.ValidKeyID(j.ID) || !signedauth.ValidKeyID(j.MountID) || !signedauth.ValidKeyID(actorID) || !signedauth.ValidKeyID(credentialID) || key == "" || hash == "" || j.State != "queued" || j.DestructivePlanID != "" || j.SignedAuthBound || j.RequiresSignedAuth || j.SignedAuthActorID != "" || j.SignedAuthCredentialID != "" {
+		return entities.Job{}, false, ErrInUse
+	}
+	reused := false
+	err := s.update(ctx, func(tx *transaction) error {
+		previous, err := get[idempotencyRecord](s, "idempotency", key)
+		if err == nil {
+			if previous.RequestHash != hash {
+				return ErrIdempotencyConflict
+			}
+			stored, err := get[entities.Job](s, "jobs", previous.JobID)
+			if err != nil {
+				return err
+			}
+			if !stored.RequiresSignedAuth || stored.SignedAuthActorID != actorID || stored.SignedAuthCredentialID != credentialID || plan != nil && stored.DestructivePlanID != plan.PlanID {
+				return ErrIdempotencyConflict
+			}
+			j, reused = stored, true
+			return nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		if _, exists := s.index["jobs"][j.ID]; exists {
+			return ErrInUse
+		}
+		if err := s.ensureSecurityVersion(6); err != nil {
+			return err
+		}
+		if plan != nil {
+			if err := consumeMovePlan(tx, s, plan, actorID, &j, key, hash); err != nil {
+				return err
+			}
+		}
+		j.RequiresSignedAuth, j.SignedAuthActorID, j.SignedAuthCredentialID = true, actorID, credentialID
+		j.State, j.Phase, j.Error, j.NextAttemptAt = "waiting_validation", "waiting_authorization", "job execution requires authorization and validation", nil
+		if err := tx.put("jobs", j.ID, j.PeerNodeID, order(j.CreatedAt), j); err != nil {
+			return err
+		}
+		seen := map[string]bool{}
+		for _, item := range items {
+			item.JobID = j.ID
+			k := itemKey(item)
+			if seen[k] {
+				return errors.New("duplicate job item")
+			}
+			seen[k] = true
+			if err := tx.put("items", k, j.ID, fmt.Sprintf("%012d", item.Ordinal), item); err != nil {
+				return err
+			}
+		}
+		return tx.put("idempotency", key, "", "", idempotencyRecord{j.ID, hash})
+	})
+	if err != nil {
+		return entities.Job{}, false, err
+	}
+	return j, reused, nil
+}
 func (s *Store) FindJobByIdempotency(ctx context.Context, key string) (j entities.Job, hash string, found bool, err error) {
 	err = s.view(ctx, func() error {
 		v, e := get[idempotencyRecord](s, "idempotency", key)
@@ -84,6 +187,9 @@ func (s *Store) UpdateJob(ctx context.Context, j entities.Job) error {
 		if e != nil {
 			return e
 		}
+		if !validSecuredJobUpdate(old, j) {
+			return ErrInUse
+		}
 		j.CreatedAt = old.CreatedAt
 		return tx.put("jobs", j.ID, j.PeerNodeID, order(j.CreatedAt), j)
 	})
@@ -97,6 +203,9 @@ func (s *Store) UpdateJobWithEvent(ctx context.Context, j entities.Job, event en
 		if e != nil {
 			return e
 		}
+		if !validSecuredJobUpdate(old, j) {
+			return ErrInUse
+		}
 		j.CreatedAt = old.CreatedAt
 		if err := tx.put("jobs", j.ID, j.PeerNodeID, order(j.CreatedAt), j); err != nil {
 			return err
@@ -105,6 +214,111 @@ func (s *Store) UpdateJobWithEvent(ctx context.Context, j entities.Job, event en
 		key := fmt.Sprintf("%020d", event.ID)
 		return tx.put("events", key, event.JobID, key, event)
 	})
+}
+
+// securedJobKind reports whether the job is one the node knows how to run
+// under a signed authorization: a local copy, or a delete or move that carries
+// a confirmed destructive plan. A delete or move without a plan never runs.
+func securedJobKind(job entities.Job) bool {
+	switch job.Type {
+	case "copy_local", "transfer_pull_batch":
+		return job.DestructivePlanID == ""
+	case "delete", "move_local", "transfer_move_batch":
+		return job.DestructivePlanID != ""
+	}
+	return false
+}
+
+// executableSecuredJob reports whether a secured job may run: one of those
+// kinds, bound to a renewable signed authorization.
+func executableSecuredJob(job entities.Job) bool {
+	return job.SignedAuthBound && securedJobKind(job)
+}
+
+// validSecuredJobUpdate keeps secured jobs from being started by a generic
+// update. Only ClaimNextSecuredJob moves a job to running, after verifying its
+// lease; once running, the claimed executor may take it to any state.
+func validSecuredJobUpdate(old, next entities.Job) bool {
+	if old.DestructivePlanID != next.DestructivePlanID || old.SignedAuthBound != next.SignedAuthBound || old.RequiresSignedAuth != next.RequiresSignedAuth || old.SignedAuthActorID != next.SignedAuthActorID || old.SignedAuthCredentialID != next.SignedAuthCredentialID {
+		return false
+	}
+	if old.DestructivePlanID == "" && !old.SignedAuthBound && !old.RequiresSignedAuth {
+		return true
+	}
+	if old.Type != next.Type || old.MountID != next.MountID || old.SourcePath != next.SourcePath || old.Destination != next.Destination || old.Overwrite != next.Overwrite || old.Recursive != next.Recursive || old.ConflictPolicy != next.ConflictPolicy || old.SourceChangePolicy != next.SourceChangePolicy || old.VerifyChecksum != next.VerifyChecksum || old.BandwidthLimit != next.BandwidthLimit || old.MaxParallelFiles != next.MaxParallelFiles || old.MaxParallelChunks != next.MaxParallelChunks || old.MaxAttempts != next.MaxAttempts || old.PeerNodeID != next.PeerNodeID || old.SourceGrantID != next.SourceGrantID || old.DestinationGrantID != next.DestinationGrantID {
+		return false
+	}
+	if old.State == "canceled" && next.State != "canceled" {
+		return false
+	}
+	if executableSecuredJob(old) {
+		switch old.State {
+		case "running", "pause_requested", "cancel_requested":
+			return true
+		case "completed", "completed_with_warnings":
+			return next.State == old.State
+		}
+		return next.State == "waiting_validation" || next.State == "paused" || next.State == "canceled" || next.State == "queued"
+	}
+	return next.State == "waiting_validation" || next.State == "paused" || next.State == "canceled"
+}
+
+// jobItemsWritable lets only the executor that claimed a secured local copy
+// record its plan and progress; other secured jobs have no writable items.
+func jobItemsWritable(job entities.Job) bool {
+	if !job.RequiresSignedAuth && !job.SignedAuthBound && job.DestructivePlanID == "" {
+		return true
+	}
+	if !executableSecuredJob(job) {
+		return false
+	}
+	switch job.State {
+	case "running", "pause_requested", "cancel_requested":
+		return true
+	}
+	return false
+}
+
+// ClaimNextSecuredJob starts the oldest queued local copy whose persisted lease
+// still verifies for this node. Queued jobs without a valid lease are returned
+// to waiting_validation so that a later renewal resumes them.
+func (s *Store) ClaimNextSecuredJob(ctx context.Context, nodeID string, keys map[string]ed25519.PublicKey, now time.Time) (job entities.Job, err error) {
+	if !signedauth.ValidKeyID(nodeID) || now.IsZero() {
+		return entities.Job{}, ErrInUse
+	}
+	err = s.update(ctx, func(tx *transaction) error {
+		ids := append([]string(nil), s.ordered[indexSelection{"jobs", "state", "queued"}]...)
+		for _, id := range ids {
+			j, e := get[entities.Job](s, "jobs", id)
+			if e != nil {
+				return e
+			}
+			if j.State != "queued" || !executableSecuredJob(j) || (j.NextAttemptAt != nil && j.NextAttemptAt.After(now)) {
+				continue
+			}
+			if _, _, e := s.verifiedJobLease(j, nodeID, keys, now); e != nil {
+				j.State, j.Phase, j.UpdatedAt = "waiting_validation", "waiting_authorization", now
+				j.Error = "job authorization expired; waiting for renewal"
+				if e := tx.put("jobs", id, j.PeerNodeID, order(j.CreatedAt), j); e != nil {
+					return e
+				}
+				continue
+			}
+			j.State, j.Phase, j.UpdatedAt, j.NextAttemptAt = "running", "validation", now, nil
+			j.Attempt++
+			if j.StartedAt == nil {
+				j.StartedAt = &now
+			}
+			job = j
+			return tx.put("jobs", id, j.PeerNodeID, order(j.CreatedAt), j)
+		}
+		// Keep the parked jobs: returning an error here would roll them back.
+		return nil
+	})
+	if err == nil && job.ID == "" {
+		err = ErrNotFound
+	}
+	return
 }
 func (s *Store) GetJob(ctx context.Context, id string) (v entities.Job, err error) {
 	err = s.view(ctx, func() error { v, err = get[entities.Job](s, "jobs", id); return err })
@@ -145,7 +359,7 @@ func (s *Store) ClaimNextJob(ctx context.Context, now time.Time) (job entities.J
 			if e != nil {
 				return e
 			}
-			if j.State != "queued" || (j.NextAttemptAt != nil && j.NextAttemptAt.After(now)) {
+			if j.State != "queued" || j.DestructivePlanID != "" || j.SignedAuthBound || j.RequiresSignedAuth || (j.NextAttemptAt != nil && j.NextAttemptAt.After(now)) {
 				continue
 			}
 			j.State, j.Phase, j.UpdatedAt, j.NextAttemptAt = "running", "validation", now, nil
@@ -173,10 +387,15 @@ func (s *Store) changeJobs(ctx context.Context, now time.Time, states map[string
 			if !match(j) {
 				continue
 			}
+			// Waking a waiting job only queues it; a secured copy is still
+			// claimed solely through its verified lease.
+			if !recovery && (j.DestructivePlanID != "" || (j.SignedAuthBound || j.RequiresSignedAuth) && !executableSecuredJob(j)) {
+				continue
+			}
 			j.State, j.Phase, j.Error, j.UpdatedAt, j.NextAttemptAt = "queued", "validation", "", now, nil
 			if recovery {
 				j.State, j.Phase = "waiting_validation", "waiting_validation"
-				j.Error = "node stopped before the operation completed; explicit validation is required"
+				j.Error = "node restarted before the operation completed; explicit validation is required"
 				j.ETASeconds, j.ETAConfidence = nil, ""
 			}
 			if e = tx.put("jobs", id, j.PeerNodeID, order(j.CreatedAt), j); e != nil {
@@ -189,9 +408,11 @@ func (s *Store) changeJobs(ctx context.Context, now time.Time, states map[string
 	return
 }
 func (s *Store) RecoverRunningJobs(ctx context.Context, now time.Time) ([]entities.Job, error) {
-	return s.changeJobs(ctx, now, map[string]bool{"running": true, "pause_requested": true, "cancel_requested": true}, func(j entities.Job) bool {
-		return j.State == "running" || j.State == "pause_requested" || j.State == "cancel_requested"
-	}, true)
+	// All automatically runnable work from the prior process lifetime lacks a
+	// current authorization. Do not let queued retries or peer/mount wakeups
+	// bypass the explicit revalidation already required for interrupted work.
+	states := map[string]bool{"running": true, "pause_requested": true, "cancel_requested": true, "queued": true, "waiting_peer": true, "waiting_mount": true}
+	return s.changeJobs(ctx, now, states, func(entities.Job) bool { return true }, true)
 }
 func (s *Store) WakeWaitingPeerJobs(ctx context.Context, id string, now time.Time) ([]entities.Job, error) {
 	return s.changeJobs(ctx, now, map[string]bool{"waiting_peer": true}, func(j entities.Job) bool { return j.PeerNodeID == id }, false)
@@ -202,8 +423,12 @@ func (s *Store) WakeWaitingMountJobs(ctx context.Context, id string, now time.Ti
 func itemKey(item entities.JobItem) string { return item.JobID + "\x00" + item.RelativePath }
 func (s *Store) ReplaceJobItems(ctx context.Context, id string, items []entities.JobItem) error {
 	return s.update(ctx, func(tx *transaction) error {
-		if _, err := get[entities.Job](s, "jobs", id); err != nil {
+		job, err := get[entities.Job](s, "jobs", id)
+		if err != nil {
 			return err
+		}
+		if !jobItemsWritable(job) {
+			return ErrInUse
 		}
 		for _, key := range keys(s, "items", id) {
 			tx.remove("items", key)
@@ -238,6 +463,13 @@ func (s *Store) ListJobItems(ctx context.Context, id string) (out []entities.Job
 }
 func (s *Store) UpdateJobItem(ctx context.Context, item entities.JobItem) error {
 	return s.update(ctx, func(tx *transaction) error {
+		job, err := get[entities.Job](s, "jobs", item.JobID)
+		if err != nil {
+			return err
+		}
+		if !jobItemsWritable(job) {
+			return ErrInUse
+		}
 		k := itemKey(item)
 		if _, ok := s.index["items"][k]; !ok {
 			return ErrNotFound
@@ -317,4 +549,22 @@ func (s *Store) JobSummary(ctx context.Context) (summary entities.JobSummary, er
 		return nil
 	})
 	return
+}
+
+// consumeMovePlan checks a move plan against the confirmation and marks it used
+// by the job. Every mismatch is the same refusal, so a caller learns nothing
+// about which part was wrong.
+func consumeMovePlan(tx *transaction, s *Store, binding *MovePlanBinding, actorID string, job *entities.Job, key, hash string) error {
+	plan, err := get[DestructivePlan](s, "destructive_plans", binding.PlanID)
+	if err != nil {
+		return ErrInUse
+	}
+	if plan.Operation != "transfer_move" || plan.SubjectType != binding.SubjectType || plan.SubjectID != actorID || plan.MountID != job.MountID || plan.ConsumedJobID != "" ||
+		subtle.ConstantTimeCompare([]byte(plan.TokenHash), []byte(binding.TokenHash)) != 1 || subtle.ConstantTimeCompare([]byte(plan.TreeDigest), []byte(binding.Digest)) != 1 ||
+		!binding.Now.Before(plan.ExpiresAt) || binding.Now.Before(plan.CreatedAt) {
+		return ErrInUse
+	}
+	plan.ConsumedJobID, plan.IdempotencyKey, plan.RequestHash = job.ID, key, hash
+	job.DestructivePlanID = plan.ID
+	return tx.put("destructive_plans", plan.ID, plan.SubjectID, order(plan.CreatedAt), plan)
 }

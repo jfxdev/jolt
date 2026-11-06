@@ -117,15 +117,48 @@ func New(identity entities.Identity, nodeName string, transferServices ...*trans
 			w.Header().Set("Cache-Control", "no-store")
 			_ = json.NewEncoder(w).Encode(page)
 		})
+		mux.HandleFunc("POST /peer/v1/grants/{grantID}/actions/validate-move", func(w http.ResponseWriter, r *http.Request) {
+			if r.TLS == nil || len(r.TLS.PeerCertificates) != 1 {
+				writeError(w, http.StatusUnauthorized, "peer_certificate_required", "A verified peer certificate is required.")
+				return
+			}
+			var input struct {
+				Path string `json:"path"`
+			}
+			if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_move_request", "A valid move request is required.")
+				return
+			}
+			err := service.ValidateMoveSource(r.Context(), r.TLS.PeerCertificates[0].Subject.CommonName, r.PathValue("grantID"), input.Path)
+			if err != nil {
+				status, code := http.StatusInternalServerError, "move_validation_failed"
+				switch {
+				case errors.Is(err, filesystem.ErrProtectedTree):
+					status, code = http.StatusConflict, "protected_tree"
+				case errors.Is(err, transfers.ErrForbidden):
+					status, code = http.StatusForbidden, "grant_forbidden"
+				case errors.Is(err, transfers.ErrPeerUpgradeRequired):
+					status, code = http.StatusConflict, "peer_upgrade_required"
+				case errors.Is(err, filesystem.ErrNotFound):
+					status, code = http.StatusNotFound, "source_not_found"
+				case errors.Is(err, filesystem.ErrTraversal), errors.Is(err, filesystem.ErrInvalid):
+					status, code = http.StatusBadRequest, "invalid_path"
+				}
+				writeError(w, status, code, err.Error())
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
 		mux.HandleFunc("POST /peer/v1/grants/{grantID}/actions/delete", func(w http.ResponseWriter, r *http.Request) {
 			if r.TLS == nil || len(r.TLS.PeerCertificates) != 1 {
 				writeError(w, http.StatusUnauthorized, "peer_certificate_required", "A verified peer certificate is required.")
 				return
 			}
 			var input struct {
-				Path         string `json:"path"`
-				ExpectedETag string `json:"expected_etag"`
-				Recursive    bool   `json:"recursive"`
+				Path         string  `json:"path"`
+				SourceRoot   *string `json:"source_root"`
+				ExpectedETag string  `json:"expected_etag"`
+				Recursive    bool    `json:"recursive"`
 			}
 			if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
 				writeError(w, http.StatusBadRequest, "invalid_delete_request", "A valid delete request is required.")
@@ -136,7 +169,7 @@ func New(identity entities.Identity, nodeName string, transferServices ...*trans
 				return
 			}
 			err := service.DeleteSource(r.Context(), r.TLS.PeerCertificates[0].Subject.CommonName,
-				r.PathValue("grantID"), input.Path, input.ExpectedETag, input.Recursive)
+				r.PathValue("grantID"), input.Path, input.SourceRoot, input.ExpectedETag, input.Recursive)
 			if err != nil {
 				status, code := http.StatusInternalServerError, "transfer_failed"
 				switch {
@@ -146,6 +179,10 @@ func New(identity entities.Identity, nodeName string, transferServices ...*trans
 					status, code = http.StatusNotFound, "source_not_found"
 				case errors.Is(err, filesystem.ErrSourceChanged):
 					status, code = http.StatusPreconditionFailed, "source_changed"
+				case errors.Is(err, transfers.ErrPeerUpgradeRequired):
+					status, code = http.StatusConflict, "peer_upgrade_required"
+				case errors.Is(err, filesystem.ErrProtectedTree):
+					status, code = http.StatusConflict, "protected_tree"
 				case errors.Is(err, filesystem.ErrTraversal), errors.Is(err, filesystem.ErrInvalid):
 					status, code = http.StatusBadRequest, "invalid_path"
 				}

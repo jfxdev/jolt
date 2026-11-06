@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Copy, FolderArchive, HardDrive, MoveRight } from "lucide-react";
+import { Copy, FolderArchive, HardDrive, MoveRight, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
+import { fileEntryDisplayName, safeDisplayName } from "@/lib/display-name";
 import type { DiskUsageResponse, FileEntry, SearchResponse } from "@/lib/types";
 import { useWorkspace } from "@/context/WorkspaceContext";
 import { usePermissions } from "@/context/PermissionsContext";
 import { useApiError } from "@/hooks/useApiError";
 import { useConfirm } from "@/context/ConfirmProvider";
 import { formatBytes } from "@/lib/format";
+import { destructivePlanDescription, planUnavailable, type DestructivePlan } from "@/lib/destructive-plan";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +29,9 @@ import { FileSearchBar } from "@/components/files/FileSearchBar";
 import { ShareDialog } from "@/components/files/ShareDialog";
 import { UploadQueue, type UploadItem } from "@/components/files/UploadQueue";
 import { useResumableUploads } from "@/hooks/useResumableUploads";
+import { asPendingApproval, pendingToast } from "@/lib/approvals";
+import { removeDescription, removedNotice, trashDays } from "@/lib/trash";
+import { TrashDialog } from "@/components/files/TrashDialog";
 
 type TransferSelection = {
   entries: FileEntry[];
@@ -61,6 +66,7 @@ export default function FileBrowserPage() {
   const [preview, setPreview] = useState<FileEntry | null>(null);
   const [editor, setEditor] = useState<FileEntry | null>(null);
   const [sharing, setSharing] = useState<FileEntry | null>(null);
+  const [trashOpen, setTrashOpen] = useState(false);
   const [searchResult, setSearchResult] = useState<SearchResponse | null>(null);
   const [searching, setSearching] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -202,7 +208,7 @@ export default function FileBrowserPage() {
     return [
       { label: mount?.name || "Mount", path: "" },
       ...parts.map((part, index) => ({
-        label: part,
+        label: safeDisplayName(part),
         path: parts.slice(0, index + 1).join("/"),
       })),
     ];
@@ -239,7 +245,7 @@ export default function FileBrowserPage() {
     try {
       const plan = await api.archivePlan(nodeId, mount.mount_id, currentPath, names);
       const target =
-        names.length === 1 ? `“${names[0]}”` : `${names.length} itens`;
+        names.length === 1 ? `“${fileEntryDisplayName(entries[0])}”` : `${names.length} itens`;
       if (
         !(await confirm({
           title: `Baixar ${target} como .zip?`,
@@ -340,10 +346,54 @@ export default function FileBrowserPage() {
     }
   }
 
+  // A directory goes through a plan: the node counts what would be removed, the
+  // operator confirms those numbers, and the node checks the tree is unchanged
+  // before it deletes anything. Without plans on the Control Tower, the direct
+  // route applies as before.
+  async function removeDirectory(entry: FileEntry): Promise<boolean> {
+    if (!mount) return true;
+    let plan: DestructivePlan;
+    try {
+      const answer = await api.planDestructive(nodeId, mount.mount_id, {
+        operation: "delete",
+        source_path: entry.path,
+      });
+      // A policy may ask a person to approve a folder delete: no plan, no
+      // confirmation here, and the approver sees the counts.
+      const pending = asPendingApproval(answer);
+      if (pending) {
+        toast.info(pendingToast(pending));
+        return true;
+      }
+      plan = answer as DestructivePlan;
+    } catch (error) {
+      if (planUnavailable(error as { code?: string; status?: number })) return false;
+      handleError(error);
+      return true;
+    }
+    try {
+      const approved = await confirm({
+        title: `Remover a pasta “${fileEntryDisplayName(entry)}”?`,
+        description: destructivePlanDescription(plan, trashDays(mount)),
+        confirmText: "Remover pasta",
+        destructive: true,
+      });
+      if (!approved) return true;
+      await api.confirmDestructive(nodeId, mount.mount_id, plan.plan_id, plan.token);
+      await Promise.all([loadFiles(currentPath), refreshJobs()]);
+      toast.success(trashDays(mount) ? "A pasta será movida para a lixeira. Acompanhe nos jobs." : "Remoção iniciada. Acompanhe o andamento nos jobs.");
+    } catch (error) {
+      handleError(error);
+    }
+    return true;
+  }
+
   async function removeEntry(entry: FileEntry) {
+    if (entry.type === "directory" && (await removeDirectory(entry))) return;
     if (
       !(await confirm({
-        title: `Remover “${entry.name}”?`,
+        title: `Remover “${fileEntryDisplayName(entry)}”?`,
+        description: removeDescription(mount),
         confirmText: "Remover",
         destructive: true,
       }))
@@ -351,14 +401,21 @@ export default function FileBrowserPage() {
       return;
     if (!mount) return;
     try {
-      await api.removeFile(
+      const answer = await api.removeFile(
         nodeId,
         mount.mount_id,
         entry.path,
         entry.type === "directory",
       );
+      // A policy may ask a person to approve the delete first; nothing was
+      // removed yet, so the listing stays as it is.
+      const pending = asPendingApproval(answer);
+      if (pending) {
+        toast.info(pendingToast(pending));
+        return;
+      }
       await Promise.all([loadFiles(currentPath), refreshJobs()]);
-      toast.success("Item removido.");
+      toast.success(removedNotice(mount));
     } catch (error) {
       handleError(error);
     }
@@ -396,6 +453,11 @@ export default function FileBrowserPage() {
         </Breadcrumb>
 
         <div className="flex items-center gap-2">
+          {trashDays(mount) > 0 && canRead && (
+            <Button variant="secondary" size="sm" onClick={() => setTrashOpen(true)}>
+              <Trash2 /> Lixeira
+            </Button>
+          )}
           {!diskUsageMode && canRead && files.length > 0 && (
             <Button
               variant="secondary"
@@ -528,6 +590,15 @@ export default function FileBrowserPage() {
         save={saveEditorContent}
         onClose={() => setEditor(null)}
         onError={handleError}
+      />
+      <TrashDialog
+        open={trashOpen}
+        nodeId={nodeId}
+        mount={mount}
+        canRestore={canCreate}
+        canPurge={hasPermission(filePolicyPath, "delete")}
+        onClose={() => setTrashOpen(false)}
+        onRestored={() => void loadFiles(currentPath)}
       />
       <ShareDialog
         entry={sharing}

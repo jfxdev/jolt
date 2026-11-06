@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
+	"github.com/jfxdev/jolt/backend/internal/signedauth"
 
 	"github.com/jfxdev/jolt/backend/internal/services/filesystem"
 	"github.com/jfxdev/jolt/backend/internal/services/jobs"
@@ -52,6 +53,19 @@ func (s *Server) createUploadSession(w http.ResponseWriter, r *http.Request) {
 	mountID := r.PathValue("mountID")
 	s.uploadAdmission.Lock()
 	defer s.uploadAdmission.Unlock()
+	uploadID := newUploadID()
+	filter := signedAccessFilter(r)
+	if filter != nil {
+		candidate := entities.UploadSession{ID: uploadID, MountID: mountID, Destination: request.Path, Overwrite: request.Overwrite}
+		if err := s.files.ValidateUploadDestinationFiltered(r.Context(), candidate, filter); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+	}
+	if err := s.cleanupRejectedUploads(r.Context(), mountID); err != nil {
+		s.fail(w, r, err)
+		return
+	}
 	if !s.admitUpload(w, r, mountID, request.Path, request.Size) {
 		return
 	}
@@ -68,10 +82,13 @@ func (s *Server) createUploadSession(w http.ResponseWriter, r *http.Request) {
 		chunkSize = s.config.CopyChunkSize
 	}
 	session := entities.UploadSession{
-		State: "open", ID: newUploadID(), MountID: mountID, Destination: request.Path,
+		State: "open", ID: uploadID, MountID: mountID, Destination: request.Path,
 		Size: request.Size, Overwrite: request.Overwrite, Checksum: request.Checksum,
 		ChunkSize: chunkSize, CorrelationID: r.Header.Get("X-Correlation-ID"),
 		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(s.config.UploadSessionTTL),
+	}
+	if binding, ok := r.Context().Value(signedUploadIdentityKey{}).(signedauth.Binding); ok {
+		session.AuthorizationActorID, session.AuthorizationCredentialID = binding.ActorID, binding.CredentialID
 	}
 	if err := s.store.CreateUploadSession(r.Context(), session); err != nil {
 		if errors.Is(err, contracts.ErrUploadSessionExists) {
@@ -103,6 +120,15 @@ func (s *Server) getUploadSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	session.Offset = offset
+	if r.Header.Get("X-Jolt-Internal-Upload-Binding") == "1" {
+		writeJSON(w, http.StatusOK, struct {
+			entities.UploadSession
+			ActorID      string `json:"authorization_actor_id"`
+			CredentialID string `json:"authorization_credential_id"`
+			Revision     uint64 `json:"authorization_revision"`
+		}{session, session.AuthorizationActorID, session.AuthorizationCredentialID, session.AuthorizationRevision})
+		return
+	}
 	writeJSON(w, http.StatusOK, session)
 }
 
@@ -112,6 +138,21 @@ func (s *Server) listUploadSessions(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	visible := sessions[:0]
+	for _, session := range sessions {
+		if session.State == "rejected" {
+			continue
+		}
+		hidden, err := s.files.IsHiddenPath(r.Context(), session.MountID, session.Destination)
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		if !hidden {
+			visible = append(visible, session)
+		}
+	}
+	sessions = visible
 	for index := range sessions {
 		if sessions[index].State == "publishing" {
 			sessions[index].Offset = sessions[index].Size
@@ -140,6 +181,13 @@ func (s *Server) appendUploadChunk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusConflict, "upload_publishing", "O upload já está em conclusão.", nil)
 		return
 	}
+	filter := signedAccessFilter(r)
+	if filter != nil {
+		if err := s.files.ValidateUploadDestinationFiltered(r.Context(), session, filter); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+	}
 	if r.ContentLength > session.ChunkSize {
 		writeError(w, r, http.StatusRequestEntityTooLarge, "upload_chunk_too_large", "O chunk excede o limite da sessão.", nil)
 		return
@@ -157,8 +205,14 @@ func (s *Server) appendUploadChunk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.jobs.ReleaseBandwidthLimiter(job.ID)
-	written, appendErr := s.files.AppendUpload(r.Context(), session.MountID, session.Destination,
-		session.ID, offset, session.Size, r.Body, s.jobs.BandwidthLimiter(job))
+	var written int64
+	var appendErr error
+	if filter != nil {
+		written, appendErr = s.files.AppendUploadFiltered(r.Context(), session, offset, r.Body, filter, s.jobs.BandwidthLimiter(job))
+	} else {
+		written, appendErr = s.files.AppendUpload(r.Context(), session.MountID, session.Destination,
+			session.ID, offset, session.Size, r.Body, s.jobs.BandwidthLimiter(job))
+	}
 	_ = s.jobs.Complete(r.Context(), &job, written-offset, appendErr)
 	if appendErr != nil {
 		var maxError *http.MaxBytesError
@@ -197,9 +251,16 @@ func (s *Server) completeUploadSession(w http.ResponseWriter, r *http.Request) {
 		writeUploadReceipt(w, session)
 		return
 	}
+	filter := signedAccessFilter(r)
 	prepared := false
 	if session.State != "publishing" {
-		digest, err := s.files.PrepareUpload(r.Context(), session)
+		var digest string
+		var err error
+		if filter != nil {
+			digest, err = s.files.PrepareUploadFiltered(r.Context(), session, filter)
+		} else {
+			digest, err = s.files.PrepareUpload(r.Context(), session)
+		}
 		if err != nil {
 			s.fail(w, r, err)
 			return
@@ -225,9 +286,26 @@ func (s *Server) completeUploadSession(w http.ResponseWriter, r *http.Request) {
 			// partial. A recovered publishing intent must still verify its digest.
 			checksum = ""
 		}
-		_, _, err = s.files.CompleteUpload(r.Context(), session.MountID, session.Destination, session.ID, session.Size, checksum, session.Overwrite)
+		if filter != nil {
+			_, _, err = s.files.CompleteUploadFiltered(r.Context(), session, checksum, filter)
+		} else {
+			_, _, err = s.files.CompleteUpload(r.Context(), session.MountID, session.Destination, session.ID, session.Size, checksum, session.Overwrite)
+		}
 	}
 	if err != nil {
+		if errors.Is(err, filesystem.ErrUploadContentRejected) {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			session.State, session.UpdatedAt = "rejected", time.Now().UTC()
+			cleanupErr := s.store.UpdateUploadSession(cleanupCtx, session)
+			if cleanupErr == nil {
+				cleanupErr = s.cleanupRejectedUpload(cleanupCtx, session)
+			}
+			cancel()
+			if cleanupErr != nil {
+				s.fail(w, r, cleanupErr)
+				return
+			}
+		}
 		s.registry.Inc("jolt_uploads_failed_total")
 		s.fail(w, r, err)
 		return
@@ -248,6 +326,12 @@ func (s *Server) abortUploadSession(w http.ResponseWriter, r *http.Request) {
 	session, ok := s.loadUploadSession(w, r)
 	if !ok {
 		return
+	}
+	if filter := signedAccessFilter(r); filter != nil {
+		if err := s.files.ValidateUploadCleanupFiltered(r.Context(), session, filter); err != nil {
+			s.fail(w, r, err)
+			return
+		}
 	}
 	if session.State == "completed" {
 		w.WriteHeader(http.StatusNoContent)
@@ -281,12 +365,71 @@ func (s *Server) loadUploadSession(w http.ResponseWriter, r *http.Request) (enti
 		writeError(w, r, http.StatusNotFound, "upload_not_found", "Upload não encontrado.", nil)
 		return entities.UploadSession{}, false
 	}
+	if session.State == "rejected" {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cleanupErr := s.cleanupRejectedUpload(cleanupCtx, session)
+		cancel()
+		if cleanupErr != nil {
+			s.fail(w, r, cleanupErr)
+			return entities.UploadSession{}, false
+		}
+		writeError(w, r, http.StatusUnprocessableEntity, "upload_content_rejected", "O conteúdo enviado foi recusado.", nil)
+		return entities.UploadSession{}, false
+	}
+	hidden, err := s.files.IsHiddenPath(r.Context(), session.MountID, session.Destination)
+	if err != nil {
+		s.fail(w, r, err)
+		return entities.UploadSession{}, false
+	}
+	if hidden {
+		writeError(w, r, http.StatusNotFound, "upload_not_found", "Upload não encontrado.", nil)
+		return entities.UploadSession{}, false
+	}
 	if !session.ExpiresAt.IsZero() && time.Now().UTC().After(session.ExpiresAt) {
 		writeError(w, r, http.StatusGone, "upload_expired",
 			"Este upload expirou. Inicie um novo envio.", nil)
 		return entities.UploadSession{}, false
 	}
 	return session, true
+}
+
+// A persisted rejection must precede removing the partial: otherwise a crash
+// could make a rejected upload look like a completed publication during recovery.
+func (s *Server) cleanupRejectedUpload(ctx context.Context, session entities.UploadSession) error {
+	if err := s.files.AbortUpload(ctx, session.MountID, session.Destination, session.ID); err != nil {
+		return err
+	}
+	if err := s.store.DeleteUploadSession(ctx, session.ID); err != nil && !errors.Is(err, contracts.ErrNotFound) {
+		return err
+	}
+	return nil
+}
+
+func (s *Server) cleanupRejectedUploads(ctx context.Context, mountID string) error {
+	sessions, err := s.store.ListUploadSessions(ctx, mountID)
+	if err != nil {
+		return err
+	}
+	for _, session := range sessions {
+		if session.State != "rejected" {
+			continue
+		}
+		unlock, err := filesystem.LockUploadSession(ctx, session.ID)
+		if err != nil {
+			return err
+		}
+		current, err := s.store.GetUploadSession(ctx, session.ID)
+		if errors.Is(err, contracts.ErrNotFound) {
+			err = nil
+		} else if err == nil && current.State == "rejected" {
+			err = s.cleanupRejectedUpload(ctx, current)
+		}
+		unlock()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // parseContentRange reads "bytes start-end/total". The end is informational:
@@ -352,6 +495,28 @@ func isHexSHA256(value string) bool {
 
 func writeUploadReceipt(w http.ResponseWriter, session entities.UploadSession) {
 	writeJSON(w, http.StatusCreated, map[string]any{"upload_id": session.ID, "destination_path": session.Destination, "size": session.Size, "checksum": session.Checksum, "state": session.State, "completed_at": session.CompletedAt})
+}
+
+func (s *Server) reauthorizeUploadSession(w http.ResponseWriter, r *http.Request) {
+	session, ok := s.loadUploadSession(w, r)
+	if !ok {
+		return
+	}
+	filter := signedAccessFilter(r)
+	binding, ok := r.Context().Value(signedUploadIdentityKey{}).(signedauth.Binding)
+	if !ok || filter == nil {
+		writeError(w, r, http.StatusForbidden, "signed_context_required", "Esta operação exige autorização assinada.", nil)
+		return
+	}
+	if err := s.files.ValidateUploadReauthorizationFiltered(r.Context(), session, filter); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if err := s.store.ReauthorizeUploadSession(r.Context(), session.ID, binding.ActorID, binding.CredentialID, binding.RequestID); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) uploadLocked(next http.HandlerFunc) http.HandlerFunc {

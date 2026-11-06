@@ -1,11 +1,13 @@
 package config
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"mime"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -14,17 +16,27 @@ import (
 	"time"
 
 	"github.com/jfxdev/jolt/backend/internal/entities"
+	"github.com/jfxdev/jolt/backend/internal/filepolicy"
 	"github.com/jfxdev/jolt/backend/internal/infra/yamlutil"
+	"github.com/jfxdev/jolt/backend/internal/signedauth"
 	"go.yaml.in/yaml/v3"
 )
 
+const (
+	DefaultTrashRetentionDays = 30
+	MaxTrashRetentionDays     = 365
+)
+
 type MountConfig struct {
-	ID        string `yaml:"id"`
-	Name      string `yaml:"name"`
-	LocalPath string `yaml:"local_path"`
-	Mode      string `yaml:"mode"`
-	Published bool   `yaml:"published"`
-	Enabled   bool   `yaml:"enabled"`
+	CanaryPaths    []string              `yaml:"canary_paths"`
+	HiddenPatterns []string              `yaml:"hidden_patterns"`
+	Trash          *entities.TrashConfig `yaml:"trash,omitempty"`
+	ID             string                `yaml:"id"`
+	Name           string                `yaml:"name"`
+	LocalPath      string                `yaml:"local_path"`
+	Mode           string                `yaml:"mode"`
+	Published      bool                  `yaml:"published"`
+	Enabled        bool                  `yaml:"enabled"`
 }
 type GrantConfig struct {
 	ID               string                    `yaml:"id"`
@@ -34,27 +46,64 @@ type GrantConfig struct {
 	Direction        string                    `yaml:"direction"`
 	Permissions      entities.GrantPermissions `yaml:"permissions"`
 	ConflictPolicies []string                  `yaml:"conflict_policies"`
+	Exclude          []string                  `yaml:"exclude"`
 	VisibleToPeer    bool                      `yaml:"visible_to_peer"`
 	Enabled          bool                      `yaml:"enabled"`
 }
+type UploadInspectionConfig struct {
+	Enabled           bool     `yaml:"enabled" json:"enabled"`
+	BlockExecutables  bool     `yaml:"block_executables" json:"block_executables"`
+	AllowedMediaTypes []string `yaml:"allowed_media_types" json:"allowed_media_types"`
+}
+
+const (
+	TLSManual  = "manual"
+	TLSManaged = "managed"
+	// TLSManagedOnly is managed, and the Control Tower is also authenticated by
+	// its client certificate alone: the shared operational token is refused.
+	TLSManagedOnly = "managed-only"
+)
+
+// Managed reports whether a certificate authority keeps this node's
+// certificates, in either managed mode.
+func (c Config) Managed() bool { return c.TLSMode == TLSManaged || c.TLSMode == TLSManagedOnly }
+
+type AuthorizationPublicKey struct {
+	ID  string `yaml:"id"`
+	Key string `yaml:"key"`
+}
+
 type Config struct {
-	Version                  int           `yaml:"version"`
-	Mounts                   []MountConfig `yaml:"mounts"`
-	TransferGrants           []GrantConfig `yaml:"transfer_grants"`
-	FilePath                 string        `yaml:"-"`
-	Revision                 string        `yaml:"-"`
-	PublicYAML               string        `yaml:"-"`
-	UploadMaxBytes           int64         `yaml:"upload_max_bytes"`
-	UploadMinFreeBytes       int64         `yaml:"upload_min_free_bytes"`
-	UploadMaxSessions        int           `yaml:"upload_max_sessions"`
-	UploadMaxReservedBytes   int64         `yaml:"upload_max_reserved_bytes"`
-	NodeName                 string        `yaml:"node_name"`
-	APIAddress               string        `yaml:"api_address"`
-	APITLSCertFile           string        `yaml:"api_tls_cert_file"`
-	APITLSKeyFile            string        `yaml:"api_tls_key_file"`
-	APITLSClientCAFile       string        `yaml:"api_tls_client_ca_file"`
-	MTLSAddress              string        `yaml:"mtls_address"`
-	MTLSPublicEndpoint       string        `yaml:"mtls_public_endpoint"`
+	AuthorizationPublicKeys []AuthorizationPublicKey     `yaml:"authorization_public_keys,omitempty"`
+	AuthorizationKeys       map[string]ed25519.PublicKey `yaml:"-" json:"-"`
+	UploadInspection        UploadInspectionConfig       `yaml:"upload_inspection"`
+	Version                 int                          `yaml:"version"`
+	Mounts                  []MountConfig                `yaml:"mounts"`
+	TransferGrants          []GrantConfig                `yaml:"transfer_grants"`
+	FilePath                string                       `yaml:"-"`
+	Revision                string                       `yaml:"-"`
+	PublicYAML              string                       `yaml:"-"`
+	UploadMaxBytes          int64                        `yaml:"upload_max_bytes"`
+	UploadMinFreeBytes      int64                        `yaml:"upload_min_free_bytes"`
+	UploadMaxSessions       int                          `yaml:"upload_max_sessions"`
+	UploadMaxReservedBytes  int64                        `yaml:"upload_max_reserved_bytes"`
+	NodeName                string                       `yaml:"node_name"`
+	APIAddress              string                       `yaml:"api_address"`
+	APITLSCertFile          string                       `yaml:"api_tls_cert_file"`
+	APITLSKeyFile           string                       `yaml:"api_tls_key_file"`
+	APITLSClientCAFile      string                       `yaml:"api_tls_client_ca_file"`
+	MTLSAddress             string                       `yaml:"mtls_address"`
+	MTLSPublicEndpoint      string                       `yaml:"mtls_public_endpoint"`
+	// TLSMode is "manual" (the default: keys and certificates are the
+	// operator's) or "managed" (the Control Tower's authority enrolls this node
+	// and keeps its certificates).
+	TLSMode string `yaml:"tls_mode"`
+	// APIPublicEndpoint is the https URL the Control Tower reaches this node's
+	// API at. It is what a managed node announces when it joins.
+	APIPublicEndpoint string `yaml:"api_public_endpoint"`
+	// JoinToken is the one-use token that enrolls a managed node; it is read
+	// from the environment and never stored.
+	JoinToken                string        `yaml:"-"`
 	DataDir                  string        `yaml:"data_dir"`
 	KeysDir                  string        `yaml:"keys_dir"`
 	ControlTowerToken        string        `yaml:"-"`
@@ -88,7 +137,7 @@ type Config struct {
 
 func (c Config) APITLSEnabled() bool { return c.APITLSCertFile != "" && c.APITLSKeyFile != "" }
 func Defaults() Config {
-	return Config{UploadMaxBytes: 100 << 30,
+	return Config{UploadMaxBytes: 100 << 30, UploadInspection: UploadInspectionConfig{BlockExecutables: true},
 		UploadMinFreeBytes:       1 << 30,
 		UploadMaxSessions:        32,
 		UploadMaxReservedBytes:   400 << 30,
@@ -143,7 +192,15 @@ func Load(paths ...string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if c.ControlTowerToken == "" {
+	c.JoinToken, err = SecretValue("JOLT_JOIN_TOKEN")
+	if err != nil {
+		return Config{}, err
+	}
+	if !c.Managed() && c.JoinToken != "" {
+		return Config{}, errors.New("JOLT_JOIN_TOKEN requires tls_mode: managed or managed-only")
+	}
+	// A managed node is given its operational token when it is enrolled.
+	if c.ControlTowerToken == "" && !c.Managed() {
 		return Config{}, errors.New("CONTROL_TOWER_TOKEN is required")
 	}
 	c.MetricsToken, err = SecretValue("METRICS_TOKEN")
@@ -178,8 +235,31 @@ func Read(file string) (Config, error) {
 	if c.Version != 1 {
 		return c, fail("version", "must be 1")
 	}
+	if len(c.AuthorizationPublicKeys) > 16 {
+		return c, fail("authorization_public_keys", "at most 16 keys are allowed")
+	}
+	c.AuthorizationKeys = make(map[string]ed25519.PublicKey, len(c.AuthorizationPublicKeys))
+	for _, entry := range c.AuthorizationPublicKeys {
+		key, decodeErr := base64.StdEncoding.Strict().DecodeString(entry.Key)
+		if !signedauth.ValidKeyID(entry.ID) || decodeErr != nil || len(key) != ed25519.PublicKeySize || c.AuthorizationKeys[entry.ID] != nil {
+			return c, fail("authorization_public_keys", "invalid or duplicate key identifier or Ed25519 public key")
+		}
+		c.AuthorizationKeys[entry.ID] = ed25519.PublicKey(key)
+	}
 	if c.UploadMaxBytes < 1 || c.UploadMaxBytes > 1<<50 {
 		return c, fail("upload_max_bytes", "value outside supported limits")
+	}
+	if len(c.UploadInspection.AllowedMediaTypes) > 64 {
+		return c, fail("upload_inspection.allowed_media_types", "at most 64 media types are allowed")
+	}
+	seenMedia := make(map[string]bool)
+	for i, value := range c.UploadInspection.AllowedMediaTypes {
+		mediaType, params, err := mime.ParseMediaType(strings.ToLower(strings.TrimSpace(value)))
+		if err != nil || len(params) != 0 || !strings.Contains(mediaType, "/") || strings.Contains(mediaType, "*") || seenMedia[mediaType] {
+			return c, fail("upload_inspection.allowed_media_types", "invalid or duplicate media type")
+		}
+		seenMedia[mediaType] = true
+		c.UploadInspection.AllowedMediaTypes[i] = mediaType
 	}
 	if c.UploadMinFreeBytes < 0 || c.UploadMinFreeBytes > 1<<50 {
 		return c, fail("upload_min_free_bytes", "value outside supported limits")
@@ -296,6 +376,25 @@ func Read(file string) (Config, error) {
 			return c, fail("mtls_public_endpoint", "must be an absolute https URL")
 		}
 	}
+	c.TLSMode = strings.ToLower(strings.TrimSpace(c.TLSMode))
+	if c.TLSMode == "" {
+		c.TLSMode = TLSManual
+	}
+	if c.TLSMode != TLSManual && !c.Managed() {
+		return c, fail("tls_mode", "must be manual, managed or managed-only")
+	}
+	c.APIPublicEndpoint = strings.TrimRight(strings.TrimSpace(c.APIPublicEndpoint), "/")
+	if c.Managed() {
+		endpoint, e := url.Parse(c.APIPublicEndpoint)
+		if e != nil || endpoint.Scheme != "https" || endpoint.Hostname() == "" || endpoint.Path != "" || endpoint.User != nil || endpoint.RawQuery != "" {
+			return c, fail("api_public_endpoint", "managed mode needs an absolute https URL such as https://node.example:8080")
+		}
+		if c.APITLSCertFile != "" || c.APITLSKeyFile != "" || c.APITLSClientCAFile != "" {
+			return c, fail("api_tls_cert_file", "managed mode issues the API certificate; remove api_tls_cert_file, api_tls_key_file and api_tls_client_ca_file")
+		}
+	} else if c.APIPublicEndpoint != "" {
+		return c, fail("api_public_endpoint", "requires tls_mode: managed or managed-only")
+	}
 	if (c.APITLSCertFile == "") != (c.APITLSKeyFile == "") {
 		return c, fail("api_tls_cert_file", "certificate and key must be set together")
 	}
@@ -312,6 +411,25 @@ func Read(file string) (Config, error) {
 	mounts := map[string]MountConfig{}
 	paths := map[string]bool{}
 	for i, m := range c.Mounts {
+		if err := filepolicy.ValidateCanaries(m.CanaryPaths); err != nil {
+			return c, fail(fmt.Sprintf("mounts[%d].canary_paths", i), err.Error())
+		}
+		if err := filepolicy.ValidatePatterns(m.HiddenPatterns); err != nil {
+			return c, fail(fmt.Sprintf("mounts[%d].hidden_patterns", i), err.Error())
+		}
+		if m.Trash != nil {
+			if m.Trash.Enabled && m.Mode != "read_write" {
+				return c, fail(fmt.Sprintf("mounts[%d].trash", i), "requires a read_write mount")
+			}
+			if m.Trash.MaxBytes < 0 || m.Trash.MaxBytes > 1<<50 {
+				return c, fail(fmt.Sprintf("mounts[%d].trash.max_bytes", i), "must be between 0 and 1 PiB")
+			}
+			if m.Trash.RetentionDays == 0 {
+				c.Mounts[i].Trash.RetentionDays = DefaultTrashRetentionDays
+			} else if m.Trash.RetentionDays < 1 || m.Trash.RetentionDays > MaxTrashRetentionDays {
+				return c, fail(fmt.Sprintf("mounts[%d].trash.retention_days", i), fmt.Sprintf("must be between 1 and %d", MaxTrashRetentionDays))
+			}
+		}
 		if !validID(m.ID) || strings.TrimSpace(m.Name) == "" {
 			return c, fail(fmt.Sprintf("mounts[%d]", i), "each mount requires a valid id and name")
 		}
@@ -398,6 +516,9 @@ func Read(file string) (Config, error) {
 		if g.Direction == "send" && len(g.ConflictPolicies) > 0 {
 			return c, fail(fmt.Sprintf("transfer_grants[%d]", i), "conflict policies apply only to receiving grants")
 		}
+		if err := filepolicy.ValidatePatterns(g.Exclude); err != nil {
+			return c, fail(fmt.Sprintf("transfer_grants[%d].exclude", i), err.Error())
+		}
 		if g.Direction != "send" && len(g.ConflictPolicies) == 0 {
 			g.ConflictPolicies = []string{"fail"}
 		}
@@ -436,12 +557,20 @@ func (c Config) Resources() ([]entities.Mount, []entities.TransferPathGrant) {
 	mounts := make([]entities.Mount, 0, len(c.Mounts))
 	grants := make([]entities.TransferPathGrant, 0, len(c.TransferGrants))
 	for _, m := range c.Mounts {
-		mounts = append(mounts, entities.Mount{ID: m.ID, Name: m.Name, LocalPath: m.LocalPath, TargetType: "directory", Mode: m.Mode, Published: m.Published, Enabled: m.Enabled})
+		mounts = append(mounts, entities.Mount{ID: m.ID, Name: m.Name, LocalPath: m.LocalPath, TargetType: "directory", Mode: m.Mode, Published: m.Published, Enabled: m.Enabled, HiddenPatterns: append([]string(nil), m.HiddenPatterns...), CanaryPaths: append([]string(nil), m.CanaryPaths...), Trash: copyTrash(m.Trash)})
 	}
 	for _, g := range c.TransferGrants {
-		grants = append(grants, entities.TransferPathGrant{ID: g.ID, PeerNodeID: g.PeerNodeID, MountID: g.MountID, Path: g.Path, Direction: g.Direction, Permissions: g.Permissions, ConflictPolicies: g.ConflictPolicies, VisibleToPeer: g.VisibleToPeer, Enabled: g.Enabled})
+		grants = append(grants, entities.TransferPathGrant{ID: g.ID, PeerNodeID: g.PeerNodeID, MountID: g.MountID, Path: g.Path, Direction: g.Direction, Permissions: g.Permissions, ConflictPolicies: g.ConflictPolicies, Exclude: g.Exclude, VisibleToPeer: g.VisibleToPeer, Enabled: g.Enabled})
 	}
 	return mounts, grants
+}
+
+func copyTrash(value *entities.TrashConfig) *entities.TrashConfig {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
 }
 
 func (c Config) ProtectedPaths() []string {

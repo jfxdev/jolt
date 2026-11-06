@@ -122,6 +122,357 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/JSONObject'}
         '400': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/subjects/{actorType}/{subjectID}/effective-access:
+    post:
+      tags: [Administration]
+      summary: What an identity can do at concrete paths
+      description: >-
+        Read-only diagnostic for administrators with `sudo` on `control-tower/policies`.
+        Evaluates up to 50 paths with the evaluators the Control Tower and the node use.
+        Typed rules treat files and directories differently, so each check names the
+        entry type the node would find. `outcome` is `allowed`, `denied` (no grant or a
+        path denial), `hidden` (a typed rule makes the file disappear) or `blocked`
+        (shown but unusable). Per-credential agent ceilings and CIDR filters are not
+        considered. The query is audited.
+      parameters:
+        - {name: actorType, in: path, required: true, schema: {type: string, enum: [user, service_account]}}
+        - {name: subjectID, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [checks]
+              properties:
+                checks:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    type: object
+                    required: [path, entry_type]
+                    properties:
+                      path: {type: string, example: nodes/n1/files/mounts/media/docs/key.pem}
+                      entry_type: {type: string, enum: [file, directory]}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/enroll:
+    post:
+      tags: [Administration]
+      summary: A node enrolls with a join token
+      description: >-
+        Public: the join token's secret is the only credential, and every way it can be wrong (unknown,
+        expired, spent, for another node name) answers the same 401 `invalid_join_token`. Five failures from
+        one address lock it out. Answers 200 with the node's certificate and the first trust bundle, or 202 with
+        a `request_id` and a `poll_secret` when a person must approve. A retry of the same request returns the
+        same answer. Answers 404 `managed_tls_disabled` unless CONTROL_TOWER_TLS_MODE=managed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object}
+      security: []
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '202': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/enroll/{enrollmentID}:
+    get:
+      tags: [Administration]
+      summary: How a pending enrollment went
+      description: >-
+        Public; the bearer credential is the `poll_secret` returned when the enrollment was started. 202 while
+        pending, 200 with the certificate once approved, 403 with the reason once rejected, 410 once expired.
+      security: []
+      parameters:
+        - {name: enrollmentID, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '202': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '410': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/enrollments/tokens:
+    post:
+      tags: [Administration]
+      summary: Create a one-use join token for a node
+      description: >-
+        Needs `sudo` on `control-tower/enrollments`. The token names this Control Tower and pins the SHA-256 of
+        its root; it is shown once and only a hash is kept. A token can ask for manual approval but never
+        weakens CONTROL_TOWER_ENROLLMENT_APPROVAL. Needs CONTROL_TOWER_PUBLIC_BASE_URL over https.
+      responses:
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+    get:
+      tags: [Administration]
+      summary: List join tokens
+      description: Needs `sudo` on `control-tower/enrollments`. Never carries a secret or its hash.
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/enrollments/tokens/{tokenID}:
+    delete:
+      tags: [Administration]
+      summary: Take back a token that was not used
+      parameters:
+        - {name: tokenID, in: path, required: true, schema: {type: string}}
+      responses:
+        '204': {description: Revoked}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/enrollments:
+    get:
+      tags: [Administration]
+      summary: List enrollments
+      description: >-
+        Needs `sudo` on `control-tower/enrollments`. Shows what each node announced, including its identity
+        fingerprint, for the administrator to compare with the one in the node's log.
+      parameters:
+        - {name: state, in: query, schema: {type: string, enum: [pending, issued, rejected, expired]}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/enrollments/{enrollmentID}/approve:
+    post:
+      tags: [Administration]
+      summary: Approve a pending enrollment
+      description: Needs `sudo` on `control-tower/enrollments`. Issues the node's certificate and registers it.
+      parameters:
+        - {name: enrollmentID, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/enrollments/{enrollmentID}/reject:
+    post:
+      tags: [Administration]
+      summary: Reject a pending enrollment
+      description: Needs `sudo` on `control-tower/enrollments`. The optional note reaches the node.
+      parameters:
+        - {name: enrollmentID, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/crypto/ca:
+    get:
+      tags: [Administration]
+      summary: Inventory of the Control Tower's own certificates and keys
+      description: >-
+        Needs `sudo` on `control-tower`. Lists the root, the intermediates, the HTTPS certificate and the
+        context-signing keys with their issuer state and dates, plus the root fingerprint a person compares
+        before installing the root. Never carries a private key. Answers 404 `managed_tls_disabled` unless
+        CONTROL_TOWER_TLS_MODE=managed.
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/crypto/trust-bundle:
+    get:
+      tags: [Administration]
+      summary: The signed trust bundle nodes adopt
+      description: >-
+        Needs `sudo` on `control-tower`. Roots, intermediates, signing keys and revoked serials, signed by a
+        key the previous bundle listed. A node accepts a bundle only if its version is higher and the signer
+        was already trusted.
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/crypto/authorization-keys:
+    get:
+      tags: [Administration]
+      summary: Public signing keys, ready for a node's YAML
+      description: >-
+        Needs `sudo` on `control-tower`. Returns the public keys that sign authorization contexts and the
+        `authorization_public_keys` block a node configured by hand takes.
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/crypto/revocations:
+    get:
+      tags: [Administration]
+      summary: Serials the trust bundle revokes
+      description: >-
+        Needs `sudo` on `control-tower`. Each item names the serial, what it was, why and when it was revoked, and
+        when the certificate ends anyway (the serial leaves the bundle a day after that).
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    post:
+      tags: [Administration]
+      summary: Revoke a certificate the authority issued
+      description: >-
+        Needs `sudo` on `control-tower`. Name the certificate by `serial` or by the `node_id` whose API certificate
+        it is, never both. The serial joins the next signed bundle, which the Control Tower pushes to every enrolled
+        node; a certificate of the Control Tower's own that is revoked is replaced in the same pass. A node whose
+        certificate is revoked is no longer reached and must be enrolled again. The intermediate in use cannot be
+        revoked here (409 `use_rotation`), and a root is never revoked (409 `root_not_revocable`). Revoking a serial
+        that is already revoked changes nothing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                serial: {type: string, description: Lowercase hexadecimal}
+                node_id: {type: string}
+                reason: {type: string, maxLength: 200}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/crypto/ca/intermediate/rotate:
+    post:
+      tags: [Administration]
+      summary: Issue a new intermediate and make it the one that signs
+      description: >-
+        Needs `sudo` on `control-tower` and the root key in the database (409 `root_unavailable` otherwise). Without
+        `revoke_previous` the old intermediate stays in the bundle until it expires, as in a planned renewal; at most
+        two intermediates fit (409 `intermediate_limit`). With it, every earlier intermediate is revoked and leaves
+        the bundle at once: the answer to a leaked issuing key. The Control Tower reissues its own certificates in the
+        same pass and replaces every node's API certificate at its next sync.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                revoke_previous: {type: boolean, default: false}
+                reason: {type: string}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/crypto/ca/root/rotate:
+    post:
+      tags: [Administration]
+      summary: Start a root rotation by publishing the next root
+      description: >-
+        Needs `sudo` on `control-tower`. Creates the next root and puts it in the bundle beside the active one;
+        nothing is signed by it yet, so no node or browser has to change. People install it from `/ca`, then
+        `ca/root/promote` makes the Control Tower use it. 409 `rotation_busy` while another rotation is under way.
+      responses:
+        '202': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/crypto/ca/root/promote:
+    post:
+      tags: [Administration]
+      summary: Make the next root the one that signs
+      description: >-
+        Needs `sudo` on `control-tower`. Refused (409 `nodes_behind`) while an enrolled node has not confirmed the
+        bundle that carries the next root, because that node would stop trusting the Control Tower; `force` promotes
+        anyway, and the nodes left behind must be enrolled again. From then on the HTTPS and client certificates and
+        every node's API certificate are signed under the new chain, and the previous root leaves the bundle by
+        itself once every node holds the bundle and a certificate from the new chain.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                force: {type: boolean, default: false}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/pending-operations:
+    get:
+      tags: [Administration]
+      summary: List requests waiting for, or past, a human decision
+      description: >-
+        Needs `list` on `control-tower/approvals`; `mine=true` lists only the caller's own
+        requests. Answers 404 `approvals_disabled` unless CONTROL_TOWER_APPROVALS is on.
+      parameters:
+        - {name: state, in: query, schema: {type: string, enum: [pending, executing, executed, failed, rejected, expired, indeterminate]}}
+        - {name: mine, in: query, schema: {type: boolean}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/pending-operations/{operationID}:
+    get:
+      tags: [Administration]
+      summary: One request waiting for a decision
+      description: The requester may read their own request; anyone else needs `list` on `control-tower/approvals`.
+      parameters:
+        - {name: operationID, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/pending-operations/{operationID}/approve:
+    post:
+      tags: [Administration]
+      summary: Approve a waiting request and run it
+      description: >-
+        A person (never an API key or agent) with `sudo` on `control-tower/approvals`. The
+        stored request is replayed as the approver, with the approver's own current
+        permissions, after the requester's are checked again; a request the approver may not
+        make fails. Approving your own request needs `acknowledge_self_approval`. Repeating
+        the call returns the stored result with `replayed: true` and never runs it twice. A
+        request not decided within five minutes expires (410).
+      parameters:
+        - {name: operationID, in: path, required: true, schema: {type: string}}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                acknowledge_self_approval: {type: boolean}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '410': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/pending-operations/{operationID}/reject:
+    post:
+      tags: [Administration]
+      summary: Reject a waiting request
+      parameters:
+        - {name: operationID, in: path, required: true, schema: {type: string}}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: {type: string, maxLength: 256}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/about:
     get:
       tags: [System]
@@ -176,13 +527,26 @@ paths:
         '200': {$ref: '#/components/responses/JSONObject'}
     post:
       tags: [Administration]
-      summary: Create a service account and optionally its first API key
-      description: A plaintext API key is returned only at issuance. Store it immediately.
-      requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
+      summary: Create a service account and its first API key
+      description: A plaintext API key is returned only at issuance. Agent credentials default to 30 days and have mandatory usage limits.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ServiceAccountInput'}
       responses:
         '201': {$ref: '#/components/responses/JSONObject'}
         '400': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/service-accounts/disable:
+    post:
+      tags: [Administration]
+      summary: Disable all agent accounts and cancel their active requests
+      parameters:
+        - {name: kind, in: query, schema: {type: string, enum: [agent]}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/service-accounts/{serviceAccountID}:
     parameters: [{$ref: '#/components/parameters/ServiceAccountID'}]
     patch:
@@ -215,6 +579,64 @@ paths:
         '201': {$ref: '#/components/responses/JSONObject'}
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/service-accounts/{serviceAccountID}/workload-identities:
+    parameters: [{$ref: '#/components/parameters/ServiceAccountID'}]
+    get:
+      tags: [Administration]
+      summary: List workload identity mappings for a service account
+      responses:
+        '200':
+          description: Mappings and credential limits; no bearer tokens
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/WorkloadIdentity'}}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    post:
+      tags: [Administration]
+      summary: Create an explicit workload identity mapping
+      description: The provider must be configured. Creating a mapping does not yet enable JWT authentication.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WorkloadIdentityInput'}
+      responses:
+        '201':
+          description: Created mapping with a stable credential ID
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WorkloadIdentity'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/service-accounts/{serviceAccountID}/workload-identities/{credentialID}:
+    parameters:
+      - {$ref: '#/components/parameters/ServiceAccountID'}
+      - {name: credentialID, in: path, required: true, schema: {type: string}}
+    patch:
+      tags: [Administration]
+      summary: Enable or disable a mapping while preserving its credential quota
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: {type: boolean}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/service-accounts/{serviceAccountID}/tokens/{tokenID}:
     parameters:
       - {$ref: '#/components/parameters/ServiceAccountID'}
@@ -224,6 +646,22 @@ paths:
       summary: Revoke one API key immediately
       responses:
         '204': {$ref: '#/components/responses/NoContent'}
+        '404': {$ref: '#/components/responses/Error'}
+    patch:
+      tags: [Administration]
+      summary: Update one agent credential's limits and cancel its active requests
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_limits]
+              properties:
+                agent_limits: {$ref: '#/components/schemas/AgentLimits'}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/access-groups:
     get:
@@ -265,7 +703,7 @@ paths:
     put:
       tags: [Administration]
       summary: Replace the node allow-list
-      requestBody: {$ref: '#/components/requestBodies/StringIDs'}
+      requestBody: {$ref: '#/components/requestBodies/AccessGroupIDs'}
       responses:
         '200': {$ref: '#/components/responses/JSONObject'}
         '400': {$ref: '#/components/responses/Error'}
@@ -279,7 +717,7 @@ paths:
     put:
       tags: [Administration]
       summary: Replace policy assignments
-      requestBody: {$ref: '#/components/requestBodies/StringIDs'}
+      requestBody: {$ref: '#/components/requestBodies/AccessGroupIDs'}
       responses:
         '200': {$ref: '#/components/responses/JSONObject'}
         '400': {$ref: '#/components/responses/Error'}
@@ -366,6 +804,29 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/JSONObject'}
         '400': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/users/{userID}/policies/temporary:
+    parameters: [{$ref: '#/components/parameters/UserID'}]
+    get:
+      tags: [Administration]
+      summary: List active temporary user policy assignments
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+    post:
+      tags: [Administration]
+      summary: Grant or renew a temporary user policy
+      requestBody: {$ref: '#/components/requestBodies/TemporaryPolicy'}
+      responses:
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/users/{userID}/policies/temporary/{policyID}:
+    parameters: [{$ref: '#/components/parameters/UserID'}, {$ref: '#/components/parameters/PolicyID'}]
+    delete:
+      tags: [Administration]
+      summary: Revoke a temporary user policy
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '404': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/users/{userID}/roles:
     parameters: [{$ref: '#/components/parameters/UserID'}]
     get:
@@ -394,6 +855,30 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/JSONObject'}
         '400': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/service-accounts/{serviceAccountID}/policies/temporary:
+    parameters: [{$ref: '#/components/parameters/ServiceAccountID'}]
+    get:
+      tags: [Administration]
+      summary: List active temporary service-account policy assignments
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+    post:
+      tags: [Administration]
+      summary: Grant or renew a temporary service-account policy
+      description: Agent profiles remain read-only regardless of the granted policy.
+      requestBody: {$ref: '#/components/requestBodies/TemporaryPolicy'}
+      responses:
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/service-accounts/{serviceAccountID}/policies/temporary/{policyID}:
+    parameters: [{$ref: '#/components/parameters/ServiceAccountID'}, {$ref: '#/components/parameters/PolicyID'}]
+    delete:
+      tags: [Administration]
+      summary: Revoke a temporary service-account policy
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        '404': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/service-accounts/{serviceAccountID}/groups:
     parameters: [{$ref: '#/components/parameters/ServiceAccountID'}]
     get:
@@ -413,15 +898,28 @@ paths:
     get:
       tags: [Administration]
       summary: Query audit events with cursor pagination
+      description: Use format=ndjson and after to export events in ascending order; X-Jolt-Next-After supplies the next cursor. When the hash chain has been enabled, new events include chain_data and chain_hash, and NDJSON checkpoint headers identify the chain boundary.
       parameters:
         - {name: before_id, in: query, schema: {type: integer, format: int64, minimum: 1}}
-        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+        - {name: after, in: query, schema: {type: integer, format: int64, minimum: 0}}
+        - {name: format, in: query, schema: {type: string, enum: [json, ndjson]}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500}}
         - {name: actor_type, in: query, schema: {type: string, enum: [user, service_account]}}
         - {name: action, in: query, schema: {type: string}}
         - {name: result, in: query, schema: {type: string, enum: [allowed, denied]}}
         - {name: correlation_id, in: query, schema: {type: string}}
       responses:
-        '200': {$ref: '#/components/responses/JSONObject'}
+        '200':
+          description: Audit events as JSON or newline-delimited JSON
+          headers:
+            X-Jolt-Next-After: {schema: {type: integer, format: int64}, description: Cursor for the next NDJSON page}
+            X-Jolt-Checkpoint-ID: {schema: {type: integer, format: int64}, description: Last retained chain checkpoint event ID}
+            X-Jolt-Checkpoint-Hash: {schema: {type: string}, description: SHA-256 hash at the checkpoint}
+            X-Jolt-Checkpoint-Reason: {schema: {type: string, enum: [activation, retention]}}
+            X-Jolt-Has-More: {schema: {type: boolean}}
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/JSONObject'}}
+            application/x-ndjson: {schema: {type: string}}
         '400': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/nodes:
@@ -579,6 +1077,74 @@ paths:
         '200': {$ref: '#/components/responses/JSONObject'}
         '400': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/mounts/{mountID}/files/destructive-plans:
+    post:
+      tags: [Node proxy]
+      summary: Plan the deletion or move of a directory tree
+      description: |
+        Available when the Control Tower runs signed local jobs. With that mode on,
+        deleting recursively or moving a directory through the direct routes answers
+        409 plan_required; use this plan and its confirmation instead. The node
+        inspects the tree (files, directories, bytes and an identity digest) and
+        records a five-minute plan for the current actor. The response carries the
+        one-use confirmation token once. Permissions are the same as for the direct
+        operation, including the refusal when a deny rule sits inside the tree. When a
+        grant needs a person's approval (CONTROL_TOWER_APPROVALS) the answer is 202
+        with a `pending_operation_id` and the counts instead of a plan: the token is
+        withheld, and the approver plans and confirms again as themselves.
+      parameters:
+        - {$ref: '#/components/parameters/NodeID'}
+        - {$ref: '#/components/parameters/MountID'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operation, source_path]
+              properties:
+                operation: {type: string, enum: [delete, move]}
+                source_path: {type: string}
+                destination_path: {type: string}
+                overwrite: {type: boolean, description: Only for move; replaces an existing destination directory, whose contents are pinned by the plan}
+      responses:
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '202': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/mounts/{mountID}/files/destructive-plans/{planID}/confirm:
+    post:
+      tags: [Node proxy]
+      summary: Confirm a destructive plan and start its job
+      description: |
+        Consumes the plan's token and creates a job bound to the caller's current
+        authorization, renewed while it runs. Before changing anything the node
+        inspects the tree again; if it no longer matches the plan the job fails
+        with tree_changed and nothing is touched, and a new plan is needed. A
+        removal interrupted midway is not resumed and cannot be undone. Repeating
+        the same Idempotency-Key returns the same job; the plan token is never
+        returned. If the caller lost permission since the plan, 403 and the job is
+        canceled.
+      parameters:
+        - {$ref: '#/components/parameters/NodeID'}
+        - {$ref: '#/components/parameters/MountID'}
+        - {name: planID, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: {type: string}
+      responses:
+        '202': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
   /api/v1/nodes/{nodeID}/transfers/plan:
     post:
       tags: [Transfers]
@@ -599,6 +1165,19 @@ paths:
       tags: [Transfers]
       summary: Create an idempotent durable logical transfer
       description: |
+        With signed local jobs enabled, a copy is planned by the destination node
+        under the caller's current policy and runs only while its authorization is
+        renewed: entries the policy hides are left out and reported as a count, and
+        the job id is derived from the actor and the Idempotency-Key. A move needs
+        its preview first: the plan response carries move_plan (plan_id and a
+        one-use token) and creating the move must send it back as move_plan,
+        otherwise 422 plan_required. The node refuses the move when anything it
+        previewed changed (409 tree_changed) or when part of the selection is
+        hidden from the caller (409 move_incomplete). The direct pull routes
+        answer 409 use_logical_transfer. When a source or destination grant needs a
+        person's approval (CONTROL_TOWER_APPROVALS), the creation answers 202 with a
+        `pending_operation_id` and the preview's counts instead of a job; the approver
+        previews and creates it again under their own policy.
         Idempotency-Key is required (1–512 characters). Repeating the same key
         and logical payload returns the existing job. Reusing the key with a
         different payload returns 409 idempotency_conflict. Records are durable;
@@ -632,7 +1211,7 @@ paths:
     post:
       tags: [Shares]
       summary: Create a read-only public share
-      description: The token is returned exactly once. Every later access re-evaluates the creator's RBAC on the shared path.
+      description: The token is returned exactly once. Every later access re-evaluates the creator's RBAC. Automation shares bind the issuing credential and recheck account status, credential revocation and expiry, and group membership; credential identifiers are not returned.
       requestBody:
         required: true
         content:
@@ -710,7 +1289,7 @@ paths:
     get:
       tags: [Shares]
       summary: Download public shared content
-      description: Every content request, including Range requests, consumes download budget. A zero max_downloads means no download-count limit.
+      description: Every successful content response, including Range responses, consumes download budget atomically before bytes are sent. A zero max_downloads means no download-count limit. Failed node or authorization checks do not consume the budget.
       security: []
       parameters:
         - {name: path, in: query, schema: {type: string}}
@@ -735,6 +1314,95 @@ paths:
         '401': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '410': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/mounts/{mountID}/trash:
+    get:
+      tags: [Node proxy]
+      summary: List what a mount's trash keeps
+      description: >-
+        For mounts with trash enabled in node.yaml, where a delete moves the entry for the configured
+        retention. Handled by the Control Tower, never passed through: only entries the caller could
+        read at their original path are listed, and agents get 403 `trash_not_for_agents`. Answers 409
+        `node_upgrade_required` when the node lacks `trash_v1`.
+      parameters:
+        - {name: nodeID, in: path, required: true, schema: {type: string}}
+        - {name: mountID, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/mounts/{mountID}/trash/{trashID}:
+    get:
+      tags: [Node proxy]
+      summary: Read one kept entry
+      description: Needs `read` at the entry's original path; otherwise it answers 404 as if the entry did not exist.
+      parameters:
+        - {name: nodeID, in: path, required: true, schema: {type: string}}
+        - {name: mountID, in: path, required: true, schema: {type: string}}
+        - {name: trashID, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '404': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [Node proxy]
+      summary: Purge a kept entry for good
+      description: Needs `delete` at the entry's original path. A grant marked `needs_approval` is refused here.
+      parameters:
+        - {name: nodeID, in: path, required: true, schema: {type: string}}
+        - {name: mountID, in: path, required: true, schema: {type: string}}
+        - {name: trashID, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/mounts/{mountID}/trash/{trashID}/restore:
+    post:
+      tags: [Node proxy]
+      summary: Put a kept entry back where it was
+      description: >-
+        Needs `create` at the entry's original path. Never overwrites: 409 when the name is taken, 404 when
+        the folder it was in is gone, 422 `hidden_name` when the name has since become hidden.
+      parameters:
+        - {name: nodeID, in: path, required: true, schema: {type: string}}
+        - {name: mountID, in: path, required: true, schema: {type: string}}
+        - {name: trashID, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/mounts/{mountID}/files/content:
+    parameters:
+      - {$ref: '#/components/parameters/NodeID'}
+      - {$ref: '#/components/parameters/MountID'}
+      - {name: path, in: query, required: true, schema: {type: string}}
+    get:
+      tags: [Node proxy]
+      summary: Read file content
+      responses:
+        '200': {$ref: '#/components/responses/Binary'}
+        '206': {$ref: '#/components/responses/Binary'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    put:
+      tags: [Node proxy]
+      summary: Upload file content
+      description: Requires create and, when overwriting, update on the final destination. When signed uploads are enabled, the context binds the destination, query options and idempotency key, and the upload must complete before expiration.
+      parameters:
+        - {name: overwrite, in: query, schema: {type: boolean}}
+        - {name: editor, in: query, schema: {type: boolean}}
+        - {name: Idempotency-Key, in: header, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '201': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
   /api/v1/nodes/{nodeID}/mounts/{mountID}/files/uploads:
     parameters:
       - {$ref: '#/components/parameters/NodeID'}
@@ -748,7 +1416,7 @@ paths:
     post:
       tags: [Node proxy]
       summary: Open a resumable upload session
-      description: The Control Tower authorizes the persisted mount and destination. Chunk offsets are durable on the node; the browser must reselect the same source file after reload.
+      description: The Control Tower authorizes the mount and destination, requiring create and, for overwrite, update. With signed uploads enabled the exact admission body and credential are bound to the session. Existing unbound sessions and sessions from another login require explicit reauthorization before resumption. Chunk offsets are durable on the node; the browser must reselect the same source file after reload.
       requestBody: {$ref: '#/components/requestBodies/JSONObjectRequired'}
       responses:
         '201': {$ref: '#/components/responses/JSONObject'}
@@ -772,7 +1440,7 @@ paths:
     patch:
       tags: [Node proxy]
       summary: Append one chunk at the durable offset
-      description: Send Content-Range with the exact current offset. Authorization is resolved from the persisted session, not a client-supplied path.
+      description: Send Content-Range with the exact current offset. Authorization is resolved from the persisted session, not a client-supplied path. Signed sessions require the same actor and credential and expire within 30 seconds per request.
       parameters:
         - {name: Content-Range, in: header, required: true, schema: {type: string, example: 'bytes 0-16777215/33554432'}}
       requestBody:
@@ -790,6 +1458,7 @@ paths:
     delete:
       tags: [Node proxy]
       summary: Abort a resumable upload and remove its partial
+      description: Signed sessions require current authorization by the bound actor and credential.
       responses:
         '204': {$ref: '#/components/responses/NoContent'}
         '403': {$ref: '#/components/responses/Error'}
@@ -802,10 +1471,25 @@ paths:
     post:
       tags: [Node proxy]
       summary: Verify and atomically publish a completed upload
-      description: The destination is the one persisted with the session. A repeat may return the durable completion receipt; it must not require reupload.
+      description: The destination is the one persisted with the session. A repeat may return the durable completion receipt; it must not require reupload. Optional node upload inspection can reject content and remove the partial and session before publishing.
       responses:
         '200': {$ref: '#/components/responses/JSONObject'}
         '201': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/mounts/{mountID}/files/uploads/{uploadID}/authorize:
+    parameters:
+      - {$ref: '#/components/parameters/NodeID'}
+      - {$ref: '#/components/parameters/MountID'}
+      - {$ref: '#/components/parameters/UploadID'}
+    post:
+      tags: [Node proxy]
+      summary: Explicitly reauthorize a resumable upload session
+      description: Revalidates current permissions and the persisted destination. A session already bound to an actor can only be reauthorized for that actor; a stale authorization cannot replace a newer credential.
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
         '403': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
@@ -839,13 +1523,16 @@ paths:
     get:
       tags: [Node proxy]
       summary: Authorized GET proxy to the node API
-      description: The exact node OpenAPI is available from the authenticated node at /openapi.yaml. The proxy validates resource and RBAC before forwarding and injects the operational token only server-side.
+      description: The exact node OpenAPI is available from the authenticated node at /openapi.yaml. The proxy validates resource and RBAC before forwarding and injects the operational token only server-side. Agent searches require a compatible node and are limited to 200 results, 10000 examined entries, depth 16 and 10 seconds; partial responses report truncated and truncated_reason. Agent file listings and search entries include a sanitized display_name; name and path remain canonical and can contain unsafe display characters. Agent content and ZIP reads require a compatible node and scan the first 64 KiB of each file before serving; detected secrets return secret_detected.
       responses:
         '200': {$ref: '#/components/responses/ProxyResult'}
         '206': {$ref: '#/components/responses/Binary'}
         '400': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
         '502': {$ref: '#/components/responses/Error'}
     post:
       tags: [Node proxy]
@@ -943,6 +1630,26 @@ components:
               type: array
               items: {type: string}
             example: {policy_ids: [pol_reader]}
+    AccessGroupIDs:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ids]
+            additionalProperties: false
+            properties:
+              ids: {type: array, maxItems: 100, items: {type: string}}
+    TemporaryPolicy:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [policy_id]
+            properties:
+              policy_id: {type: string}
+              duration_seconds: {type: integer, minimum: 1, maximum: 3600, default: 900}
     ProxyBody:
       required: false
       content:
@@ -954,6 +1661,52 @@ components:
     JSONObject:
       type: object
       additionalProperties: true
+    AgentLimits:
+      type: object
+      required: [requests_per_minute, burst, max_concurrent, max_response_bytes, daily_bytes]
+      properties:
+        requests_per_minute: {type: integer, minimum: 1, maximum: 60000, default: 60}
+        burst: {type: integer, minimum: 1, maximum: 10000, default: 10}
+        max_concurrent: {type: integer, minimum: 1, maximum: 32, default: 2}
+        max_response_bytes: {type: integer, format: int64, minimum: 1024, maximum: 1073741824, default: 16777216}
+        daily_bytes: {type: integer, format: int64, minimum: 1024, default: 1073741824}
+        allowed_cidrs: {type: array, maxItems: 64, items: {type: string}, description: Empty allows any source address}
+        read_media_types: {type: array, maxItems: 64, uniqueItems: true, items: {type: string, example: text/plain}, description: Empty allows all media types. Exact types only; archive downloads and multipart ranges are refused while this restriction is active.}
+        capabilities: {type: array, maxItems: 2, uniqueItems: true, items: {type: string, enum: [list, read]}, description: Optional capability ceiling. Omitted permits list and read; an empty array permits neither. Policies remain required.}
+        request_deletes: {type: boolean, default: false, description: 'The credential may send a DELETE for a file and have it kept for a person to approve. It still cannot delete: only a rule of the account that needs approval covers it, and CONTROL_TOWER_APPROVALS must be on.'}
+    WorkloadIdentityInput:
+      type: object
+      required: [provider_id, issuer, subject, audience]
+      properties:
+        provider_id: {type: string}
+        issuer: {type: string, description: Empty for JWT-SVID providers}
+        subject: {type: string}
+        audience: {type: string}
+        agent_limits: {$ref: '#/components/schemas/AgentLimits'}
+    WorkloadIdentity:
+      allOf:
+        - {$ref: '#/components/schemas/WorkloadIdentityInput'}
+        - type: object
+          required: [credential_id, service_account_id, enabled, revoked, created_at, updated_at]
+          properties:
+            credential_id: {type: string}
+            service_account_id: {type: string}
+            enabled: {type: boolean}
+            revoked: {type: boolean}
+            created_at: {type: string, format: date-time}
+            updated_at: {type: string, format: date-time}
+    ServiceAccountInput:
+      type: object
+      required: [name, group_ids]
+      properties:
+        name: {type: string}
+        description: {type: string}
+        enabled: {type: boolean}
+        kind: {type: string, enum: [automation, agent], default: automation, description: Immutable after creation}
+        group_ids: {type: array, items: {type: string}}
+        token_name: {type: string}
+        expires_at: {type: [string, 'null'], format: date-time}
+        agent_limits: {$ref: '#/components/schemas/AgentLimits'}
     BuildInfo:
       type: object
       required: [version, commit, build_date]
@@ -961,6 +1714,13 @@ components:
         version: {type: string, example: '2026-10-29'}
         commit: {type: string, example: 0123456789abcdef0123456789abcdef01234567}
         build_date: {type: string, example: '2026-10-29T12:00:00Z'}
+        features:
+          type: object
+          description: Optional behaviours this Control Tower was started with.
+          properties:
+            typed_policies: {type: boolean, description: 'True when policy rules may restrict by file type (CONTROL_TOWER_TYPED_POLICIES).'}
+            approvals: {type: boolean, description: 'True when rules may require human approval (CONTROL_TOWER_APPROVALS).'}
+            managed_tls: {type: boolean, description: 'True when the Control Tower runs its own certificate authority (CONTROL_TOWER_TLS_MODE=managed).'}
     Health:
       type: object
       required: [status]
@@ -1033,6 +1793,30 @@ components:
                 items:
                   type: string
                   enum: [read, list, create, update, delete, write, execute, sudo, deny]
+              file_types:
+                type: object
+                description: |
+                  Restricts the rule to files of these types. Accepted only when the Control Tower
+                  runs with typed policies enabled; otherwise the policy is refused. The node
+                  decides the real type of each entry. Directories are never filtered by type,
+                  so a typed allow keeps them navigable. A typed deny may list the capabilities
+                  it takes away; a path deny (no file_types) stands alone.
+                properties:
+                  classes: {type: array, items: {type: string, enum: [video, audio, image, document, archive, executable, secret]}}
+                  extensions: {type: array, items: {type: string}, description: Without the dot, case-insensitive}
+                  names: {type: array, items: {type: string}, description: Exact base names}
+              visibility:
+                type: string
+                enum: [hidden, visible]
+                description: Only with file_types. hidden (default) answers 404 and omits the entry; visible lists it and answers 403.
+              needs_approval:
+                type: array
+                items: {type: string, enum: [delete, update]}
+                description: |
+                  Capabilities this rule grants only once a person approves each request.
+                  Accepted only when the Control Tower runs with approvals enabled. Each one
+                  must be granted by the rule; not allowed on a deny or a typed rule. Where a
+                  request cannot be kept for approval the capability is refused, never granted.
     CreateShare:
       type: object
       required: [node_id, mount_id, path]

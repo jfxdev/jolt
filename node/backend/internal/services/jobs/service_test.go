@@ -563,6 +563,9 @@ func TestSourceChangePoliciesFailOrRetryWithFreshManifestData(t *testing.T) {
 			if _, err := service.Start(runContext, 1); err != nil {
 				t.Fatal(err)
 			}
+			if _, err := service.Resume(context.Background(), job.ID); err != nil {
+				t.Fatal(err)
+			}
 			expected := "completed_with_warnings"
 			if policy == "retry" {
 				expected = "completed"
@@ -805,15 +808,34 @@ func TestStartMarksPreviouslyRunningJobWaitingValidation(t *testing.T) {
 	}
 }
 
-func TestWaitingMountWakesAutomaticallyWithoutConsumingAttempt(t *testing.T) {
+func TestStartDoesNotExecutePreviouslyQueuedJobWithoutValidation(t *testing.T) {
 	service, files, mountID := testService(t)
-	service.ConfigureMountCheckInterval(10 * time.Millisecond)
-	job, _, err := service.Create(context.Background(), CreateRequest{
-		Type: "mkdir", MountID: mountID, Destination: "after-recovery",
-	}, "")
+	job, _, err := service.Create(context.Background(), CreateRequest{Type: "mkdir", MountID: mountID, Destination: "queued-before-restart"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	recovered, err := service.Start(ctx, 1)
+	if err != nil || recovered != 1 {
+		t.Fatalf("recovered=%d err=%v", recovered, err)
+	}
+	job, err = service.Get(context.Background(), job.ID)
+	if err != nil || job.State != "waiting_validation" {
+		t.Fatalf("job=%+v err=%v", job, err)
+	}
+	if _, err := files.Metadata(context.Background(), mountID, "queued-before-restart"); !errors.Is(err, filesystem.ErrNotFound) {
+		t.Fatalf("job executed before validation: %v", err)
+	}
+	if _, err := service.Resume(context.Background(), job.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, service, job.ID, "completed")
+}
+
+func TestWaitingMountWakesAutomaticallyWithoutConsumingAttempt(t *testing.T) {
+	service, files, mountID := testService(t)
+	service.ConfigureMountCheckInterval(10 * time.Millisecond)
 	mount, err := files.GetMount(context.Background(), mountID)
 	if err != nil {
 		t.Fatal(err)
@@ -825,6 +847,12 @@ func TestWaitingMountWakesAutomaticallyWithoutConsumingAttempt(t *testing.T) {
 	runContext, stop := context.WithCancel(context.Background())
 	defer stop()
 	if _, err := service.Start(runContext, 1); err != nil {
+		t.Fatal(err)
+	}
+	job, _, err := service.Create(context.Background(), CreateRequest{
+		Type: "mkdir", MountID: mountID, Destination: "after-recovery",
+	}, "")
+	if err != nil {
 		t.Fatal(err)
 	}
 	waiting := waitForState(t, service, job.ID, "waiting_mount")

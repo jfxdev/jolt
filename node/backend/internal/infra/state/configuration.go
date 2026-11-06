@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"github.com/jfxdev/jolt/backend/internal/contracts"
 	"github.com/jfxdev/jolt/backend/internal/entities"
+	"github.com/jfxdev/jolt/backend/internal/filepolicy"
 	"golang.org/x/sys/unix"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -255,6 +257,13 @@ func (check grantCheck) effective() entities.TransferPathGrant {
 	g, m := check.grant, check.mount
 	if !check.checkPath {
 		return g
+	}
+	for _, part := range strings.Split(filepath.ToSlash(g.Path), "/") {
+		if part != "." && (filepolicy.Internal(part) || filepolicy.Hidden(m.HiddenPatterns, part)) {
+			g.Enabled = false
+			g.InactiveReason = "path_unavailable"
+			return g
+		}
 	}
 	root, e := filepath.EvalSymlinks(m.LocalPath)
 	if e != nil || root != m.LocalPath {

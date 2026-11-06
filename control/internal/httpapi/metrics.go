@@ -24,10 +24,21 @@ func registerControlMetrics(registry *metrics.Registry) {
 		"Authorization decisions that denied a request.", "capability")
 	registry.Counter("jolt_control_node_proxy_total",
 		"Proxied node calls by node and outcome.", "node_id", "result")
+	registry.Counter("jolt_control_agent_requests_total", "Agent requests by account and outcome (bounded to 1024 accounts).", "actor", "result")
+	registry.Counter("jolt_control_agent_bytes_out_total", "Agent response bytes by account (bounded to 1024 accounts).", "actor")
+	registry.Counter("jolt_control_agent_limited_total", "Agent requests rejected by rate, concurrency or daily quota.", "actor", "reason")
+	registry.Counter("jolt_control_canary_total", "Canary access attempts by account (bounded to 1024 actors).", "actor")
 	registry.Counter("jolt_control_shares_created_total", "Public share links created.")
 	registry.Counter("jolt_control_shares_revoked_total", "Public share links revoked.")
 	registry.Counter("jolt_control_share_downloads_total", "Downloads served through share links.")
 	registry.Counter("jolt_control_share_unlock_failures_total", "Wrong passwords on share links.")
+	registry.Gauge("jolt_certificate_expiry_seconds",
+		"Seconds until the soonest active certificate or key of each kind ends (managed TLS only).", "kind")
+	registry.Gauge("jolt_trust_bundle_version", "Version of the trust bundle nodes are told to adopt (managed TLS only).")
+	registry.Gauge("jolt_root_key_in_database", "1 while the root key is stored in the database, 0 once it was exported (managed TLS only).")
+	registry.Gauge("jolt_managed_nodes", "Nodes the Control Tower's certificate authority enrolled.")
+	registry.Gauge("jolt_managed_node_bundle_lag", "Versions the most outdated enrolled node is behind the published trust bundle.")
+	registry.Gauge("jolt_managed_node_certificate_expiry_seconds", "Seconds until the soonest API certificate of an enrolled node ends.")
 	registry.GaugeFunc("jolt_control_info",
 		"Always 1; present so a scrape confirms the Control Tower is up.",
 		func() float64 { return 1 })
@@ -74,6 +85,9 @@ type statusRecorder struct {
 	status int
 	wrote  bool
 }
+
+// Unwrap lets ResponseController reach the real connection for deadlines.
+func (w *statusRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *statusRecorder) WriteHeader(status int) {
 	if !w.wrote {
