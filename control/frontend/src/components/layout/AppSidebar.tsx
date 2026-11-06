@@ -97,7 +97,8 @@ export function AppSidebar() {
     hasPermission("control-tower/access-groups", "sudo") ||
     hasPermission("control-tower/roles", "sudo") ||
     hasPermission("control-tower/policies", "sudo") ||
-    hasPermission("control-tower/approvals", "list");
+    hasPermission("control-tower/approvals", "list") ||
+    hasPermission("control-tower/crypto", "sudo");
   const canIdentity =
     hasPermission("control-tower/users", "sudo") ||
     hasPermission("control-tower/service-accounts", "sudo");

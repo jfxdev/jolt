@@ -11,6 +11,8 @@ import type {
   BuildInfo,
   PendingApprovalNotice,
   PendingOperation,
+  CertificateInventory,
+  AuthorizationKeys,
   TrashEntry,
   EffectiveAccessCheck,
   EffectiveAccessResponse,
@@ -133,6 +135,8 @@ export const api = {
       `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/trash/${encodeURIComponent(trashId)}`,
       { method: "DELETE" },
     ),
+  certificateInventory: () => request<CertificateInventory>("/api/v1/control-tower/crypto/ca"),
+  authorizationKeys: () => request<AuthorizationKeys>("/api/v1/control-tower/crypto/authorization-keys"),
   pendingOperations: (options: { state?: string; mine?: boolean } = {}) => {
     const query = new URLSearchParams();
     if (options.state) query.set("state", options.state);

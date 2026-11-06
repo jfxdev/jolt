@@ -25,7 +25,7 @@ export interface BuildInfo {
   version: string;
   commit: string;
   build_date: string;
-  features?: { typed_policies?: boolean; approvals?: boolean };
+  features?: { typed_policies?: boolean; approvals?: boolean; managed_tls?: boolean };
 }
 
 export interface ServiceAccount {
@@ -674,4 +674,31 @@ export interface PublicShare {
 	allow_archive: boolean;
 	expires_at?: string;
 	remaining_downloads?: number;
+}
+
+export type CertificateKind = "root" | "intermediate" | "https" | "signing_key";
+
+/** One certificate or key the Control Tower's own authority keeps. It carries no secret. */
+export interface CertificateItem {
+  kind: CertificateKind;
+  subject: string;
+  state: "active" | "pending" | "retired";
+  serial?: string;
+  fingerprint: string;
+  not_before: string;
+  not_after: string;
+}
+
+export interface CertificateInventory {
+  mode: "managed";
+  root_fingerprint: string;
+  root_fingerprint_display: string;
+  bundle_version: number;
+  items: CertificateItem[];
+}
+
+export interface AuthorizationKeys {
+  signing_key_id: string;
+  keys: { id: string; key: string; not_after: string }[];
+  node_yaml: string;
 }

@@ -409,6 +409,104 @@ Uma regra de policy pode conceder `delete` ou `update` **somente com a aprovaç�
 - A conferência SHA-256 do corpo guardado fica no estado cifrado e é recusada na hora de tomar o pedido
   (`pending_operation_corrupt`), com teste que adultera o banco.
 
+## Certificados e chaves gerenciados
+
+> **Status:** fase 1 de [`proposals/certificados-gerenciados.md`](proposals/certificados-gerenciados.md). O
+> Control Tower já é a autoridade e serve o próprio HTTPS; os nodes **ainda não** recebem o pacote de confiança
+> sozinhos (isso é a fase 2). Nada disso é validado entre hosts nem sob carga.
+
+`CONTROL_TOWER_TLS_MODE=managed` faz o Control Tower manter uma autoridade própria e dispensa `openssl`,
+certificado externo e reverse proxy. O padrão, `manual`, não muda nada.
+
+| Variável | Padrão | Efeito |
+| --- | --- | --- |
+| `CONTROL_TOWER_TLS_MODE` | `manual` | `managed` liga a autoridade. |
+| `CONTROL_TOWER_TLS_NAMES` | vazio | Nomes DNS e IPs extras no certificado HTTPS, separados por vírgula. O host de `CONTROL_TOWER_PUBLIC_BASE_URL`, `localhost`, `127.0.0.1` e `::1` entram sempre. |
+| `CONTROL_TOWER_CERTIFICATE_VALIDITY_DAYS` | `90` | Vida dos certificados folha, de 7 a 180. Renovam aos 2/3. |
+| `CONTROL_TOWER_CA_ADDRESS` | `:8091` | Página HTTP simples que serve só a raiz pública. `off` a desliga. |
+
+As três últimas só valem no modo `managed`; usá-las no `manual` é erro de configuração. `managed` também
+recusa `CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_ID` e `_FILE`: a chave de assinatura passa a ser gerada.
+
+### O que existe
+
+- **Raiz** (10 anos, ECDSA P-256): assina só intermediárias. Fica no banco, selada com uma chave derivada de
+  `CONTROL_TOWER_DB_ENCRYPTION_KEY` para esse fim, e só é lida para emitir uma intermediária.
+- **Intermediária** (2 anos): assina todo certificado folha. Renova sozinha aos 2/3, e a antiga fica no pacote
+  até expirar, porque os certificados que ela emitiu continuam válidos.
+- **Certificado HTTPS** do Control Tower (90 dias): fica só na memória, é refeito a cada início e renovado a
+  quente, sem reiniciar. Cobre os nomes configurados.
+- **Chave de assinatura de contextos** (Ed25519, 90 dias): a mesma que `signed reads/uploads/jobs` já usavam,
+  agora gerada, selada no banco e rotacionada. Aos 60 dias nasce a sucessora, publicada no pacote **assinado
+  pela antiga**; aos 67 dias (7 dias depois) ela passa a assinar; aos 74 dias (14 dias após ser criada) a antiga
+  sai do pacote. Nada precisa reiniciar.
+- **Pacote de confiança** (`GET /api/v1/control-tower/crypto/trust-bundle`): raiz, intermediárias, chaves e
+  seriais revogados, assinado. Só muda quando algo que os nodes confiam muda.
+
+### Instalar a raiz uma vez
+
+Num navegador novo, abra `http://HOST:8091/ca`: a página mostra o fingerprint SHA-256 e como instalar em cada
+sistema. **Compare o fingerprint com o de Access > Certificados** (ou com `GET /api/v1/control-tower/crypto/ca`)
+por outro canal, porque essa página chega por HTTP simples. A raiz também sai em
+`https://HOST:8090/.well-known/jolt/ca.pem`. Agentes e scripts usam o arquivo diretamente, por exemplo
+`curl --cacert jolt-root-ca.pem`.
+
+A raiz não muda quando a intermediária ou um certificado é renovado: o dispositivo que a instalou não precisa
+de nada depois.
+
+### Healthcheck e portas
+
+Com HTTPS no listener, o healthcheck do Compose precisa de `CONTROL_HEALTHCHECK_URL=https://127.0.0.1:8090/health`
+(ou `/readyz`); o `wget` já roda com `--no-check-certificate` dentro do container. Publique a porta `8091` só
+para quem precisa baixar a raiz.
+
+### Configurar um node enquanto a fase 2 não existe
+
+`GET /api/v1/control-tower/crypto/authorization-keys` devolve o bloco `authorization_public_keys` pronto, com
+a chave em uso e as que ainda estão na janela de sobreposição. Cole-o no `node.yaml` e reinicie o node. Durante
+uma rotação, o bloco muda: repita o passo antes de a chave antiga sair do pacote (14 dias após a sucessora
+nascer), senão o node recusa os contextos novos.
+
+### Se a raiz sair do banco ou o banco se perder
+
+A fase 1 não tem `ca export-root`: a raiz fica sempre no banco. Perder o banco ou a chave
+`CONTROL_TOWER_DB_ENCRYPTION_KEY` perde a autoridade; uma instalação nova cria outra raiz e todo dispositivo
+precisa instalá-la de novo. O backup que já cobre o banco cobre a autoridade.
+
+### Observabilidade
+
+- `jolt_certificate_expiry_seconds{kind}`: segundos até o fim do que está **em uso** de cada tipo (`root`,
+  `intermediate`, `https`, `signing_key`). Chave que está saindo ou publicada e ainda sem assinar não conta,
+  para uma despedida planejada não parecer problema.
+- `jolt_trust_bundle_version`: versão do pacote publicado.
+- Access > Certificados lista tudo, com datas e fingerprint, e avisa quando algo em uso está perto do fim.
+  Nenhuma chave privada sai pela API.
+
+```yaml
+      - alert: JoltCertificateEndsSoon
+        expr: jolt_certificate_expiry_seconds{kind=~"https|signing_key"} < 14 * 24 * 3600
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.kind }} do Control Tower perto do fim; a renovação automática não ocorreu"
+      - alert: JoltIntermediateEndsSoon
+        expr: jolt_certificate_expiry_seconds{kind="intermediate"} < 60 * 24 * 3600
+        for: 1h
+        labels: {severity: critical}
+        annotations:
+          summary: "A intermediária do Control Tower não foi renovada"
+```
+
+### Limites desta fase
+
+- Os nodes não recebem o pacote nem os certificados; a chave pública vai à mão para o YAML.
+- Não há `enrollment`, certificado de cliente do Control Tower nem certificado de API do node.
+- Não há revogação de seriais (a lista existe vazia no pacote) nem rotação de raiz.
+- `ca export-root` (raiz fora do banco) não existe; o erro `ErrRootUnavailable` só aparece se alguém retirar
+  o segredo da raiz do banco à mão, e o Control Tower continua servindo enquanto a intermediária vigente não
+  expira.
+- Não foi exercitado entre hosts, com relógios divergentes nem com navegadores de cada sistema.
+
 ## Rotinas
 
 **Diária**
@@ -482,8 +580,9 @@ Labels usam padrões de rota, não caminhos de arquivos ou tokens de share.
   `jolt_control_login_failures_total`, `jolt_control_login_lockouts_total`,
   `jolt_control_authorization_denied_total`, `jolt_control_node_proxy_total`,
   `jolt_control_shares_created_total`, `jolt_control_shares_revoked_total`,
-  `jolt_control_share_downloads_total` e
-  `jolt_control_share_unlock_failures_total`.
+  `jolt_control_share_downloads_total`,
+  `jolt_control_share_unlock_failures_total` e, com certificados gerenciados,
+  `jolt_certificate_expiry_seconds` e `jolt_trust_bundle_version`.
 - Node: `jolt_node_info`, `jolt_http_requests_total`,
   `jolt_http_request_duration_seconds`, `jolt_http_response_bytes_total`,
   `jolt_jobs_total`, `jolt_jobs_active`, `jolt_job_bytes_total`,

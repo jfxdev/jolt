@@ -1,6 +1,6 @@
 # Proposta — Certificados e chaves com ciclo de vida gerenciado pelo Jolt
 
-> **Status:** proposta, nada implementado · **Data:** 6 de novembro de 2026 · **Origem:** o Jolt precisa funcionar **fechado**, sem depender de reverse proxy, ACME, CA externa ou operação manual de `openssl` · **Complementa:** [`plano-consolidado-seguranca.md`](plano-consolidado-seguranca.md) (contextos assinados) e [`../PRODUCTION.md`](../PRODUCTION.md) · **Código lido:** `node/backend/internal/infra/crypto/certificates.go`, `node/backend/internal/infra/config/config.go`, `control/internal/config/config.go`, `control/internal/store/store.go`, `docs/NODE_YAML.md`, `scripts/signed-read-smoke.py`.
+> **Status:** proposta aprovada; **fase 1 implementada** (ver §12), fases 2 a 4 não · **Data:** 6 de novembro de 2026 · **Origem:** o Jolt precisa funcionar **fechado**, sem depender de reverse proxy, ACME, CA externa ou operação manual de `openssl` · **Complementa:** [`plano-consolidado-seguranca.md`](plano-consolidado-seguranca.md) (contextos assinados) e [`../PRODUCTION.md`](../PRODUCTION.md) · **Código lido:** `node/backend/internal/infra/crypto/certificates.go`, `node/backend/internal/infra/config/config.go`, `control/internal/config/config.go`, `control/internal/store/store.go`, `docs/NODE_YAML.md`, `scripts/signed-read-smoke.py`.
 
 ## 1. Resumo
 
@@ -229,6 +229,17 @@ O Control Tower comprometido já controlaria todos os nodes pelo token compartil
 - Rotas `GET /crypto/ca`, `GET /crypto/authorization-keys` e a página `/ca`.
 - O trecho `authorization_public_keys` sai pronto para colar, o que já elimina o `openssl` do caminho.
 - Critérios: `go test -race` limpo; teste de rotação com sobreposição; teste que adultera pacote (versão, assinatura, chave desconhecida, raiz extra) e vê recusa; mutação nas verificações.
+
+**Fase 1 — implementada em 6 de novembro de 2026.** `CONTROL_TOWER_TLS_MODE=managed` liga a autoridade, o HTTPS próprio, a chave de assinatura gerada e rotacionada, o pacote de confiança, a página pública da raiz, o inventário (API, métricas e aba Access > Certificados) e o bloco de YAML pronto. Operação em [`../OPERATIONS.md`](../OPERATIONS.md#certificados-e-chaves-gerenciados). Verificada com testes, mutação e um binário real (HTTPS validado com a raiz baixada, raiz e chave estáveis entre reinícios, recusa de chave de banco errada). O que mudou em relação ao texto acima:
+
+- A chave de assinatura chega ao resto do código por uma fonte (`config.SigningSource`), não mais por um campo fixo; sem ela os contextos já emitidos deixariam de verificar quando a chave rodasse.
+- Uma chave publicada e ainda sem assinar (a sucessora) **não** é aceita para verificar contextos; só a ativa e as que estão na sobreposição.
+- O certificado HTTPS não é gravado: nasce na memória a cada início. Menos uma chave privada no banco.
+- Uma renovação de intermediária que depende de uma raiz ausente do banco **não derruba** o Control Tower enquanto a intermediária vigente não expirou: o passe termina o resto e devolve `ErrRootUnavailable`, que vira aviso. Só a expiração é falha dura.
+- `managed` recusa `CONTROL_TOWER_AUTHORIZATION_SIGNING_KEY_*` em vez de ignorá-las em silêncio.
+- A métrica `jolt_certificate_expiry_seconds` tem um rótulo `kind` e conta só o que está em uso, para uma despedida planejada não parecer defeito.
+- Um defeito achado pelos testes e corrigido: uma raiz listada como intermediária passava na checagem do pacote, porque a raiz assina a si mesma.
+- Fica de fora desta fase, e continua previsto: `ca export-root`, seriais revogados, rotação de raiz, aprovação de enrollment, certificados de cliente e de API do node, `jolt-mcp trust`.
 
 **Fase 2: enrollment e pacote no node.**
 - Token de adesão, endpoints de enrollment e de pacote, estado cifrado no node, certificado de servidor da API e renovação dirigida pelo Control Tower, certificado de cliente do Control Tower.
