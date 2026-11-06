@@ -59,22 +59,22 @@ func (s *Server) signedUpload(operation string, next http.HandlerFunc) http.Hand
 				return
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
-			claims, compiled, err = signedauth.VerifyUploadAdmission(headers[0], s.config.AuthorizationKeys, s.identity.NodeID, r.PathValue("mountID"), input.Path, body, time.Now())
+			claims, compiled, err = signedauth.VerifyUploadAdmission(headers[0], s.authorizationKeys(), s.identity.NodeID, r.PathValue("mountID"), input.Path, body, time.Now())
 		} else if operation == "upload_simple" {
 			paths := r.URL.Query()["path"]
 			if len(paths) != 1 || len(r.Header.Values("Idempotency-Key")) > 1 {
 				writeError(w, r, http.StatusBadRequest, "invalid_file_request", "Caminho ou chave de idempotência inválida.", nil)
 				return
 			}
-			claims, compiled, err = signedauth.VerifySimpleUpload(headers[0], s.config.AuthorizationKeys, s.identity.NodeID, r.PathValue("mountID"), paths[0], r.URL.RawQuery, r.Header.Get("Idempotency-Key"), time.Now())
+			claims, compiled, err = signedauth.VerifySimpleUpload(headers[0], s.authorizationKeys(), s.identity.NodeID, r.PathValue("mountID"), paths[0], r.URL.RawQuery, r.Header.Get("Idempotency-Key"), time.Now())
 		} else if operation == "upload_reauthorize" {
 			if (session.AuthorizationActorID == "") != (session.AuthorizationCredentialID == "") {
 				writeError(w, r, http.StatusForbidden, "invalid_signed_context", "Vínculo de autorização da sessão inválido.", nil)
 				return
 			}
-			claims, compiled, err = signedauth.VerifyUploadReauthorization(headers[0], s.config.AuthorizationKeys, session.AuthorizationActorID, session.AuthorizationCredentialID, s.identity.NodeID, session.MountID, session.Destination, session.ID, session.AuthorizationRevision, time.Now())
+			claims, compiled, err = signedauth.VerifyUploadReauthorization(headers[0], s.authorizationKeys(), session.AuthorizationActorID, session.AuthorizationCredentialID, s.identity.NodeID, session.MountID, session.Destination, session.ID, session.AuthorizationRevision, time.Now())
 		} else {
-			claims, compiled, err = signedauth.VerifyLocalUpload(headers[0], s.config.AuthorizationKeys, session.AuthorizationActorID, session.AuthorizationCredentialID, s.identity.NodeID, operation, session.MountID, session.Destination, session.ID, time.Now())
+			claims, compiled, err = signedauth.VerifyLocalUpload(headers[0], s.authorizationKeys(), session.AuthorizationActorID, session.AuthorizationCredentialID, s.identity.NodeID, operation, session.MountID, session.Destination, session.ID, time.Now())
 		}
 		if err != nil {
 			writeError(w, r, http.StatusForbidden, "invalid_signed_context", "Autorização assinada inválida ou expirada.", nil)

@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -153,7 +152,7 @@ func (b Bundle) validate(now time.Time) error {
 		seen[entry.ID] = true
 	}
 	for _, serial := range b.RevokedSerials {
-		if _, err := hex.DecodeString(serial); err != nil || serial == "" || len(serial) > 64 {
+		if !lowercaseHex(serial) {
 			return errors.New("trust bundle has an invalid revoked serial")
 		}
 	}
@@ -184,6 +183,20 @@ func (b Bundle) validate(now time.Time) error {
 		}
 	}
 	return nil
+}
+
+// lowercaseHex accepts the form big.Int.Text(16) produces for a serial number:
+// lowercase digits of any length up to 64, odd lengths included.
+func lowercaseHex(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func rootSet(b Bundle) map[string]bool {

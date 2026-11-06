@@ -56,7 +56,7 @@ func decodeSignedLocalCopy(w http.ResponseWriter, r *http.Request) (signedLocalC
 }
 
 func (s *Server) prepareSignedLocalCopy(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.store.(signedJobCreationStore); !ok || len(s.config.AuthorizationKeys) == 0 {
+	if _, ok := s.store.(signedJobCreationStore); !ok || len(s.authorizationKeys()) == 0 {
 		writeError(w, r, http.StatusServiceUnavailable, "signed_job_creation_unavailable", "A criação de jobs assinados está indisponível.", nil)
 		return
 	}
@@ -75,7 +75,7 @@ func (s *Server) prepareSignedLocalCopy(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) createSignedLocalCopy(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.store.(signedJobCreationStore); !ok || len(s.config.AuthorizationKeys) == 0 {
+	if _, ok := s.store.(signedJobCreationStore); !ok || len(s.authorizationKeys()) == 0 {
 		writeError(w, r, http.StatusServiceUnavailable, "signed_job_creation_unavailable", "A criação de jobs assinados está indisponível.", nil)
 		return
 	}
@@ -88,7 +88,7 @@ func (s *Server) createSignedLocalCopy(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	job, repeated, err := s.jobs.CreateAwaitingSignedAuthorization(r.Context(), request.createRequest(r.Header.Get("X-Correlation-ID")), s.identity.NodeID, authorizations[0], idempotencyKey(r), s.config.AuthorizationKeys)
+	job, repeated, err := s.jobs.CreateAwaitingSignedAuthorization(r.Context(), request.createRequest(r.Header.Get("X-Correlation-ID")), s.identity.NodeID, authorizations[0], idempotencyKey(r), s.authorizationKeys())
 	if errors.Is(err, contracts.ErrIdempotencyConflict) || errors.Is(err, contracts.ErrInUse) {
 		writeError(w, r, http.StatusConflict, "signed_job_conflict", "A chave ou o identificador do job já está em uso.", nil)
 		return

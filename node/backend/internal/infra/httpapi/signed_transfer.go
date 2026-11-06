@@ -46,7 +46,7 @@ func (s *Server) createSignedBatchPull(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	job, repeated, err := s.transfers.CreateSignedBatchPull(r.Context(), request.transferRequest(r.Header.Get("X-Correlation-ID")), s.identity.NodeID, authorizations[0], idempotencies[0], s.config.AuthorizationKeys)
+	job, repeated, err := s.transfers.CreateSignedBatchPull(r.Context(), request.transferRequest(r.Header.Get("X-Correlation-ID")), s.identity.NodeID, authorizations[0], idempotencies[0], s.authorizationKeys())
 	if errors.Is(err, contracts.ErrIdempotencyConflict) || errors.Is(err, contracts.ErrInUse) {
 		writeError(w, r, http.StatusConflict, "signed_job_conflict", "A chave ou o identificador do job já está em uso.", nil)
 		return
@@ -80,7 +80,7 @@ func (s *Server) planSignedBatchPull(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	plan, err := s.transfers.PlanSignedBatchPull(r.Context(), request.transferRequest(r.Header.Get("X-Correlation-ID")), s.identity.NodeID, authorizations[0], s.config.AuthorizationKeys)
+	plan, err := s.transfers.PlanSignedBatchPull(r.Context(), request.transferRequest(r.Header.Get("X-Correlation-ID")), s.identity.NodeID, authorizations[0], s.authorizationKeys())
 	if err != nil {
 		s.fail(w, r, err)
 		return

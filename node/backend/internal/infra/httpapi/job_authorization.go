@@ -51,7 +51,7 @@ func (s *Server) jobAuthorizationStatus(w http.ResponseWriter, r *http.Request) 
 // execution. Jobs remain waiting until policy and renewal integration exists.
 func (s *Server) registerJobAuthorization(w http.ResponseWriter, r *http.Request) {
 	registrar, ok := s.store.(signedJobAuthorizationRegistrar)
-	if !ok || len(s.config.AuthorizationKeys) == 0 {
+	if !ok || len(s.authorizationKeys()) == 0 {
 		writeError(w, r, http.StatusServiceUnavailable, "signed_job_authorization_unavailable", "O node não pode registrar a autorização assinada.", nil)
 		return
 	}
@@ -60,7 +60,7 @@ func (s *Server) registerJobAuthorization(w http.ResponseWriter, r *http.Request
 		writeError(w, r, http.StatusBadRequest, "invalid_signed_context", "Informe uma autorização assinada.", nil)
 		return
 	}
-	revision, expiry, err := registrar.RegisterSignedJobAuthorization(r.Context(), r.PathValue("jobID"), s.identity.NodeID, headers[0], s.config.AuthorizationKeys, time.Now().UTC())
+	revision, expiry, err := registrar.RegisterSignedJobAuthorization(r.Context(), r.PathValue("jobID"), s.identity.NodeID, headers[0], s.authorizationKeys(), time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, contracts.ErrStateUnavailable) {
 			writeError(w, r, http.StatusServiceUnavailable, "state_unavailable", "O estado do node está indisponível.", nil)

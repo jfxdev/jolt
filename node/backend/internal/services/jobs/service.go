@@ -74,6 +74,7 @@ type Service struct {
 	signed                   SignedExecutionStore
 	signedNodeID             string
 	signedKeys               map[string]ed25519.PublicKey
+	signedKeySource          func() map[string]ed25519.PublicKey
 
 	mu           sync.Mutex
 	ctx          context.Context

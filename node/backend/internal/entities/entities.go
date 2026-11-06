@@ -359,3 +359,26 @@ type MovePlanBinding struct {
 	PlanID, SubjectType, TokenHash, Digest string
 	Now                                    time.Time
 }
+
+// ManagedTrust is what a node keeps once the Control Tower's own certificate
+// authority has enrolled it: the trust bundle it last verified, the root it
+// pinned, and the certificate and key of its API listener.
+type ManagedTrust struct {
+	// RootPin is the SHA-256 of the root the join token pinned.
+	RootPin string `json:"root_pin" yaml:"root_pin"`
+	// Bundle is the last trust bundle that passed verification, as JSON.
+	Bundle string `json:"bundle" yaml:"bundle"`
+	// APICertPEM is the API listener's certificate followed by its issuer.
+	APICertPEM string `json:"api_cert_pem" yaml:"api_cert_pem"`
+	// APIKey is the matching private key, PKCS#8 DER in base64.
+	APIKey string `json:"api_key" yaml:"api_key"`
+	// OperationalHash is the SHA-256 of the operational token the node chose
+	// when it was enrolled and told the Control Tower. It is written with the
+	// rest of the enrollment so a crash cannot leave the node without a token.
+	OperationalHash string `json:"operational_hash" yaml:"operational_hash"`
+	// PendingKey is a key generated for a renewal whose certificate has not
+	// arrived yet, PKCS#8 DER in base64.
+	PendingKey string    `json:"pending_key,omitempty" yaml:"pending_key,omitempty"`
+	EnrolledAt time.Time `json:"enrolled_at" yaml:"enrolled_at"`
+	UpdatedAt  time.Time `json:"updated_at" yaml:"updated_at"`
+}

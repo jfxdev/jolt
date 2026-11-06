@@ -340,3 +340,55 @@ func TestTrashConfiguration(t *testing.T) {
 		t.Fatalf("disabled trash on a read-only mount: %v", err)
 	}
 }
+
+func managedBody(extra string) string {
+	return "version: 1\nnode_name: n\ntls_mode: managed\napi_public_endpoint: https://node.lan:8080\n" + extra
+}
+
+func TestManualIsTheDefaultAndManagedSettingsNeedManagedMode(t *testing.T) {
+	cfg, err := Read(writeConfig(t, "version: 1\nnode_name: n\n"))
+	if err != nil || cfg.TLSMode != TLSManual || cfg.APIPublicEndpoint != "" {
+		t.Fatalf("default: %+v %v", cfg, err)
+	}
+	if _, err := Read(writeConfig(t, "version: 1\nnode_name: n\napi_public_endpoint: https://node.lan:8080\n")); err == nil {
+		t.Fatal("api_public_endpoint was accepted without managed mode")
+	}
+	if _, err := Read(writeConfig(t, "version: 1\nnode_name: n\ntls_mode: automatic\n")); err == nil {
+		t.Fatal("an unknown mode was accepted")
+	}
+}
+
+func TestManagedModeNeedsAnHTTPSEndpointAndRefusesHandMadeTLSFiles(t *testing.T) {
+	cfg, err := Read(writeConfig(t, managedBody("")))
+	if err != nil || cfg.TLSMode != TLSManaged || cfg.APIPublicEndpoint != "https://node.lan:8080" {
+		t.Fatalf("managed: %+v %v", cfg, err)
+	}
+	for name, body := range map[string]string{
+		"no endpoint":        "version: 1\nnode_name: n\ntls_mode: managed\n",
+		"http endpoint":      "version: 1\nnode_name: n\ntls_mode: managed\napi_public_endpoint: http://node.lan:8080\n",
+		"endpoint with path": "version: 1\nnode_name: n\ntls_mode: managed\napi_public_endpoint: https://node.lan:8080/api\n",
+		"endpoint with user": "version: 1\nnode_name: n\ntls_mode: managed\napi_public_endpoint: https://user@node.lan:8080\n",
+		"hand-made cert":     managedBody("api_tls_cert_file: /x\napi_tls_key_file: /y\n"),
+		"client CA":          managedBody("api_tls_client_ca_file: /z\n"),
+	} {
+		if _, err := Read(writeConfig(t, body)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestAManagedNodeDoesNotNeedTheSharedTokenButAManualOneDoes(t *testing.T) {
+	t.Setenv("JOLT_STATE_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("CONTROL_TOWER_TOKEN", "")
+	if _, err := Load(writeConfig(t, "version: 1\nnode_name: n\n")); err == nil {
+		t.Fatal("a manual node started without CONTROL_TOWER_TOKEN")
+	}
+	t.Setenv("JOLT_JOIN_TOKEN", "jolt-join:v1:x")
+	if _, err := Load(writeConfig(t, "version: 1\nnode_name: n\n")); err == nil || !strings.Contains(err.Error(), "JOLT_JOIN_TOKEN") {
+		t.Fatalf("a join token on a manual node: %v", err)
+	}
+	cfg, err := Load(writeConfig(t, managedBody("")))
+	if err != nil || cfg.JoinToken != "jolt-join:v1:x" || cfg.ControlTowerToken != "" {
+		t.Fatalf("managed node: %+v %v", cfg, err)
+	}
+}

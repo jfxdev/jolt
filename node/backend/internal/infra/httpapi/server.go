@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -29,6 +30,7 @@ import (
 	"github.com/jfxdev/jolt/backend/internal/services/jobs"
 	"github.com/jfxdev/jolt/backend/internal/services/pairing"
 	"github.com/jfxdev/jolt/backend/internal/services/transfers"
+	"github.com/jfxdev/jolt/backend/internal/trust"
 )
 
 type Server struct {
@@ -43,6 +45,7 @@ type Server struct {
 	certificates    *joltcrypto.CertificateManager
 	transfers       *transfers.Service
 	registry        *metrics.Registry
+	trust           *trust.Manager
 	log             *slog.Logger
 }
 
@@ -75,6 +78,8 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 			s.certificates = value
 		case *transfers.Service:
 			s.transfers = value
+		case *trust.Manager:
+			s.trust = value
 		case contracts.Store:
 			s.store = value
 		}
@@ -119,6 +124,12 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads/{uploadID}/complete", s.uploadLocked(s.signedUpload("upload_complete", s.completeUploadSession)))
 		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads/{uploadID}/authorize", s.uploadLocked(s.signedUpload("upload_reauthorize", s.reauthorizeUploadSession)))
 		mux.HandleFunc("DELETE /api/v1/mounts/{mountID}/files/uploads/{uploadID}", s.uploadLocked(s.signedUpload("upload_abort", s.abortUploadSession)))
+	}
+	if s.trust != nil && s.trust.Managed() {
+		mux.HandleFunc("GET /api/v1/crypto/trust-bundle", s.managedTrust(s.trustStatus))
+		mux.HandleFunc("PUT /api/v1/crypto/trust-bundle", s.managedTrust(s.adoptTrustBundle))
+		mux.HandleFunc("POST /api/v1/crypto/api-cert/csr", s.managedTrust(s.prepareAPICertificate))
+		mux.HandleFunc("PUT /api/v1/crypto/api-cert", s.managedTrust(s.installAPICertificate))
 	}
 	mux.HandleFunc("GET /api/v1/jobs", s.listJobs)
 	mux.HandleFunc("GET /api/v1/jobs/summary", s.jobSummary)
@@ -374,7 +385,10 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) node(w http.ResponseWriter, r *http.Request) {
 	capabilities := []string{"api_filesystem", "streaming_upload", "range_download", "durable_local_jobs", "job_controls", "job_events_sse", "job_eta", "bandwidth_limits", "waiting_mount", "waiting_validation", "directory_manifests", "directory_resume", "resumable_chunks", "conflict_policies", "manual_item_overrides", "checksum_verification", "source_change_policies", "transfer_path_grants", "cluster_grouping", "mtls_peer_listener", "mtls_certificate_rotation", "mtls_certificate_rollout_diagnostics", "mtls_certificate_revocation", "identity_handover", "mtls_peer_heartbeat", "direct_file_pull", "operational_token_rotation", "idempotency", "hidden_patterns_v1", "protected_move_v1", "canary_paths_v1", "agent_search_limits_v1", "agent_secret_scan_v1", "grant_exclude_send_v1", "grant_exclude_receive_v1", "upload_inspection_v1", "trash_v1"}
-	if len(s.config.AuthorizationKeys) > 0 {
+	if s.trust != nil && s.trust.Managed() {
+		capabilities = append(capabilities, "managed_tls_v1")
+	}
+	if len(s.authorizationKeys()) > 0 {
 		capabilities = append(capabilities, "signed_local_read_v1", "signed_local_tree_read_v1")
 		if s.store != nil {
 			capabilities = append(capabilities, "signed_upload_sessions_v1", "signed_upload_reauthorize_v1", "signed_simple_upload_v1")
@@ -2562,6 +2576,57 @@ paths:
                 verify_checksum: {type: boolean}
       responses:
         "202": {description: Durable itemized copy job queued}
+  /api/v1/crypto/trust-bundle:
+    get:
+      summary: Which trust bundle and API certificate this node holds
+      description: Only on a node the Control Tower's certificate authority enrolled (capability managed_tls_v1); 404 managed_tls_disabled otherwise.
+      responses:
+        "200": {description: The bundle version and the API certificate's end and serial}
+        "404": {description: This node is not enrolled}
+    put:
+      summary: Adopt a newer trust bundle
+      description: The node verifies the bundle itself. It must be newer, keep a root of the one in use and be signed by a key that one listed; otherwise 422 trust_bundle_refused and nothing changes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object}
+      responses:
+        "200": {description: Adopted, or already current}
+        "400": {description: Not a trust bundle}
+        "422": {description: Refused by verification}
+  /api/v1/crypto/api-cert/csr:
+    post:
+      summary: Start a renewal of the API certificate
+      description: Makes a new key that never leaves the node and returns a signing request for the given names.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [names]
+              properties:
+                names: {type: array, minItems: 1, maxItems: 16, items: {type: string}}
+      responses:
+        "200": {description: The signing request, as PEM}
+        "400": {description: Invalid names}
+  /api/v1/crypto/api-cert:
+    put:
+      summary: Install the renewed API certificate
+      description: The certificate must match the pending key, chain to a root in the bundle and be valid for a server; otherwise 422 certificate_refused and the current one keeps serving.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [certificate_pem]
+              properties:
+                certificate_pem: {type: string}
+      responses:
+        "200": {description: Installed}
+        "422": {description: Refused}
   /api/v1/jobs:
     get:
       responses:
@@ -3108,4 +3173,13 @@ paths:
 
 func (s *Server) signedExecutionEnabled() bool {
 	return s.jobs != nil && s.jobs.SignedExecutionEnabled()
+}
+
+// authorizationKeys are the public keys a signed context may carry: those in
+// node.yaml and, on an enrolled node, the unexpired ones in the trust bundle.
+func (s *Server) authorizationKeys() map[string]ed25519.PublicKey {
+	if s.trust != nil {
+		return s.trust.AuthorizationKeys()
+	}
+	return s.config.AuthorizationKeys
 }

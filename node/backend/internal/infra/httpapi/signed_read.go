@@ -82,7 +82,7 @@ func (s *Server) signedLocalRead(operation string, next http.HandlerFunc) http.H
 			return
 		}
 		mount := r.PathValue("mountID")
-		claims, compiled, err := signedauth.VerifyLocalRead(headers[0], s.config.AuthorizationKeys, s.identity.NodeID, operation, mount, root, time.Now())
+		claims, compiled, err := signedauth.VerifyLocalRead(headers[0], s.authorizationKeys(), s.identity.NodeID, operation, mount, root, time.Now())
 		if err != nil {
 			writeError(w, r, http.StatusForbidden, "invalid_signed_context", "Autorização assinada inválida ou expirada.", nil)
 			return

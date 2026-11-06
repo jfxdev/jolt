@@ -56,61 +56,76 @@ type UploadInspectionConfig struct {
 	AllowedMediaTypes []string `yaml:"allowed_media_types" json:"allowed_media_types"`
 }
 
+const (
+	TLSManual  = "manual"
+	TLSManaged = "managed"
+)
+
 type AuthorizationPublicKey struct {
 	ID  string `yaml:"id"`
 	Key string `yaml:"key"`
 }
 
 type Config struct {
-	AuthorizationPublicKeys  []AuthorizationPublicKey     `yaml:"authorization_public_keys,omitempty"`
-	AuthorizationKeys        map[string]ed25519.PublicKey `yaml:"-" json:"-"`
-	UploadInspection         UploadInspectionConfig       `yaml:"upload_inspection"`
-	Version                  int                          `yaml:"version"`
-	Mounts                   []MountConfig                `yaml:"mounts"`
-	TransferGrants           []GrantConfig                `yaml:"transfer_grants"`
-	FilePath                 string                       `yaml:"-"`
-	Revision                 string                       `yaml:"-"`
-	PublicYAML               string                       `yaml:"-"`
-	UploadMaxBytes           int64                        `yaml:"upload_max_bytes"`
-	UploadMinFreeBytes       int64                        `yaml:"upload_min_free_bytes"`
-	UploadMaxSessions        int                          `yaml:"upload_max_sessions"`
-	UploadMaxReservedBytes   int64                        `yaml:"upload_max_reserved_bytes"`
-	NodeName                 string                       `yaml:"node_name"`
-	APIAddress               string                       `yaml:"api_address"`
-	APITLSCertFile           string                       `yaml:"api_tls_cert_file"`
-	APITLSKeyFile            string                       `yaml:"api_tls_key_file"`
-	APITLSClientCAFile       string                       `yaml:"api_tls_client_ca_file"`
-	MTLSAddress              string                       `yaml:"mtls_address"`
-	MTLSPublicEndpoint       string                       `yaml:"mtls_public_endpoint"`
-	DataDir                  string                       `yaml:"data_dir"`
-	KeysDir                  string                       `yaml:"keys_dir"`
-	ControlTowerToken        string                       `yaml:"-"`
-	MetricsToken             string                       `yaml:"-"`
-	EncryptionKey            []byte                       `yaml:"-"`
-	PublicHealth             bool                         `yaml:"public_healthcheck"`
-	ShutdownTimeout          time.Duration                `yaml:"shutdown_timeout"`
-	MaxConcurrentJobs        int                          `yaml:"max_concurrent_jobs"`
-	JobMaxAttempts           int                          `yaml:"job_max_attempts"`
-	CopyChunkSize            int64                        `yaml:"copy_chunk_size_bytes"`
-	NodeBandwidthLimit       int64                        `yaml:"node_bandwidth_limit_bytes_per_second"`
-	MaxParallelFilesPerJob   int                          `yaml:"max_parallel_files_per_job"`
-	MaxParallelChunksPerFile int                          `yaml:"max_parallel_chunks_per_file"`
-	TransferConnectTimeout   time.Duration                `yaml:"transfer_connect_timeout"`
-	TransferIdleReadTimeout  time.Duration                `yaml:"transfer_idle_read_timeout"`
-	TransferChunkTimeout     time.Duration                `yaml:"transfer_chunk_timeout"`
-	JobValidationTimeout     time.Duration                `yaml:"job_validation_timeout"`
-	JobNoProgressTimeout     time.Duration                `yaml:"job_no_progress_timeout"`
-	PeerHeartbeatInterval    time.Duration                `yaml:"peer_heartbeat_interval"`
-	PeerHeartbeatTimeout     time.Duration                `yaml:"peer_heartbeat_timeout"`
-	PeerFailureThreshold     int                          `yaml:"peer_failure_threshold"`
-	SearchMaxResults         int                          `yaml:"search_max_results"`
-	SearchMaxEntries         int                          `yaml:"search_max_entries"`
-	SearchTimeout            time.Duration                `yaml:"search_timeout"`
-	DiskUsageMaxEntries      int                          `yaml:"disk_usage_max_entries"`
-	DiskUsageTimeout         time.Duration                `yaml:"disk_usage_timeout"`
-	ArchiveMaxEntries        int                          `yaml:"archive_max_entries"`
-	ArchiveMaxBytes          int64                        `yaml:"archive_max_bytes"`
-	UploadSessionTTL         time.Duration                `yaml:"upload_session_ttl"`
+	AuthorizationPublicKeys []AuthorizationPublicKey     `yaml:"authorization_public_keys,omitempty"`
+	AuthorizationKeys       map[string]ed25519.PublicKey `yaml:"-" json:"-"`
+	UploadInspection        UploadInspectionConfig       `yaml:"upload_inspection"`
+	Version                 int                          `yaml:"version"`
+	Mounts                  []MountConfig                `yaml:"mounts"`
+	TransferGrants          []GrantConfig                `yaml:"transfer_grants"`
+	FilePath                string                       `yaml:"-"`
+	Revision                string                       `yaml:"-"`
+	PublicYAML              string                       `yaml:"-"`
+	UploadMaxBytes          int64                        `yaml:"upload_max_bytes"`
+	UploadMinFreeBytes      int64                        `yaml:"upload_min_free_bytes"`
+	UploadMaxSessions       int                          `yaml:"upload_max_sessions"`
+	UploadMaxReservedBytes  int64                        `yaml:"upload_max_reserved_bytes"`
+	NodeName                string                       `yaml:"node_name"`
+	APIAddress              string                       `yaml:"api_address"`
+	APITLSCertFile          string                       `yaml:"api_tls_cert_file"`
+	APITLSKeyFile           string                       `yaml:"api_tls_key_file"`
+	APITLSClientCAFile      string                       `yaml:"api_tls_client_ca_file"`
+	MTLSAddress             string                       `yaml:"mtls_address"`
+	MTLSPublicEndpoint      string                       `yaml:"mtls_public_endpoint"`
+	// TLSMode is "manual" (the default: keys and certificates are the
+	// operator's) or "managed" (the Control Tower's authority enrolls this node
+	// and keeps its certificates).
+	TLSMode string `yaml:"tls_mode"`
+	// APIPublicEndpoint is the https URL the Control Tower reaches this node's
+	// API at. It is what a managed node announces when it joins.
+	APIPublicEndpoint string `yaml:"api_public_endpoint"`
+	// JoinToken is the one-use token that enrolls a managed node; it is read
+	// from the environment and never stored.
+	JoinToken                string        `yaml:"-"`
+	DataDir                  string        `yaml:"data_dir"`
+	KeysDir                  string        `yaml:"keys_dir"`
+	ControlTowerToken        string        `yaml:"-"`
+	MetricsToken             string        `yaml:"-"`
+	EncryptionKey            []byte        `yaml:"-"`
+	PublicHealth             bool          `yaml:"public_healthcheck"`
+	ShutdownTimeout          time.Duration `yaml:"shutdown_timeout"`
+	MaxConcurrentJobs        int           `yaml:"max_concurrent_jobs"`
+	JobMaxAttempts           int           `yaml:"job_max_attempts"`
+	CopyChunkSize            int64         `yaml:"copy_chunk_size_bytes"`
+	NodeBandwidthLimit       int64         `yaml:"node_bandwidth_limit_bytes_per_second"`
+	MaxParallelFilesPerJob   int           `yaml:"max_parallel_files_per_job"`
+	MaxParallelChunksPerFile int           `yaml:"max_parallel_chunks_per_file"`
+	TransferConnectTimeout   time.Duration `yaml:"transfer_connect_timeout"`
+	TransferIdleReadTimeout  time.Duration `yaml:"transfer_idle_read_timeout"`
+	TransferChunkTimeout     time.Duration `yaml:"transfer_chunk_timeout"`
+	JobValidationTimeout     time.Duration `yaml:"job_validation_timeout"`
+	JobNoProgressTimeout     time.Duration `yaml:"job_no_progress_timeout"`
+	PeerHeartbeatInterval    time.Duration `yaml:"peer_heartbeat_interval"`
+	PeerHeartbeatTimeout     time.Duration `yaml:"peer_heartbeat_timeout"`
+	PeerFailureThreshold     int           `yaml:"peer_failure_threshold"`
+	SearchMaxResults         int           `yaml:"search_max_results"`
+	SearchMaxEntries         int           `yaml:"search_max_entries"`
+	SearchTimeout            time.Duration `yaml:"search_timeout"`
+	DiskUsageMaxEntries      int           `yaml:"disk_usage_max_entries"`
+	DiskUsageTimeout         time.Duration `yaml:"disk_usage_timeout"`
+	ArchiveMaxEntries        int           `yaml:"archive_max_entries"`
+	ArchiveMaxBytes          int64         `yaml:"archive_max_bytes"`
+	UploadSessionTTL         time.Duration `yaml:"upload_session_ttl"`
 }
 
 func (c Config) APITLSEnabled() bool { return c.APITLSCertFile != "" && c.APITLSKeyFile != "" }
@@ -170,7 +185,15 @@ func Load(paths ...string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if c.ControlTowerToken == "" {
+	c.JoinToken, err = SecretValue("JOLT_JOIN_TOKEN")
+	if err != nil {
+		return Config{}, err
+	}
+	if c.TLSMode != TLSManaged && c.JoinToken != "" {
+		return Config{}, errors.New("JOLT_JOIN_TOKEN requires tls_mode: managed")
+	}
+	// A managed node is given its operational token when it is enrolled.
+	if c.ControlTowerToken == "" && c.TLSMode != TLSManaged {
 		return Config{}, errors.New("CONTROL_TOWER_TOKEN is required")
 	}
 	c.MetricsToken, err = SecretValue("METRICS_TOKEN")
@@ -345,6 +368,25 @@ func Read(file string) (Config, error) {
 		if e != nil || endpoint.Scheme != "https" || endpoint.Host == "" {
 			return c, fail("mtls_public_endpoint", "must be an absolute https URL")
 		}
+	}
+	c.TLSMode = strings.ToLower(strings.TrimSpace(c.TLSMode))
+	if c.TLSMode == "" {
+		c.TLSMode = TLSManual
+	}
+	if c.TLSMode != TLSManual && c.TLSMode != TLSManaged {
+		return c, fail("tls_mode", "must be manual or managed")
+	}
+	c.APIPublicEndpoint = strings.TrimRight(strings.TrimSpace(c.APIPublicEndpoint), "/")
+	if c.TLSMode == TLSManaged {
+		endpoint, e := url.Parse(c.APIPublicEndpoint)
+		if e != nil || endpoint.Scheme != "https" || endpoint.Hostname() == "" || endpoint.Path != "" || endpoint.User != nil || endpoint.RawQuery != "" {
+			return c, fail("api_public_endpoint", "managed mode needs an absolute https URL such as https://node.example:8080")
+		}
+		if c.APITLSCertFile != "" || c.APITLSKeyFile != "" || c.APITLSClientCAFile != "" {
+			return c, fail("api_tls_cert_file", "managed mode issues the API certificate; remove api_tls_cert_file, api_tls_key_file and api_tls_client_ca_file")
+		}
+	} else if c.APIPublicEndpoint != "" {
+		return c, fail("api_public_endpoint", "requires tls_mode: managed")
 	}
 	if (c.APITLSCertFile == "") != (c.APITLSKeyFile == "") {
 		return c, fail("api_tls_cert_file", "certificate and key must be set together")

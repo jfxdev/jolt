@@ -73,6 +73,23 @@ func (s *Service) ConfigureSignedExecution(store SignedExecutionStore, nodeID st
 	s.signed, s.signedNodeID, s.signedKeys = store, nodeID, snapshot
 }
 
+// ConfigureSignedKeySource makes the keys that verify a job's authorization
+// follow a source instead of the snapshot taken at start, so a key the Control
+// Tower rotates in reaches a running node. The source is read for each claim.
+func (s *Service) ConfigureSignedKeySource(source func() map[string]ed25519.PublicKey) {
+	s.signedKeySource = source
+}
+
+// currentSignedKeys are the keys to verify with now.
+func (s *Service) currentSignedKeys() map[string]ed25519.PublicKey {
+	if s.signedKeySource != nil {
+		if keys := s.signedKeySource(); len(keys) > 0 {
+			return keys
+		}
+	}
+	return s.signedKeys
+}
+
 // SignedExecutionEnabled reports whether jobs bound to signed authorizations
 // run on this node.
 func (s *Service) SignedExecutionEnabled() bool { return s.signed != nil }
@@ -84,7 +101,7 @@ func (s *Service) claimNext() (entities.Job, error) {
 	if !errors.Is(err, contracts.ErrNotFound) || s.signed == nil {
 		return job, err
 	}
-	return s.signed.ClaimNextSecuredJob(s.ctx, s.signedNodeID, s.signedKeys, s.now())
+	return s.signed.ClaimNextSecuredJob(s.ctx, s.signedNodeID, s.currentSignedKeys(), s.now())
 }
 
 // guardJob returns a context that carries the verified access filter and is
@@ -94,7 +111,7 @@ func (s *Service) guardJob(ctx context.Context, job entities.Job) (context.Conte
 	if s.signed == nil {
 		return ctx, nil, contracts.ErrJobAuthorizationUnavailable
 	}
-	guarded, filter, stop, err := s.signed.GuardJobAuthorization(ctx, job.ID, s.signedNodeID, s.signedKeys)
+	guarded, filter, stop, err := s.signed.GuardJobAuthorization(ctx, job.ID, s.signedNodeID, s.currentSignedKeys())
 	if err != nil {
 		return ctx, nil, err
 	}
