@@ -3769,6 +3769,9 @@ func (s *Server) transferTargets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) planLogicalTransfer(w http.ResponseWriter, r *http.Request) {
+	// A preview changes nothing, so a grant that needs approval does not stop
+	// it; the creation is what a person must approve.
+	r, _ = s.armApprovalCollector(r)
 	resolved, ok := s.resolveLogicalTransferRequest(w, r, "create")
 	if !ok {
 		return
@@ -3793,8 +3796,13 @@ func (s *Server) createLogicalTransfer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "idempotency_key_required", "Idempotency-Key é obrigatório para criar a transferência.")
 		return
 	}
+	r, collector := s.armApprovalCollector(r)
 	resolved, ok := s.resolveLogicalTransferRequest(w, r, "execute")
 	if !ok {
+		return
+	}
+	if collector != nil && len(collector.requirements) > 0 {
+		s.keepTransferForApproval(w, r, resolved, collector)
 		return
 	}
 	if s.config.SignedLocalJobs {

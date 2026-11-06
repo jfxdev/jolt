@@ -150,6 +150,9 @@ export interface PendingOperation {
     mount_id?: string;
     paths?: string[];
     tree?: boolean;
+    // A transfer between nodes: where it goes and from which node.
+    destination?: string;
+    source_node?: string;
     files?: number;
     directories?: number;
     bytes?: number;

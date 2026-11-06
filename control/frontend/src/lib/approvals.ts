@@ -21,13 +21,23 @@ export function describePending(op: Pick<PendingOperation, "summary">): string {
   const paths = op.summary.paths ?? [];
   const label = operationLabel(op.summary.operation);
   const mount = op.summary.mount_id ? ` no mount ${op.summary.mount_id}` : "";
-  const tree = op.summary.tree ? ` — ${treeSize(op.summary)}` : "";
+  const tree = op.summary.tree ? ` — ${treeSize(op.summary)}` : op.summary.destination ? ` — ${transferSize(op.summary)}` : "";
+  if (op.summary.destination) {
+    const from = op.summary.source_node ? `${op.summary.source_node}:${op.summary.mount_id ?? ""}` : (op.summary.mount_id ?? "");
+    return `${label} ${paths.join(", ")} de ${from} para ${op.summary.destination}${tree}`;
+  }
   if (!paths.length) return `${label}${mount}${tree}`;
   if (op.summary.operation === "move" || op.summary.operation === "copy") {
     const [source, destination] = [paths.find((p) => p) ?? "", paths[paths.length - 1]];
     return `${label} ${source} para ${destination}${mount}${tree}`;
   }
   return `${label} ${paths.join(", ")}${mount}${tree}`;
+}
+
+/** What a transfer between nodes would move, in words. */
+export function transferSize(summary: Pick<PendingOperation["summary"], "files" | "bytes">): string {
+  const files = summary.files ?? 0;
+  return `${files} ${files === 1 ? "arquivo" : "arquivos"} (${formatBytes(summary.bytes ?? 0)})`;
 }
 
 /** The size of a folder the approver is asked about, in words. */

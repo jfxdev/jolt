@@ -271,6 +271,162 @@ func (s *Server) executePlanApproval(r *http.Request, op store.PendingOperation)
 	return finish()
 }
 
+// keepTransferForApproval stores a transfer between nodes whose grant needs a
+// person's approval, with the counts of a preview made for the requester. The
+// move's confirmation is dropped: the approver previews and creates it again.
+func (s *Server) keepTransferForApproval(w http.ResponseWriter, r *http.Request, resolved resolvedLogicalTransfer, collector *approvalCollector) {
+	request := resolved.Request
+	request.MovePlan = nil
+	body, err := json.Marshal(request)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	counts, status, answer := s.previewTransferCounts(r, resolved.DestinationNode.ID, body)
+	if status != http.StatusOK {
+		writeError(w, r, http.StatusBadGateway, "preview_failed", "Não foi possível calcular o que seria transferido: "+answer)
+		return
+	}
+	destination := fmt.Sprintf("%s:%s/%s", resolved.DestinationNode.ID, request.Destination.MountID, request.Destination.Path)
+	summary, _ := json.Marshal(map[string]any{
+		"operation": request.Operation, "mount_id": request.Source.MountID, "source_node": request.Source.NodeID,
+		"paths": request.Source.Paths, "destination": destination, "files": counts.Files, "bytes": counts.Bytes,
+	})
+	op, existing, err := s.store.CreatePendingOperation(r.Context(), store.PendingOperation{
+		Kind: store.PendingKindTransfer, RequesterType: currentActorType(r), RequesterID: currentUser(r).ID, Method: http.MethodPost,
+		NodeID: resolved.DestinationNode.ID, Resource: "transfers", Body: body, Summary: summary, Requirements: collector.requirements,
+	}, maxPendingPerIdentity, time.Now())
+	if errors.Is(err, store.ErrPendingTooMany) {
+		writeError(w, r, http.StatusTooManyRequests, "too_many_pending_operations", "Há pedidos demais aguardando aprovação. Espere uma decisão antes de pedir outro.")
+		return
+	}
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if !existing {
+		s.notifyApproval(op, request.Operation, request.Source.MountID)
+	}
+	w.Header().Set("Location", "/api/v1/control-tower/pending-operations/"+op.ID)
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"pending_operation_id": op.ID, "state": "pending_approval", "expires_at": op.ExpiresAt, "operation": request.Operation,
+		"files": counts.Files, "bytes": counts.Bytes,
+	})
+}
+
+// previewTransferCounts runs the preview of a transfer as the current actor and
+// returns what it would move.
+func (s *Server) previewTransferCounts(r *http.Request, destinationNodeID string, body []byte) (planCounts, int, string) {
+	writer := &captureWriter{header: make(http.Header)}
+	preview := s.syntheticRequest(r, http.MethodPost, "/api/v1/nodes/"+destinationNodeID+"/transfers/plan", body, nil)
+	preview.SetPathValue("nodeID", destinationNodeID)
+	s.planLogicalTransfer(writer, preview)
+	if writer.status == 0 {
+		writer.status = http.StatusOK
+	}
+	var answer struct {
+		Plan struct {
+			Files    int64 `json:"files_total"`
+			Bytes    int64 `json:"bytes_total"`
+			MovePlan *struct {
+				ID    string `json:"plan_id"`
+				Token string `json:"token"`
+			} `json:"move_plan"`
+		} `json:"plan"`
+	}
+	if writer.status != http.StatusOK || json.Unmarshal(writer.body.Bytes(), &answer) != nil {
+		return planCounts{}, http.StatusBadGateway, writer.body.String()
+	}
+	return planCounts{Files: answer.Plan.Files, Bytes: answer.Plan.Bytes}, http.StatusOK, ""
+}
+
+// syntheticRequest is a request made inside the server, with the identity of r.
+func (s *Server) syntheticRequest(r *http.Request, method, target string, body []byte, headers map[string]string) *http.Request {
+	request := r.Clone(r.Context())
+	request.Method = method
+	request.URL = &url.URL{Path: target}
+	request.RequestURI = target
+	request.Body = io.NopCloser(bytes.NewReader(body))
+	request.ContentLength = int64(len(body))
+	request.Header = make(http.Header)
+	request.Header.Set("X-Correlation-ID", r.Header.Get("X-Correlation-ID"))
+	if len(body) > 0 {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	for key, value := range headers {
+		request.Header.Set(key, value)
+	}
+	return request
+}
+
+// executeTransferApproval previews the transfer as the approver, requires the
+// same counts the requester was shown, and creates it with the approver's own
+// move confirmation when it is a move.
+func (s *Server) executeTransferApproval(r *http.Request, op store.PendingOperation) (int, string) {
+	writer := &captureWriter{header: make(http.Header)}
+	finish := func() (int, string) {
+		if writer.status == 0 {
+			writer.status = http.StatusOK
+		}
+		return writer.status, writer.body.String()
+	}
+	var summary planCounts
+	var request map[string]any
+	if json.Unmarshal(op.Summary, &summary) != nil || json.Unmarshal(op.Body, &request) != nil {
+		writeError(writer, r, http.StatusConflict, "invalid_pending_operation", "O pedido guardado não pôde ser lido.")
+		return finish()
+	}
+	grant := approvedGrant{id: op.ID, set: map[string]bool{}}
+	for _, requirement := range op.Requirements {
+		grant.set[requirementKey(requirement.Path, requirement.Capability)] = true
+	}
+	r = r.WithContext(context.WithValue(r.Context(), approvedKey{}, grant))
+	preview := s.syntheticRequest(r, http.MethodPost, "/api/v1/nodes/"+op.NodeID+"/transfers/plan", op.Body, nil)
+	preview.SetPathValue("nodeID", op.NodeID)
+	previewed := &captureWriter{header: make(http.Header)}
+	s.planLogicalTransfer(previewed, preview)
+	if previewed.status != http.StatusOK {
+		writer.status = previewed.status
+		writer.body = previewed.body
+		return finish()
+	}
+	var answer struct {
+		Plan struct {
+			Files    int64 `json:"files_total"`
+			Bytes    int64 `json:"bytes_total"`
+			MovePlan *struct {
+				ID    string `json:"plan_id"`
+				Token string `json:"token"`
+			} `json:"move_plan"`
+		} `json:"plan"`
+	}
+	if json.Unmarshal(previewed.body.Bytes(), &answer) != nil {
+		writeError(writer, r, http.StatusBadGateway, "node_unavailable", "Resposta inválida do node.")
+		return finish()
+	}
+	if got := (planCounts{Files: answer.Plan.Files, Bytes: answer.Plan.Bytes}); got != (planCounts{Files: summary.Files, Bytes: summary.Bytes}) {
+		writeError(writer, r, http.StatusConflict, "tree_changed", fmt.Sprintf("O que seria transferido mudou depois do pedido (era %d arquivos, %d bytes; agora %d, %d). Nada foi executado; peça de novo.",
+			summary.Files, summary.Bytes, got.Files, got.Bytes))
+		return finish()
+	}
+	if request["operation"] == "move" {
+		if answer.Plan.MovePlan == nil || answer.Plan.MovePlan.ID == "" || answer.Plan.MovePlan.Token == "" {
+			writeError(writer, r, http.StatusBadGateway, "node_unavailable", "A prévia do move não trouxe a confirmação.")
+			return finish()
+		}
+		request["move_plan"] = map[string]string{"plan_id": answer.Plan.MovePlan.ID, "token": answer.Plan.MovePlan.Token}
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		writeError(writer, r, http.StatusInternalServerError, "internal_error", "Erro inesperado.")
+		return finish()
+	}
+	create := s.syntheticRequest(r, http.MethodPost, "/api/v1/nodes/"+op.NodeID+"/transfers", body, map[string]string{"Idempotency-Key": "approval-" + op.ID})
+	create.SetPathValue("nodeID", op.NodeID)
+	s.createLogicalTransfer(writer, create)
+	return finish()
+}
+
 func describeTreeChange(before, after planCounts) string {
 	return fmt.Sprintf("era %d arquivos, %d pastas, %d bytes; agora %d, %d, %d", before.Files, before.Directories, before.Bytes, after.Files, after.Directories, after.Bytes)
 }
@@ -485,9 +641,12 @@ func (s *Server) approvePendingOperation(w http.ResponseWriter, r *http.Request)
 	}
 	var status int
 	var body string
-	if claimed.Kind == store.PendingKindPlan {
+	switch claimed.Kind {
+	case store.PendingKindPlan:
 		status, body = s.executePlanApproval(r, claimed)
-	} else {
+	case store.PendingKindTransfer:
+		status, body = s.executeTransferApproval(r, claimed)
+	default:
 		status, body = s.replayApproved(r, claimed)
 	}
 	if err := s.store.FinishPendingOperation(r.Context(), id, status, body, time.Now()); err != nil {

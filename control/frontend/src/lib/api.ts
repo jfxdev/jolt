@@ -457,7 +457,7 @@ export const api = {
       { method: "POST", body: JSON.stringify(transfer) },
     ),
   createTransfer: (destinationNodeId: string, transfer: LogicalTransferRequest) =>
-    request<Job>(
+    request<Job | PendingApprovalNotice>(
       `/api/v1/nodes/${encodeURIComponent(destinationNodeId)}/transfers`,
       {
         method: "POST",

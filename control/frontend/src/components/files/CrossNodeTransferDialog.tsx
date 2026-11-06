@@ -7,10 +7,12 @@ import { transferDestinations, type TransferDestination } from "@/lib/transfer-a
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { asPendingApproval, pendingToast } from "@/lib/approvals";
 import { formatBytes } from "@/lib/format";
 import { moveNotice, omittedSourcesNotice, transferDestinationFolder, withMovePlan } from "@/lib/transfer-preview";
 import type {
   FileEntry,
+  Job,
   LogicalTransferRequest,
   Mount,
   TransferPlan,
@@ -195,7 +197,15 @@ export function CrossNodeTransferDialog({
     if (!target || !request) return;
     setBusy(true);
     try {
-      const job = await api.createTransfer(target.node_id, request);
+      const answer = await api.createTransfer(target.node_id, request);
+      // A policy may ask a person to approve it: nothing was queued yet.
+      const pending = asPendingApproval(answer);
+      if (pending) {
+        toast.info(pendingToast(pending));
+        onClose();
+        return;
+      }
+      const job = answer as Job;
       setCreatedJobId(job.job_id);
       await refreshJobs();
       onCompleted?.();

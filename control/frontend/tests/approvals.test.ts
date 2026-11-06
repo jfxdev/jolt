@@ -37,6 +37,11 @@ test("a folder waiting for approval is described by what it holds", () => {
   assert.match(pendingToast(notice, Date.parse("2026-11-05T12:00:00Z")), /^Apagar 2 arquivos em 1 pasta \(10 B\) aguardando aprovação/);
 });
 
+test("a transfer between nodes says where it goes and how much moves", () => {
+  const summary = { operation: "move", mount_id: "media", source_node: "nas", paths: ["exports/a.txt"], destination: "backup:incoming/imports", files: 1, bytes: 12 };
+  assert.equal(describePending({ summary }), "Mover exports/a.txt de nas:media para backup:incoming/imports — 1 arquivo (12 B)");
+});
+
 test("the time left and the state read clearly", () => {
   const now = Date.parse("2026-11-05T12:00:00Z");
   assert.equal(remainingLabel("2026-11-05T12:04:10Z", now), "4 min 10 s");

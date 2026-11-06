@@ -48,6 +48,8 @@ type PendingRequirement struct {
 const (
 	PendingKindReplay = "replay"
 	PendingKindPlan   = "plan"
+	// A transfer between nodes: previewed and created again by the approver.
+	PendingKindTransfer = "transfer"
 )
 
 type PendingOperation struct {
@@ -130,7 +132,7 @@ func (s *Store) CreatePendingOperation(ctx context.Context, op PendingOperation,
 	if op.Kind == "" {
 		op.Kind = PendingKindReplay
 	}
-	if op.Kind != PendingKindReplay && op.Kind != PendingKindPlan {
+	if op.Kind != PendingKindReplay && op.Kind != PendingKindPlan && op.Kind != PendingKindTransfer {
 		return PendingOperation{}, false, errors.New("unknown pending operation kind")
 	}
 	digest := sha256.Sum256(op.Body)
