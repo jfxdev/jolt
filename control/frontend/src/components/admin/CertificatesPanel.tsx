@@ -6,6 +6,8 @@ import type { AuthorizationKeys, CertificateInventory } from "@/lib/types";
 import { formatDate } from "@/lib/format";
 import { useApiError } from "@/hooks/useApiError";
 import { Badge } from "@/components/ui/badge";
+import { usePermissions } from "@/context/PermissionsContext";
+import { EnrollmentsPanel } from "@/components/admin/EnrollmentsPanel";
 import { Button, buttonVariants } from "@/components/ui/button";
 
 const TONE_CLASS: Record<Tone, string> = {
@@ -20,6 +22,8 @@ const TONE_CLASS: Record<Tone, string> = {
 // happens by itself; nothing here asks anyone to do anything.
 export function CertificatesPanel({ active }: { active: boolean }) {
   const handleError = useApiError();
+  const { hasPermission } = usePermissions();
+  const canEnroll = hasPermission("control-tower/enrollments", "sudo");
   const [enabled, setEnabled] = useState<boolean>();
   const [inventory, setInventory] = useState<CertificateInventory>();
   const [keys, setKeys] = useState<AuthorizationKeys>();
@@ -116,6 +120,7 @@ export function CertificatesPanel({ active }: { active: boolean }) {
           );
         })}
       </ul>
+      {canEnroll && <EnrollmentsPanel />}
       {keys && (
         <div className="grid gap-2" data-testid="node-yaml">
           <h2 className="text-sm font-medium">Chaves públicas para o YAML de um node</h2>

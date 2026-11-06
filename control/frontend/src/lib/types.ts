@@ -676,7 +676,7 @@ export interface PublicShare {
 	remaining_downloads?: number;
 }
 
-export type CertificateKind = "root" | "intermediate" | "https" | "signing_key";
+export type CertificateKind = "root" | "intermediate" | "https" | "client" | "signing_key";
 
 /** One certificate or key the Control Tower's own authority keeps. It carries no secret. */
 export interface CertificateItem {
@@ -701,4 +701,41 @@ export interface AuthorizationKeys {
   signing_key_id: string;
   keys: { id: string; key: string; not_after: string }[];
   node_yaml: string;
+}
+
+export interface JoinToken {
+  token_id: string;
+  node_name: string;
+  approval: "auto" | "manual";
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+  used_at?: string;
+  enrollment_id?: string;
+}
+
+/** What creating a token answers: the secret shows here and nowhere else. */
+export interface CreatedJoinToken {
+  token_id: string;
+  token: string;
+  node_name: string;
+  approval: "auto" | "manual";
+  expires_at: string;
+  control_url: string;
+}
+
+export interface Enrollment {
+  enrollment_id: string;
+  token_id: string;
+  state: "pending" | "issued" | "rejected" | "expired";
+  node_name: string;
+  node_id: string;
+  node_fingerprint: string;
+  api_endpoint: string;
+  remote_addr: string;
+  decided_by?: string;
+  note?: string;
+  created_at: string;
+  expires_at: string;
+  decided_at?: string;
 }

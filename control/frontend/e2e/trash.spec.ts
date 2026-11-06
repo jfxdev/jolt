@@ -11,7 +11,7 @@ async function fixture(page: Page, options: Options = {}) {
   const trash = options.trash ?? true;
   const calls = { restored: [] as string[], purged: [] as string[], deletes: 0 };
   let entries = [
-    { trash_id: "tr_1_a", mount_id: "media", path: "docs/relatorio.txt", type: "file", size: 2048, state: "stored", deleted_at: now, expires_at: "2026-12-06T12:00:00Z" },
+    { trash_id: "tr_1_a", mount_id: "media", path: "docs/relatorio.txt", type: "file", size: 2048, state: "stored", deleted_at: now, expires_at: new Date(Date.now() + 30.5 * 86_400_000).toISOString() },
     { trash_id: "tr_2_b", mount_id: "media", path: "obras", type: "directory", state: "stored", deleted_at: now, expires_at: new Date(Date.now() + 5.5 * 3_600_000).toISOString() },
   ];
   await page.route("**/api/**", async (route) => {

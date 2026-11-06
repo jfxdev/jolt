@@ -21,6 +21,7 @@ const CONTROL_PERMISSION_PATHS = [
   "control-tower/policies",
   "control-tower/approvals",
   "control-tower/crypto",
+  "control-tower/enrollments",
   "control-tower/roles",
   "control-tower/nodes",
   "control-tower/connections",

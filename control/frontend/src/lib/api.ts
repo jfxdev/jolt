@@ -13,6 +13,9 @@ import type {
   PendingOperation,
   CertificateInventory,
   AuthorizationKeys,
+  CreatedJoinToken,
+  Enrollment,
+  JoinToken,
   TrashEntry,
   EffectiveAccessCheck,
   EffectiveAccessResponse,
@@ -135,6 +138,17 @@ export const api = {
       `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/trash/${encodeURIComponent(trashId)}`,
       { method: "DELETE" },
     ),
+  createJoinToken: (body: { node_name: string; approval?: "auto" | "manual"; valid_minutes?: number }) =>
+    request<CreatedJoinToken>("/api/v1/control-tower/enrollments/tokens", { method: "POST", body: JSON.stringify(body) }),
+  joinTokens: () => request<ListResponse<JoinToken>>("/api/v1/control-tower/enrollments/tokens"),
+  revokeJoinToken: (id: string) =>
+    request<void>(`/api/v1/control-tower/enrollments/tokens/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  enrollments: (state?: string) =>
+    request<ListResponse<Enrollment>>(`/api/v1/control-tower/enrollments${state ? `?state=${encodeURIComponent(state)}` : ""}`),
+  approveEnrollment: (id: string) =>
+    request<Enrollment>(`/api/v1/control-tower/enrollments/${encodeURIComponent(id)}/approve`, { method: "POST" }),
+  rejectEnrollment: (id: string, note: string) =>
+    request<Enrollment>(`/api/v1/control-tower/enrollments/${encodeURIComponent(id)}/reject`, { method: "POST", body: JSON.stringify({ note }) }),
   certificateInventory: () => request<CertificateInventory>("/api/v1/control-tower/crypto/ca"),
   authorizationKeys: () => request<AuthorizationKeys>("/api/v1/control-tower/crypto/authorization-keys"),
   pendingOperations: (options: { state?: string; mine?: boolean } = {}) => {

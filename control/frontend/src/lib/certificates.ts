@@ -6,6 +6,7 @@ const KINDS: Record<CertificateKind, string> = {
   root: "Raiz",
   intermediate: "Intermediária",
   https: "Certificado HTTPS",
+  client: "Certificado de cliente",
   signing_key: "Chave de assinatura",
 };
 
@@ -33,8 +34,8 @@ export type Tone = "ok" | "warning" | "critical" | "neutral";
 
 // How early each kind should draw attention. A root or an intermediate is
 // renewed rarely and by a person if its key was taken out, so it warns early.
-const WARN_DAYS: Record<CertificateKind, number> = { root: 365, intermediate: 60, https: 14, signing_key: 14 };
-const CRITICAL_DAYS: Record<CertificateKind, number> = { root: 90, intermediate: 14, https: 2, signing_key: 2 };
+const WARN_DAYS: Record<CertificateKind, number> = { root: 365, intermediate: 60, https: 14, client: 14, signing_key: 14 };
+const CRITICAL_DAYS: Record<CertificateKind, number> = { root: 90, intermediate: 14, https: 2, client: 2, signing_key: 2 };
 
 /** What an entry's date should look like. Only what is in use matters: a retired one is meant to end. */
 export function expiryTone(item: CertificateItem, now: number): Tone {
@@ -56,7 +57,7 @@ export function expiryLabel(item: CertificateItem, now: number): string {
   return hours === 1 ? "1 hora" : `${hours} horas`;
 }
 
-const ORDER: Record<CertificateKind, number> = { root: 0, intermediate: 1, https: 2, signing_key: 3 };
+const ORDER: Record<CertificateKind, number> = { root: 0, intermediate: 1, https: 2, client: 3, signing_key: 4 };
 const STATE_ORDER: Record<CertificateItem["state"], number> = { active: 0, pending: 1, retired: 2 };
 
 /** Root first, then the issuers, then what they issued; what is in use before what is leaving. */
