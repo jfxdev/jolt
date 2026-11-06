@@ -3165,6 +3165,14 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "resource_not_found", "Recurso do node não permitido.")
 		return
 	}
+	if kind, trashID, known, ok := trashRoute(resource, r.Method); known {
+		if !ok {
+			writeError(w, r, http.StatusNotFound, "resource_not_found", "Recurso do node não permitido.")
+			return
+		}
+		s.proxyTrash(w, r, resource, kind, trashID)
+		return
+	}
 	if s.config.TypedPolicies && s.nodeEnforces(resource, r.Method) {
 		r = markNodeFiltered(r)
 	}

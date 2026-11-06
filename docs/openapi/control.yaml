@@ -1063,6 +1063,63 @@ paths:
         '401': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '410': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/mounts/{mountID}/trash:
+    get:
+      tags: [Node proxy]
+      summary: List what a mount's trash keeps
+      description: >-
+        For mounts with trash enabled in node.yaml, where a delete moves the entry for the configured
+        retention. Handled by the Control Tower, never passed through: only entries the caller could
+        read at their original path are listed, and agents get 403 `trash_not_for_agents`. Answers 409
+        `node_upgrade_required` when the node lacks `trash_v1`.
+      parameters:
+        - {name: nodeID, in: path, required: true, schema: {type: string}}
+        - {name: mountID, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/mounts/{mountID}/trash/{trashID}:
+    get:
+      tags: [Node proxy]
+      summary: Read one kept entry
+      description: Needs `read` at the entry's original path; otherwise it answers 404 as if the entry did not exist.
+      parameters:
+        - {name: nodeID, in: path, required: true, schema: {type: string}}
+        - {name: mountID, in: path, required: true, schema: {type: string}}
+        - {name: trashID, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '404': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [Node proxy]
+      summary: Purge a kept entry for good
+      description: Needs `delete` at the entry's original path. A grant marked `needs_approval` is refused here.
+      parameters:
+        - {name: nodeID, in: path, required: true, schema: {type: string}}
+        - {name: mountID, in: path, required: true, schema: {type: string}}
+        - {name: trashID, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{nodeID}/mounts/{mountID}/trash/{trashID}/restore:
+    post:
+      tags: [Node proxy]
+      summary: Put a kept entry back where it was
+      description: >-
+        Needs `create` at the entry's original path. Never overwrites: 409 when the name is taken, 404 when
+        the folder it was in is gone, 422 `hidden_name` when the name has since become hidden.
+      parameters:
+        - {name: nodeID, in: path, required: true, schema: {type: string}}
+        - {name: mountID, in: path, required: true, schema: {type: string}}
+        - {name: trashID, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
   /api/v1/nodes/{nodeID}/mounts/{mountID}/files/content:
     parameters:
       - {$ref: '#/components/parameters/NodeID'}
