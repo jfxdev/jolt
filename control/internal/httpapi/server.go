@@ -782,6 +782,9 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, path, capabil
 	}
 	s.auditAuthorizationDecision(r, decision)
 	if decision.Allowed {
+		if tracker, ok := r.Context().Value(decisionTrackerKey{}).(*decisionTracker); ok {
+			tracker.decisions = append(tracker.decisions, decision)
+		}
 		return true
 	}
 	s.registry.Inc("jolt_control_authorization_denied_total", capability)
@@ -3198,6 +3201,7 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r, collector := s.withApprovalCollector(r, resource)
+	r, tracker := withDecisionTracker(r)
 	targets := fileTargets{}
 	if isMountFileResource(resource) {
 		parsed, err := fileTargetsFromRequest(r)
@@ -3281,6 +3285,12 @@ func (s *Server) proxyNode(w http.ResponseWriter, r *http.Request) {
 	if collector != nil && len(collector.requirements) > 0 {
 		s.keepForApproval(w, r, resource, targets, collector)
 		return
+	}
+	// Access that rests only on a temporary grant ends with it, mid-stream too.
+	if deadline, bounded := s.temporaryAccessDeadline(r, tracker); bounded {
+		limited, cancel := context.WithDeadline(r.Context(), deadline)
+		defer cancel()
+		r = r.WithContext(limited)
 	}
 	node, err := s.store.GetNode(r.Context(), r.PathValue("nodeID"))
 	if err != nil {
@@ -4848,4 +4858,60 @@ func randomID(prefix string) string {
 	value := make([]byte, 12)
 	_, _ = rand.Read(value)
 	return prefix + "_" + hex.EncodeToString(value)
+}
+
+type decisionTrackerKey struct{}
+
+// decisionTracker remembers the grants a request relied on.
+type decisionTracker struct{ decisions []rbac.Decision }
+
+func withDecisionTracker(r *http.Request) (*http.Request, *decisionTracker) {
+	tracker := &decisionTracker{}
+	return r.WithContext(context.WithValue(r.Context(), decisionTrackerKey{}, tracker)), tracker
+}
+
+// temporaryAccessDeadline returns when a request must stop because every grant
+// it relied on was temporary. A grant that something permanent also gives, and
+// the built-in administrator, do not bound it; neither does an expired-in-flight
+// check that cannot be made.
+func (s *Server) temporaryAccessDeadline(r *http.Request, tracker *decisionTracker) (time.Time, bool) {
+	if tracker == nil || len(tracker.decisions) == 0 || r.Context().Value(agentKey) != nil {
+		return time.Time{}, false
+	}
+	if currentUser(r).Role == "admin" && currentActorType(r) == "user" {
+		return time.Time{}, false
+	}
+	temporary, err := s.store.TemporaryPolicies(r.Context(), currentActorType(r), currentUser(r).ID)
+	if err != nil || len(temporary) == 0 {
+		return time.Time{}, false
+	}
+	expiry := make(map[string]time.Time, len(temporary))
+	for _, grant := range temporary {
+		expiry[grant.PolicyID] = grant.ExpiresAt
+	}
+	var earliest time.Time
+	bounded := false
+	for _, decision := range tracker.decisions {
+		// A grant lasts as long as the longest temporary policy that gives it,
+		// unless some policy that is not temporary gives it too.
+		var last time.Time
+		permanent := len(decision.PolicyIDs) == 0
+		for _, id := range decision.PolicyIDs {
+			until, isTemporary := expiry[id]
+			if !isTemporary {
+				permanent = true
+				break
+			}
+			if until.After(last) {
+				last = until
+			}
+		}
+		if permanent {
+			continue
+		}
+		if !bounded || last.Before(earliest) {
+			earliest, bounded = last, true
+		}
+	}
+	return earliest, bounded
 }
