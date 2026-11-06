@@ -36,6 +36,7 @@ var (
 type serviceStore interface {
 	contracts.ConfigurationReader
 	contracts.ConfigurationWriter
+	contracts.TrashStore
 }
 
 type Service struct {
@@ -563,6 +564,9 @@ func (s *Service) DeleteFiltered(ctx context.Context, mountID, relative string, 
 	}
 	if info.IsDir() && !recursive {
 		return safeRemove(resolved)
+	}
+	if trashEnabled(mount) {
+		return s.moveToTrash(ctx, mount, cleanRelative(relative), resolved, info)
 	}
 	return safeRemoveProtected(ctx, resolved, func(name string) bool { return hiddenName(mount, name) })
 }

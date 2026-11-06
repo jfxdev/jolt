@@ -290,3 +290,44 @@ func TestDuplicateResourceIDsAndIncompatiblePermissions(t *testing.T) {
 		}
 	}
 }
+
+func TestTrashConfiguration(t *testing.T) {
+	root := t.TempDir()
+	mount := func(mode, trash string) string {
+		return "version: 1\nmounts:\n  - id: files\n    name: Files\n    local_path: " + root + "\n    mode: " + mode + "\n    enabled: true\n" + trash
+	}
+	cfg, err := Read(writeConfig(t, mount("read_write", "    trash: {enabled: true}\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mounts, _ := cfg.Resources()
+	if mounts[0].Trash == nil || !mounts[0].Trash.Enabled || mounts[0].Trash.RetentionDays != DefaultTrashRetentionDays {
+		t.Fatalf("default retention: %+v", mounts[0].Trash)
+	}
+	cfg, err = Read(writeConfig(t, mount("read_write", "    trash: {enabled: true, retention_days: 7}\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mounts, _ := cfg.Resources(); mounts[0].Trash.RetentionDays != 7 {
+		t.Fatalf("retention: %+v", mounts[0].Trash)
+	}
+	if cfg, err := Read(writeConfig(t, mount("read_write", ""))); err != nil {
+		t.Fatal(err)
+	} else if mounts, _ := cfg.Resources(); mounts[0].Trash != nil {
+		t.Fatalf("trash appeared without being asked for: %+v", mounts[0].Trash)
+	}
+	for name, text := range map[string]string{
+		"read-only mount":     mount("read_only", "    trash: {enabled: true}\n"),
+		"retention too long":  mount("read_write", "    trash: {enabled: true, retention_days: 366}\n"),
+		"negative retention":  mount("read_write", "    trash: {enabled: true, retention_days: -1}\n"),
+		"unknown trash field": mount("read_write", "    trash: {enabled: true, forever: true}\n"),
+	} {
+		if _, err := Read(writeConfig(t, text)); err == nil {
+			t.Fatalf("%s accepted", name)
+		}
+	}
+	// Turned off on a read-only mount is harmless.
+	if _, err := Read(writeConfig(t, mount("read_only", "    trash: {enabled: false}\n"))); err != nil {
+		t.Fatalf("disabled trash on a read-only mount: %v", err)
+	}
+}

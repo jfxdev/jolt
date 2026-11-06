@@ -85,6 +85,17 @@ type UploadStore interface {
 	ExpiredUploadSessions(context.Context, time.Time) ([]entities.UploadSession, error)
 }
 
+// TrashStore keeps the record of each entry a mount's trash holds. A record
+// is written before the entry moves and removed only after it is gone, so a
+// crash between the two steps can always be reconciled.
+type TrashStore interface {
+	PutTrashItem(context.Context, entities.TrashItem) error
+	GetTrashItem(context.Context, string) (entities.TrashItem, error)
+	ListTrashItems(context.Context, string) ([]entities.TrashItem, error)
+	AllTrashItems(context.Context) ([]entities.TrashItem, error)
+	DeleteTrashItem(context.Context, string) error
+}
+
 type Store interface {
 	Close() error
 	ConfigurationReader
@@ -94,4 +105,5 @@ type Store interface {
 	TrustStore
 	GrantWriter
 	UploadStore
+	TrashStore
 }

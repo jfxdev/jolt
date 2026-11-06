@@ -40,6 +40,23 @@ that the operator has populated with decoy data. Reads and metadata requests,
 including archives containing a decoy, produce an internal signal consumed by
 the Control Tower. A canary does not override hidden patterns or access policy;
 never place real credentials in a decoy.
+
+Optional `trash: {enabled: true, retention_days: 30}` on a `read_write` mount makes a
+delete (a file, or a folder with `recursive`) move the entry to a hidden `.jolt-trash`
+folder inside the mount instead of removing it. The move is one atomic rename on the
+same filesystem; an entry on another filesystem than the mount (a nested mount point)
+is refused rather than deleted. `retention_days` defaults to 30 and goes up to 365; the
+node purges what is older, checking every ten minutes. The folder is invisible to
+listings, searches, archives, disk usage and direct reads, and the entries are restored
+or purged through `/api/v1/mounts/{id}/trash` (the Control Tower exposes them in the
+interface). Restoring puts the entry back at its old path and refuses if the name is
+taken, if the folder it was in is gone, or if the name has since become hidden. Empty
+folders are removed for good. Records live in the encrypted state, which an older node
+refuses to open once it holds one; after a crash the node finishes or undoes whichever
+step was interrupted at startup. Trashed entries still use disk until purged, and a
+hard-linked file frees no space until then. The trash is not a backup: host-side access
+is unaffected, and an entry purged or past its retention is gone.
+
 Use explicit `enabled: true` and `published: true` when desired. Grants require
 `id`, `peer_node_id`, `mount_id`, a mount-relative `path`, `direction` and compatible
 `permissions`. Omitted `enabled`/`published`/permission booleans are false.

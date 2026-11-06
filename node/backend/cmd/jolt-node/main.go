@@ -122,6 +122,12 @@ func main() {
 	registry := metrics.NewRegistry()
 	registerNodeMetrics(registry, cfg, store)
 	go sweepUploadSessions(jobContext, store, fileService, logger, cfg.UploadSessionTTL)
+	if recovered, err := fileService.RecoverTrash(jobContext); err != nil {
+		logger.Error("recover trash", "error", err)
+	} else if recovered > 0 {
+		logger.Warn("reconciled trash records after a restart", "count", recovered)
+	}
+	go sweepTrash(jobContext, fileService, logger)
 	recoveredJobs, err := jobService.Start(jobContext, cfg.MaxConcurrentJobs)
 	if err != nil {
 		logger.Error("start job workers", "error", err)
@@ -255,6 +261,28 @@ func registerNodeMetrics(registry *metrics.Registry, cfg config.Config, uploads 
 	registry.GaugeFunc("jolt_max_concurrent_jobs", "Configured job worker count.",
 		func() float64 { return float64(cfg.MaxConcurrentJobs) })
 	registry.RegisterRuntime()
+}
+
+// sweepTrash purges what mounts kept past their retention. It runs often
+// enough that an entry does not outlive its retention by more than a few
+// minutes, and rarely enough to cost nothing.
+func sweepTrash(ctx context.Context, files *filesystem.Service, logger *slog.Logger) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		purged, err := files.SweepTrash(ctx, time.Now().UTC())
+		if err != nil {
+			logger.Error("sweep trash", "error", err)
+		}
+		if purged > 0 {
+			logger.Info("purged expired trash", "count", purged)
+		}
+	}
 }
 
 // sweepUploadSessions discards resumable uploads whose client never came back,

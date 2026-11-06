@@ -106,6 +106,10 @@ func New(cfg config.Config, identity entities.Identity, files *filesystem.Servic
 	mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/copy", s.copy)
 	mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/move", s.move)
 	mux.HandleFunc("DELETE /api/v1/mounts/{mountID}/files", s.deleteFile)
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/trash", s.listTrash)
+	mux.HandleFunc("GET /api/v1/mounts/{mountID}/trash/{trashID}", s.getTrash)
+	mux.HandleFunc("POST /api/v1/mounts/{mountID}/trash/{trashID}/restore", s.restoreTrash)
+	mux.HandleFunc("DELETE /api/v1/mounts/{mountID}/trash/{trashID}", s.purgeTrash)
 	if s.store != nil {
 		mux.HandleFunc("GET /api/v1/mounts/{mountID}/files/uploads", s.listUploadSessions)
 		mux.HandleFunc("POST /api/v1/mounts/{mountID}/files/uploads", s.signedUpload("upload_create", s.createUploadSession))
@@ -369,7 +373,7 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) node(w http.ResponseWriter, r *http.Request) {
-	capabilities := []string{"api_filesystem", "streaming_upload", "range_download", "durable_local_jobs", "job_controls", "job_events_sse", "job_eta", "bandwidth_limits", "waiting_mount", "waiting_validation", "directory_manifests", "directory_resume", "resumable_chunks", "conflict_policies", "manual_item_overrides", "checksum_verification", "source_change_policies", "transfer_path_grants", "cluster_grouping", "mtls_peer_listener", "mtls_certificate_rotation", "mtls_certificate_rollout_diagnostics", "mtls_certificate_revocation", "identity_handover", "mtls_peer_heartbeat", "direct_file_pull", "operational_token_rotation", "idempotency", "hidden_patterns_v1", "protected_move_v1", "canary_paths_v1", "agent_search_limits_v1", "agent_secret_scan_v1", "grant_exclude_send_v1", "grant_exclude_receive_v1", "upload_inspection_v1"}
+	capabilities := []string{"api_filesystem", "streaming_upload", "range_download", "durable_local_jobs", "job_controls", "job_events_sse", "job_eta", "bandwidth_limits", "waiting_mount", "waiting_validation", "directory_manifests", "directory_resume", "resumable_chunks", "conflict_policies", "manual_item_overrides", "checksum_verification", "source_change_policies", "transfer_path_grants", "cluster_grouping", "mtls_peer_listener", "mtls_certificate_rotation", "mtls_certificate_rollout_diagnostics", "mtls_certificate_revocation", "identity_handover", "mtls_peer_heartbeat", "direct_file_pull", "operational_token_rotation", "idempotency", "hidden_patterns_v1", "protected_move_v1", "canary_paths_v1", "agent_search_limits_v1", "agent_secret_scan_v1", "grant_exclude_send_v1", "grant_exclude_receive_v1", "upload_inspection_v1", "trash_v1"}
 	if len(s.config.AuthorizationKeys) > 0 {
 		capabilities = append(capabilities, "signed_local_read_v1", "signed_local_tree_read_v1")
 		if s.store != nil {
@@ -1737,6 +1741,10 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, code = http.StatusNotFound, "not_found"
 	case errors.Is(err, filesystem.ErrFilteredBlocked):
 		status, code = http.StatusForbidden, "file_type_not_allowed"
+	case errors.Is(err, filesystem.ErrTrashNotFound):
+		status, code = http.StatusNotFound, "trash_not_found"
+	case errors.Is(err, filesystem.ErrTrashUnavailable):
+		status, code = http.StatusConflict, "trash_unavailable"
 	case errors.Is(err, filesystem.ErrNotFound):
 		status, code = http.StatusNotFound, "not_found"
 	case errors.Is(err, filesystem.ErrHiddenName):
@@ -2159,6 +2167,45 @@ paths:
         "200": {description: Completed mkdir job}
         "403": {description: The mount is read-only}
         "422": {description: hidden_name - the destination is hidden by mount configuration}
+  /api/v1/mounts/{mountID}/trash:
+    get:
+      summary: Lists what the mount's trash keeps
+      description: Present only for mounts with trash enabled in node.yaml. Deleting an entry on such a mount moves it here for the configured retention.
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+      responses:
+        "200": {description: The kept entries, newest first}
+        "404": {description: Unknown mount}
+  /api/v1/mounts/{mountID}/trash/{trashID}:
+    get:
+      summary: Reads one kept entry
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: path, name: trashID, required: true, schema: {type: string}}
+      responses:
+        "200": {description: The kept entry}
+        "404": {description: trash_not_found}
+    delete:
+      summary: Purges a kept entry for good
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: path, name: trashID, required: true, schema: {type: string}}
+      responses:
+        "200": {description: The purged entry}
+        "404": {description: trash_not_found}
+  /api/v1/mounts/{mountID}/trash/{trashID}/restore:
+    post:
+      summary: Puts a kept entry back where it was
+      description: Fails with conflict if the name is taken, and with not found if its parent folder is gone. Never overwrites.
+      parameters:
+        - {in: path, name: mountID, required: true, schema: {type: string}}
+        - {in: path, name: trashID, required: true, schema: {type: string}}
+      responses:
+        "200": {description: The restored entry}
+        "403": {description: The mount is read-only}
+        "404": {description: trash_not_found, or the original folder no longer exists}
+        "409": {description: The original name is taken}
+        "422": {description: hidden_name - the original name is now hidden by mount configuration}
   /api/v1/mounts/{mountID}/files/move:
     post:
       summary: Moves or renames an entry inside one mount

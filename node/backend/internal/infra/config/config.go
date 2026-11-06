@@ -22,15 +22,21 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+const (
+	DefaultTrashRetentionDays = 30
+	MaxTrashRetentionDays     = 365
+)
+
 type MountConfig struct {
-	CanaryPaths    []string `yaml:"canary_paths"`
-	HiddenPatterns []string `yaml:"hidden_patterns"`
-	ID             string   `yaml:"id"`
-	Name           string   `yaml:"name"`
-	LocalPath      string   `yaml:"local_path"`
-	Mode           string   `yaml:"mode"`
-	Published      bool     `yaml:"published"`
-	Enabled        bool     `yaml:"enabled"`
+	CanaryPaths    []string              `yaml:"canary_paths"`
+	HiddenPatterns []string              `yaml:"hidden_patterns"`
+	Trash          *entities.TrashConfig `yaml:"trash,omitempty"`
+	ID             string                `yaml:"id"`
+	Name           string                `yaml:"name"`
+	LocalPath      string                `yaml:"local_path"`
+	Mode           string                `yaml:"mode"`
+	Published      bool                  `yaml:"published"`
+	Enabled        bool                  `yaml:"enabled"`
 }
 type GrantConfig struct {
 	ID               string                    `yaml:"id"`
@@ -362,6 +368,16 @@ func Read(file string) (Config, error) {
 		if err := filepolicy.ValidatePatterns(m.HiddenPatterns); err != nil {
 			return c, fail(fmt.Sprintf("mounts[%d].hidden_patterns", i), err.Error())
 		}
+		if m.Trash != nil {
+			if m.Trash.Enabled && m.Mode != "read_write" {
+				return c, fail(fmt.Sprintf("mounts[%d].trash", i), "requires a read_write mount")
+			}
+			if m.Trash.RetentionDays == 0 {
+				c.Mounts[i].Trash.RetentionDays = DefaultTrashRetentionDays
+			} else if m.Trash.RetentionDays < 1 || m.Trash.RetentionDays > MaxTrashRetentionDays {
+				return c, fail(fmt.Sprintf("mounts[%d].trash.retention_days", i), fmt.Sprintf("must be between 1 and %d", MaxTrashRetentionDays))
+			}
+		}
 		if !validID(m.ID) || strings.TrimSpace(m.Name) == "" {
 			return c, fail(fmt.Sprintf("mounts[%d]", i), "each mount requires a valid id and name")
 		}
@@ -489,12 +505,20 @@ func (c Config) Resources() ([]entities.Mount, []entities.TransferPathGrant) {
 	mounts := make([]entities.Mount, 0, len(c.Mounts))
 	grants := make([]entities.TransferPathGrant, 0, len(c.TransferGrants))
 	for _, m := range c.Mounts {
-		mounts = append(mounts, entities.Mount{ID: m.ID, Name: m.Name, LocalPath: m.LocalPath, TargetType: "directory", Mode: m.Mode, Published: m.Published, Enabled: m.Enabled, HiddenPatterns: append([]string(nil), m.HiddenPatterns...), CanaryPaths: append([]string(nil), m.CanaryPaths...)})
+		mounts = append(mounts, entities.Mount{ID: m.ID, Name: m.Name, LocalPath: m.LocalPath, TargetType: "directory", Mode: m.Mode, Published: m.Published, Enabled: m.Enabled, HiddenPatterns: append([]string(nil), m.HiddenPatterns...), CanaryPaths: append([]string(nil), m.CanaryPaths...), Trash: copyTrash(m.Trash)})
 	}
 	for _, g := range c.TransferGrants {
 		grants = append(grants, entities.TransferPathGrant{ID: g.ID, PeerNodeID: g.PeerNodeID, MountID: g.MountID, Path: g.Path, Direction: g.Direction, Permissions: g.Permissions, ConflictPolicies: g.ConflictPolicies, Exclude: g.Exclude, VisibleToPeer: g.VisibleToPeer, Enabled: g.Enabled})
 	}
 	return mounts, grants
+}
+
+func copyTrash(value *entities.TrashConfig) *entities.TrashConfig {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
 }
 
 func (c Config) ProtectedPaths() []string {

@@ -3,21 +3,42 @@ package entities
 import "time"
 
 type Mount struct {
-	CanaryPaths    []string  `json:"-" yaml:"canary_paths,omitempty"`
-	HiddenPatterns []string  `json:"-" yaml:"hidden_patterns,omitempty"`
-	ID             string    `json:"mount_id" yaml:"mount_id"`
-	Name           string    `json:"name" yaml:"name"`
-	LocalPath      string    `json:"-" yaml:"local_path"`
-	TargetType     string    `json:"target_type" yaml:"target_type"`
-	Mode           string    `json:"mode" yaml:"mode"`
-	Published      bool      `json:"published" yaml:"published"`
-	Enabled        bool      `json:"enabled" yaml:"enabled"`
-	State          string    `json:"state" yaml:"state"`
-	Readable       bool      `json:"readable" yaml:"readable"`
-	Writable       bool      `json:"writable" yaml:"writable"`
-	ModeBits       string    `json:"mode_bits,omitempty" yaml:"mode_bits"`
-	CreatedAt      time.Time `json:"created_at" yaml:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at" yaml:"updated_at"`
+	CanaryPaths    []string     `json:"-" yaml:"canary_paths,omitempty"`
+	HiddenPatterns []string     `json:"-" yaml:"hidden_patterns,omitempty"`
+	Trash          *TrashConfig `json:"trash,omitempty" yaml:"trash,omitempty"`
+	ID             string       `json:"mount_id" yaml:"mount_id"`
+	Name           string       `json:"name" yaml:"name"`
+	LocalPath      string       `json:"-" yaml:"local_path"`
+	TargetType     string       `json:"target_type" yaml:"target_type"`
+	Mode           string       `json:"mode" yaml:"mode"`
+	Published      bool         `json:"published" yaml:"published"`
+	Enabled        bool         `json:"enabled" yaml:"enabled"`
+	State          string       `json:"state" yaml:"state"`
+	Readable       bool         `json:"readable" yaml:"readable"`
+	Writable       bool         `json:"writable" yaml:"writable"`
+	ModeBits       string       `json:"mode_bits,omitempty" yaml:"mode_bits"`
+	CreatedAt      time.Time    `json:"created_at" yaml:"created_at"`
+	UpdatedAt      time.Time    `json:"updated_at" yaml:"updated_at"`
+}
+
+// TrashConfig turns deletes on a writable mount into moves to a hidden folder
+// inside the mount, kept for RetentionDays before they are purged.
+type TrashConfig struct {
+	Enabled       bool `json:"enabled" yaml:"enabled"`
+	RetentionDays int  `json:"retention_days" yaml:"retention_days"`
+}
+
+// TrashItem records one deleted entry kept in a mount's trash. Path is the
+// mount-relative path it had; Size is set for files only.
+type TrashItem struct {
+	ID        string    `json:"trash_id" yaml:"trash_id"`
+	MountID   string    `json:"mount_id" yaml:"mount_id"`
+	Path      string    `json:"path" yaml:"path"`
+	Type      string    `json:"type" yaml:"type"`
+	Size      int64     `json:"size,omitempty" yaml:"size,omitempty"`
+	State     string    `json:"state" yaml:"state"`
+	DeletedAt time.Time `json:"deleted_at" yaml:"deleted_at"`
+	ExpiresAt time.Time `json:"expires_at" yaml:"expires_at"`
 }
 
 type FileEntry struct {
