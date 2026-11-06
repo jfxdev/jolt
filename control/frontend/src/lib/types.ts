@@ -131,6 +131,10 @@ export interface PendingApprovalNotice {
   state: "pending_approval";
   expires_at: string;
   operation: "delete" | "move" | "copy";
+  // Set when a folder operation waits: what the approver will be asked about.
+  files?: number;
+  directories?: number;
+  bytes?: number;
 }
 
 export interface PendingOperation {
@@ -141,7 +145,15 @@ export interface PendingOperation {
   method: string;
   node_id: string;
   resource: string;
-  summary: { operation?: string; mount_id?: string; paths?: string[] };
+  summary: {
+    operation?: string;
+    mount_id?: string;
+    paths?: string[];
+    tree?: boolean;
+    files?: number;
+    directories?: number;
+    bytes?: number;
+  };
   requirements: { path: string; capability: string }[];
   state: PendingState;
   created_at: string;

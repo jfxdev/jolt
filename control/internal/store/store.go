@@ -423,6 +423,7 @@ WHERE path LIKE 'workers/%'`); err != nil {
 		`ALTER TABLE policy_rules ADD COLUMN file_types TEXT NOT NULL DEFAULT 'null'`,
 		`ALTER TABLE policy_rules ADD COLUMN visibility TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE policy_rules ADD COLUMN needs_approval TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE pending_operations ADD COLUMN kind TEXT NOT NULL DEFAULT 'replay'`,
 		`ALTER TABLE shares ADD COLUMN created_by_type TEXT NOT NULL DEFAULT 'user'`,
 		`ALTER TABLE shares ADD COLUMN created_credential_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE service_accounts ADD COLUMN kind TEXT NOT NULL DEFAULT 'automation'`,

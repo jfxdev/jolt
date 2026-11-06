@@ -1,3 +1,4 @@
+import { formatBytes } from "./format.ts";
 import type { PendingApprovalNotice, PendingOperation, PendingState } from "./types.ts";
 
 /** Recognises the 202 a file operation answers when a policy wants an approval. */
@@ -20,12 +21,19 @@ export function describePending(op: Pick<PendingOperation, "summary">): string {
   const paths = op.summary.paths ?? [];
   const label = operationLabel(op.summary.operation);
   const mount = op.summary.mount_id ? ` no mount ${op.summary.mount_id}` : "";
-  if (!paths.length) return `${label}${mount}`;
+  const tree = op.summary.tree ? ` — ${treeSize(op.summary)}` : "";
+  if (!paths.length) return `${label}${mount}${tree}`;
   if (op.summary.operation === "move" || op.summary.operation === "copy") {
     const [source, destination] = [paths.find((p) => p) ?? "", paths[paths.length - 1]];
-    return `${label} ${source} para ${destination}${mount}`;
+    return `${label} ${source} para ${destination}${mount}${tree}`;
   }
-  return `${label} ${paths.join(", ")}${mount}`;
+  return `${label} ${paths.join(", ")}${mount}${tree}`;
+}
+
+/** The size of a folder the approver is asked about, in words. */
+export function treeSize(summary: Pick<PendingOperation["summary"], "files" | "directories" | "bytes">): string {
+  const count = (value: number, one: string, many: string) => `${value} ${value === 1 ? one : many}`;
+  return `${count(summary.files ?? 0, "arquivo", "arquivos")} em ${count(summary.directories ?? 0, "pasta", "pastas")} (${formatBytes(summary.bytes ?? 0)})`;
 }
 
 const STATES: Record<PendingState, string> = {
@@ -51,7 +59,8 @@ export function remainingLabel(expiresAt: string, now: number): string {
 
 /** The toast a requester sees after asking for something that needs approval. */
 export function pendingToast(notice: PendingApprovalNotice, now = Date.now()): string {
-  return `${operationLabel(notice.operation)} aguardando aprovação de uma pessoa (${remainingLabel(notice.expires_at, now)} para decidir).`;
+  const tree = notice.files === undefined ? "" : ` ${treeSize(notice)}`;
+  return `${operationLabel(notice.operation)}${tree} aguardando aprovação de uma pessoa (${remainingLabel(notice.expires_at, now)} para decidir).`;
 }
 
 /** What an approver is told about the outcome of the replay. */

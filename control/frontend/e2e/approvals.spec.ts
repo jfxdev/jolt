@@ -6,6 +6,7 @@ const soon = new Date(Date.now() + 4 * 60_000).toISOString();
 interface Options {
   approvals?: boolean;
   deleteAnswer?: "pending" | "job";
+  planAnswer?: "pending";
   pending?: unknown[];
 }
 
@@ -56,6 +57,8 @@ async function fixture(page: Page, options: Options = {}) {
       return json(policy);
     }
     if (path.endsWith("/policies")) return json({ items: [policy] });
+    if (path.endsWith("/files/destructive-plans"))
+      return json({ pending_operation_id: "pop_2", state: "pending_approval", expires_at: soon, operation: "delete", files: 12, directories: 3, bytes: 4096 }, 202);
     if (request.method() === "DELETE" && path.endsWith("/files")) {
       calls.deletes++;
       if (options.deleteAnswer === "pending")
@@ -63,7 +66,7 @@ async function fixture(page: Page, options: Options = {}) {
       return json({ job_id: "job_1", state: "queued" }, 202);
     }
     if (path.endsWith("/files"))
-      return json({ items: [{ name: "nota.txt", path: "nota.txt", type: "file", size: 7, modified_at: now }], has_more: false, next_after: "" });
+      return json({ items: [{ name: "nota.txt", path: "nota.txt", type: "file", size: 7, modified_at: now }, { name: "obras", path: "obras", type: "directory", size: 4096, modified_at: now }], has_more: false, next_after: "" });
     if (path.endsWith("/config/effective")) return json({ transfer_max_source_paths: 1000 });
     return json({ items: [] });
   });
@@ -195,4 +198,15 @@ test("a delete that does not need approval keeps saying it was removed", async (
   await page.getByRole("alertdialog").getByRole("button", { name: "Remover" }).click();
   await expect.poll(() => calls.deletes).toBe(1);
   await expect(page.getByText("Item removido.")).toBeVisible();
+});
+
+test("deleting a folder that needs approval shows what the approver will be asked about", async ({ page }) => {
+  const calls = await fixture(page, { planAnswer: "pending" });
+  await page.goto("/nodes/a/mounts/media");
+  await page.getByRole("row", { name: "Ações para obras" }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Remover" }).click();
+  await expect(page.getByText(/Apagar 12 arquivos em 3 pastas \(4\.0 KB\) aguardando aprovação/)).toBeVisible();
+  // No confirmation was offered: there is no plan for the requester to confirm.
+  await expect(page.getByRole("alertdialog")).toHaveCount(0);
+  expect(calls.deletes).toBe(0);
 });

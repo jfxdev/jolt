@@ -133,6 +133,9 @@ func (s *Server) createDestructivePlanRoute(w http.ResponseWriter, r *http.Reque
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "A operação deve ser delete ou move.")
 		return
 	}
+	// A grant that asks for approval does not stop the plan: planning changes
+	// nothing. It stops at the confirmation, which a person must approve.
+	r, collector := s.armApprovalCollector(r)
 	if !s.authorizeDestructive(w, r, node.ID, mountID, request.Operation, request.SourcePath, request.DestinationPath, request.Overwrite) {
 		return
 	}
@@ -140,13 +143,13 @@ func (s *Server) createDestructivePlanRoute(w http.ResponseWriter, r *http.Reque
 		writeError(w, r, http.StatusConflict, "node_upgrade_required", "Atualize o node para usar planos de operações destrutivas.")
 		return
 	}
-	actor := currentUser(r)
-	payload := map[string]any{"subject_type": currentActorType(r), "subject_id": actor.ID, "operation": request.Operation, "source_path": request.SourcePath, "destination_path": request.DestinationPath, "overwrite": request.Overwrite}
-	var plan json.RawMessage
-	if err := s.callNodeJSON(r.Context(), node, http.MethodPost, "/api/v1/mounts/"+url.PathEscape(mountID)+"/files/destructive-plans", payload, &plan, r.Header.Get("X-Correlation-ID")); err != nil {
-		if !nodeAPIErrorResponse(w, r, err) {
-			writeError(w, r, http.StatusBadGateway, "node_unavailable", "O node está indisponível.")
-		}
+	plan, ok := s.createPlanOnNode(w, r, node, mountID, request.Operation, request.SourcePath, request.DestinationPath, request.Overwrite)
+	if !ok {
+		return
+	}
+	if collector != nil && len(collector.requirements) > 0 {
+		// The requester never receives the token. The counts go to the approver.
+		s.keepPlanForApproval(w, r, node, mountID, request.Operation, request.SourcePath, request.DestinationPath, request.Overwrite, plan, collector)
 		return
 	}
 	s.audit(r, "plan_"+request.Operation, "nodes/"+node.ID+"/mounts/"+mountID+"/"+request.SourcePath, "allowed")
@@ -154,6 +157,21 @@ func (s *Server) createDestructivePlanRoute(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_, _ = w.Write(plan)
+}
+
+// createPlanOnNode asks the node to inspect the tree and record a plan for the
+// current actor. On failure it has already answered.
+func (s *Server) createPlanOnNode(w http.ResponseWriter, r *http.Request, node store.Node, mountID, operation, source, destination string, overwrite bool) (json.RawMessage, bool) {
+	actor := currentUser(r)
+	payload := map[string]any{"subject_type": currentActorType(r), "subject_id": actor.ID, "operation": operation, "source_path": source, "destination_path": destination, "overwrite": overwrite}
+	var plan json.RawMessage
+	if err := s.callNodeJSON(r.Context(), node, http.MethodPost, "/api/v1/mounts/"+url.PathEscape(mountID)+"/files/destructive-plans", payload, &plan, r.Header.Get("X-Correlation-ID")); err != nil {
+		if !nodeAPIErrorResponse(w, r, err) {
+			writeError(w, r, http.StatusBadGateway, "node_unavailable", "O node está indisponível.")
+		}
+		return nil, false
+	}
+	return plan, true
 }
 
 // confirmDestructivePlanRoute consumes the confirmation token, binds the
@@ -181,12 +199,18 @@ func (s *Server) confirmDestructivePlanRoute(w http.ResponseWriter, r *http.Requ
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "Informe o token do plano.")
 		return
 	}
+	s.confirmPlanInto(w, r, node, mountID, planID, request.Token, idempotency)
+}
+
+// confirmPlanInto consumes a plan's token for the current actor and answers on
+// w. The approval of a tree operation runs it too, as the approver.
+func (s *Server) confirmPlanInto(w http.ResponseWriter, r *http.Request, node store.Node, mountID, planID, token, idempotency string) {
 	if !s.nodeHasCapabilities(r, node, "destructive_plans_v1", "signed_local_copy_execution_v1", "signed_job_authorization_registration_v1", "signed_job_options_binding_v1") {
 		writeError(w, r, http.StatusConflict, "node_upgrade_required", "Atualize o node para usar planos de operações destrutivas.")
 		return
 	}
 	actor := currentUser(r)
-	body, err := json.Marshal(map[string]any{"subject_type": currentActorType(r), "subject_id": actor.ID, "token": request.Token})
+	body, err := json.Marshal(map[string]any{"subject_type": currentActorType(r), "subject_id": actor.ID, "token": token})
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -220,6 +244,19 @@ func (s *Server) confirmDestructivePlanRoute(w http.ResponseWriter, r *http.Requ
 	var job signedLocalJob
 	if err := json.Unmarshal(data, &job); err != nil || !validPathIdentifier(job.ID) || (job.Type != "delete" && job.Type != "move_local") || job.MountID != mountID {
 		writeError(w, r, http.StatusBadGateway, "node_unavailable", "Resposta inválida do node.")
+		return
+	}
+	// The token is spent, so a job the caller may not run on their own, or may
+	// run only with approval they do not hold, is canceled rather than left
+	// waiting. A plan for a grant that needs approval is never handed out, so
+	// this is what an older plan meets after a policy changed.
+	if code, message := s.jobPolicyProblem(r, node.ID, job); code != "" {
+		if cancel, cancelErr := s.signedCopyNodeRequest(r, node, "/api/v1/jobs/"+url.PathEscape(job.ID)+"/cancel", nil, "", ""); cancelErr == nil {
+			_, _ = io.Copy(io.Discard, cancel.Body)
+			cancel.Body.Close()
+		}
+		s.audit(r, "confirm_"+strings.TrimSuffix(job.Type, "_local"), "nodes/"+node.ID+"/jobs/"+job.ID, "denied")
+		writeError(w, r, http.StatusForbidden, code, message)
 		return
 	}
 	if _, err := s.store.GetJobAuthorizationLink(r.Context(), node.ID, job.ID); errors.Is(err, store.ErrNotFound) {
@@ -286,4 +323,36 @@ func (s *Server) refuseUnplannedTreeOperation(w http.ResponseWriter, r *http.Req
 	}
 	writeError(w, r, http.StatusConflict, "plan_required", "Excluir ou mover uma pasta exige um plano de operação destrutiva e a sua confirmação.")
 	return true
+}
+
+// jobPolicyProblem re-checks, with the caller's current policies, what a
+// destructive job needs. It returns an error code and message, or "" when the
+// job may run.
+func (s *Server) jobPolicyProblem(r *http.Request, nodeID string, job signedLocalJob) (string, string) {
+	resource, method := "mounts/"+job.MountID+"/files", http.MethodDelete
+	targets := fileTargets{Paths: []string{job.Source}}
+	if job.Type == "move_local" {
+		resource, method = resource+"/move", http.MethodPost
+		targets = fileTargets{Source: job.Source, Destination: job.Destination, Overwrite: job.Overwrite}
+		if job.Overwrite {
+			targets.ConflictPolicy = "overwrite"
+		}
+	}
+	requirements := nodeAuthorizationRequirements(nodeID, resource, method, targets)
+	if len(requirements) == 0 {
+		return "permission_denied", "A policy atual não permite esta operação. O plano foi descartado."
+	}
+	for _, requirement := range requirements {
+		decision, err := s.evaluateAuthorization(r, requirement.Path, requirement.Capability)
+		if err != nil {
+			return "permission_denied", "Não foi possível verificar a permissão. O plano foi descartado."
+		}
+		if decision.NeedsApproval && !decision.Allowed {
+			return "approval_required", "Esta operação exige aprovação humana. O plano foi descartado; peça a operação de novo."
+		}
+		if !decision.Allowed {
+			return "permission_denied", "A policy atual não permite esta operação. O plano foi descartado."
+		}
+	}
+	return "", ""
 }

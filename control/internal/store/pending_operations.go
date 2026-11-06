@@ -43,7 +43,15 @@ type PendingRequirement struct {
 	Capability string `json:"capability"`
 }
 
+// Pending kinds. A replay is kept as a request and run again as the approver; a
+// plan asks the approver to plan and confirm a tree operation as themselves.
+const (
+	PendingKindReplay = "replay"
+	PendingKindPlan   = "plan"
+)
+
 type PendingOperation struct {
+	Kind          string               `json:"kind"`
 	ID            string               `json:"pending_operation_id"`
 	RequesterType string               `json:"requester_type"`
 	RequesterID   string               `json:"requester_id"`
@@ -66,7 +74,7 @@ type PendingOperation struct {
 	ResultBody    string               `json:"result_body,omitempty"`
 }
 
-const pendingColumns = `id,requester_type,requester_id,method,node_id,resource,raw_query,body,body_sha256,summary,requirements,state,created_at,expires_at_ns,decided_by_type,decided_by_id,decided_at,note,result_status,result_body`
+const pendingColumns = `id,kind,requester_type,requester_id,method,node_id,resource,raw_query,body,body_sha256,summary,requirements,state,created_at,expires_at_ns,decided_by_type,decided_by_id,decided_at,note,result_status,result_body`
 
 // IntegrityOK reports whether the stored body is the one the request was made
 // with. A replay refuses anything else.
@@ -79,7 +87,7 @@ func scanPending(row interface{ Scan(...any) error }) (PendingOperation, error) 
 	var op PendingOperation
 	var summary, requirements, created, decidedAt string
 	var expires int64
-	if err := row.Scan(&op.ID, &op.RequesterType, &op.RequesterID, &op.Method, &op.NodeID, &op.Resource, &op.RawQuery, &op.Body, &op.BodySHA256, &summary, &requirements, &op.State, &created, &expires, &op.DecidedByType, &op.DecidedByID, &decidedAt, &op.Note, &op.ResultStatus, &op.ResultBody); err != nil {
+	if err := row.Scan(&op.ID, &op.Kind, &op.RequesterType, &op.RequesterID, &op.Method, &op.NodeID, &op.Resource, &op.RawQuery, &op.Body, &op.BodySHA256, &summary, &requirements, &op.State, &created, &expires, &op.DecidedByType, &op.DecidedByID, &decidedAt, &op.Note, &op.ResultStatus, &op.ResultBody); err != nil {
 		return PendingOperation{}, err
 	}
 	op.Summary = json.RawMessage(summary)
@@ -119,10 +127,16 @@ func (s *Store) CreatePendingOperation(ctx context.Context, op PendingOperation,
 	if op.Body == nil {
 		op.Body = []byte{}
 	}
+	if op.Kind == "" {
+		op.Kind = PendingKindReplay
+	}
+	if op.Kind != PendingKindReplay && op.Kind != PendingKindPlan {
+		return PendingOperation{}, false, errors.New("unknown pending operation kind")
+	}
 	digest := sha256.Sum256(op.Body)
 	op.BodySHA256 = hex.EncodeToString(digest[:])
-	existing, err := scanPending(tx.QueryRowContext(ctx, `SELECT `+pendingColumns+` FROM pending_operations WHERE requester_type=? AND requester_id=? AND state=? AND method=? AND node_id=? AND resource=? AND raw_query=? AND body_sha256=?`,
-		op.RequesterType, op.RequesterID, PendingState, op.Method, op.NodeID, op.Resource, op.RawQuery, op.BodySHA256))
+	existing, err := scanPending(tx.QueryRowContext(ctx, `SELECT `+pendingColumns+` FROM pending_operations WHERE requester_type=? AND requester_id=? AND state=? AND kind=? AND method=? AND node_id=? AND resource=? AND raw_query=? AND body_sha256=?`,
+		op.RequesterType, op.RequesterID, PendingState, op.Kind, op.Method, op.NodeID, op.Resource, op.RawQuery, op.BodySHA256))
 	if err == nil {
 		return existing, true, nil
 	}
@@ -141,6 +155,7 @@ func (s *Store) CreatePendingOperation(ctx context.Context, op PendingOperation,
 		return PendingOperation{}, false, err
 	}
 	op.ID = "pop_" + hex.EncodeToString(random)
+
 	op.State, op.CreatedAt, op.ExpiresAt = PendingState, now.UTC(), now.UTC().Add(PendingLifetime)
 	if len(op.Summary) == 0 {
 		op.Summary = json.RawMessage("{}")
@@ -149,8 +164,8 @@ func (s *Store) CreatePendingOperation(ctx context.Context, op PendingOperation,
 	if err != nil {
 		return PendingOperation{}, false, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO pending_operations(`+pendingColumns+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		op.ID, op.RequesterType, op.RequesterID, op.Method, op.NodeID, op.Resource, op.RawQuery, op.Body, op.BodySHA256, string(op.Summary), string(requirements), op.State,
+	if _, err := tx.ExecContext(ctx, `INSERT INTO pending_operations(`+pendingColumns+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		op.ID, op.Kind, op.RequesterType, op.RequesterID, op.Method, op.NodeID, op.Resource, op.RawQuery, op.Body, op.BodySHA256, string(op.Summary), string(requirements), op.State,
 		op.CreatedAt.Format(time.RFC3339Nano), op.ExpiresAt.UnixNano(), "", "", "", "", 0, ""); err != nil {
 		return PendingOperation{}, false, err
 	}

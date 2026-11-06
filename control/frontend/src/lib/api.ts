@@ -9,6 +9,7 @@ import type {
   AuthUser,
   ApprovalDecision,
   BuildInfo,
+  PendingApprovalNotice,
   PendingOperation,
   TrashEntry,
   EffectiveAccessCheck,
@@ -563,7 +564,7 @@ export const api = {
       overwrite?: boolean;
     },
   ) =>
-    request<DestructivePlan>(
+    request<DestructivePlan | PendingApprovalNotice>(
       `/api/v1/nodes/${encodeURIComponent(nodeId)}/mounts/${encodeURIComponent(mountId)}/files/destructive-plans`,
       { method: "POST", body: JSON.stringify(plan) },
     ),

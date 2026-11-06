@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -110,6 +111,19 @@ func (s *Server) withApprovalCollector(r *http.Request, resource string) (*http.
 	if _, ok := approvalRoute(resource, r.Method); !ok {
 		return r, nil
 	}
+	return s.armApprovalCollector(r)
+}
+
+// armApprovalCollector makes the authorization checks that follow collect, not
+// refuse, the grants that need a person's approval. Not for agents and not for
+// the replay of a request that was approved already.
+func (s *Server) armApprovalCollector(r *http.Request) (*http.Request, *approvalCollector) {
+	if !s.config.Approvals || r.Context().Value(agentKey) != nil {
+		return r, nil
+	}
+	if _, replay := r.Context().Value(approvedKey{}).(approvedGrant); replay {
+		return r, nil
+	}
 	collector := &approvalCollector{}
 	return r.WithContext(context.WithValue(r.Context(), approvalCollectorKey{}, collector)), collector
 }
@@ -143,6 +157,122 @@ func (s *Server) keepForApproval(w http.ResponseWriter, r *http.Request, resourc
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"pending_operation_id": op.ID, "state": "pending_approval", "expires_at": op.ExpiresAt, "operation": operation,
 	})
+}
+
+type planCounts struct {
+	Files       int64 `json:"files"`
+	Directories int64 `json:"directories"`
+	Bytes       int64 `json:"bytes"`
+}
+
+// keepPlanForApproval stores the request for a tree operation whose grant needs
+// a person's approval. The plan the node made is only a count of what the
+// approver will be asked about; its token is dropped, and the approver plans
+// and confirms again as themselves.
+func (s *Server) keepPlanForApproval(w http.ResponseWriter, r *http.Request, node store.Node, mountID, operation, source, destination string, overwrite bool, plan json.RawMessage, collector *approvalCollector) {
+	var counts planCounts
+	if json.Unmarshal(plan, &counts) != nil {
+		writeError(w, r, http.StatusBadGateway, "node_unavailable", "Resposta inválida do node.")
+		return
+	}
+	body, _ := json.Marshal(map[string]any{"operation": operation, "source_path": source, "destination_path": destination, "overwrite": overwrite})
+	paths := []string{source}
+	if operation == "move" {
+		paths = append(paths, destination)
+	}
+	summary, _ := json.Marshal(map[string]any{"operation": operation, "mount_id": mountID, "paths": paths, "tree": true,
+		"files": counts.Files, "directories": counts.Directories, "bytes": counts.Bytes})
+	op, existing, err := s.store.CreatePendingOperation(r.Context(), store.PendingOperation{
+		Kind: store.PendingKindPlan, RequesterType: currentActorType(r), RequesterID: currentUser(r).ID, Method: http.MethodPost,
+		NodeID: node.ID, Resource: "mounts/" + mountID + "/files/destructive-plans", Body: body, Summary: summary, Requirements: collector.requirements,
+	}, maxPendingPerIdentity, time.Now())
+	if errors.Is(err, store.ErrPendingTooMany) {
+		writeError(w, r, http.StatusTooManyRequests, "too_many_pending_operations", "Há pedidos demais aguardando aprovação. Espere uma decisão antes de pedir outro.")
+		return
+	}
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if !existing {
+		s.notifyApproval(op, operation, mountID)
+	}
+	w.Header().Set("Location", "/api/v1/control-tower/pending-operations/"+op.ID)
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"pending_operation_id": op.ID, "state": "pending_approval", "expires_at": op.ExpiresAt, "operation": operation,
+		"files": counts.Files, "directories": counts.Directories, "bytes": counts.Bytes,
+	})
+}
+
+// executePlanApproval runs an approved tree operation as the approver: plan it
+// again, require the tree to be what the requester was shown, and confirm it
+// at once. The job is the approver's, so its authorization renews under their
+// permissions.
+func (s *Server) executePlanApproval(r *http.Request, op store.PendingOperation) (int, string) {
+	writer := &captureWriter{header: make(http.Header)}
+	finish := func() (int, string) {
+		if writer.status == 0 {
+			writer.status = http.StatusOK
+		}
+		return writer.status, writer.body.String()
+	}
+	var request struct {
+		Operation       string `json:"operation"`
+		SourcePath      string `json:"source_path"`
+		DestinationPath string `json:"destination_path"`
+		Overwrite       bool   `json:"overwrite"`
+	}
+	var summary planCounts
+	decoder := json.NewDecoder(bytes.NewReader(op.Body))
+	decoder.DisallowUnknownFields()
+	mountID := mountIDFromResource(op.Resource)
+	node, nodeErr := s.store.GetNode(r.Context(), op.NodeID)
+	if decoder.Decode(&request) != nil || json.Unmarshal(op.Summary, &summary) != nil || nodeErr != nil || !validPathIdentifier(mountID) {
+		writeError(writer, r, http.StatusConflict, "invalid_pending_operation", "O pedido guardado não pôde ser lido.")
+		return finish()
+	}
+	grant := approvedGrant{id: op.ID, set: map[string]bool{}}
+	for _, requirement := range op.Requirements {
+		grant.set[requirementKey(requirement.Path, requirement.Capability)] = true
+	}
+	r = r.WithContext(context.WithValue(r.Context(), approvedKey{}, grant))
+	if s.config.TypedPolicies {
+		r = markNodeFiltered(r)
+	}
+	if !s.authorizeDestructive(writer, r, node.ID, mountID, request.Operation, request.SourcePath, request.DestinationPath, request.Overwrite) {
+		return finish()
+	}
+	if !s.nodeHasCapabilities(r, node, "destructive_plans_v1", "signed_local_copy_execution_v1") {
+		writeError(writer, r, http.StatusConflict, "node_upgrade_required", "Atualize o node para usar planos de operações destrutivas.")
+		return finish()
+	}
+	planned, ok := s.createPlanOnNode(writer, r, node, mountID, request.Operation, request.SourcePath, request.DestinationPath, request.Overwrite)
+	if !ok {
+		return finish()
+	}
+	var plan struct {
+		planCounts
+		ID    string `json:"plan_id"`
+		Token string `json:"token"`
+	}
+	if json.Unmarshal(planned, &plan) != nil || !validPathIdentifier(plan.ID) || plan.Token == "" {
+		writeError(writer, r, http.StatusBadGateway, "node_unavailable", "Resposta inválida do node.")
+		return finish()
+	}
+	if plan.planCounts != summary {
+		// The approver approved what the requester was shown. The tree is
+		// something else now: nothing runs, and the request must be made again.
+		writeError(writer, r, http.StatusConflict, "tree_changed", "A pasta mudou depois do pedido ("+
+			describeTreeChange(summary, plan.planCounts)+"). Nada foi executado; peça de novo.")
+		return finish()
+	}
+	s.confirmPlanInto(writer, r, node, mountID, plan.ID, plan.Token, "approval-"+op.ID)
+	return finish()
+}
+
+func describeTreeChange(before, after planCounts) string {
+	return fmt.Sprintf("era %d arquivos, %d pastas, %d bytes; agora %d, %d, %d", before.Files, before.Directories, before.Bytes, after.Files, after.Directories, after.Bytes)
 }
 
 // notifyApproval tells an optional webhook that a request is waiting. It is a
@@ -353,7 +483,13 @@ func (s *Server) approvePendingOperation(w http.ResponseWriter, r *http.Request)
 		s.fail(w, r, err)
 		return
 	}
-	status, body := s.replayApproved(r, claimed)
+	var status int
+	var body string
+	if claimed.Kind == store.PendingKindPlan {
+		status, body = s.executePlanApproval(r, claimed)
+	} else {
+		status, body = s.replayApproved(r, claimed)
+	}
 	if err := s.store.FinishPendingOperation(r.Context(), id, status, body, time.Now()); err != nil {
 		s.log.Error("could not record the result of an approved operation", "error", err, "pending_operation_id", id)
 	}

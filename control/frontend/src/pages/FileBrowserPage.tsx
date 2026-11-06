@@ -9,7 +9,7 @@ import { usePermissions } from "@/context/PermissionsContext";
 import { useApiError } from "@/hooks/useApiError";
 import { useConfirm } from "@/context/ConfirmProvider";
 import { formatBytes } from "@/lib/format";
-import { destructivePlanDescription, planUnavailable } from "@/lib/destructive-plan";
+import { destructivePlanDescription, planUnavailable, type DestructivePlan } from "@/lib/destructive-plan";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -352,12 +352,20 @@ export default function FileBrowserPage() {
   // route applies as before.
   async function removeDirectory(entry: FileEntry): Promise<boolean> {
     if (!mount) return true;
-    let plan;
+    let plan: DestructivePlan;
     try {
-      plan = await api.planDestructive(nodeId, mount.mount_id, {
+      const answer = await api.planDestructive(nodeId, mount.mount_id, {
         operation: "delete",
         source_path: entry.path,
       });
+      // A policy may ask a person to approve a folder delete: no plan, no
+      // confirmation here, and the approver sees the counts.
+      const pending = asPendingApproval(answer);
+      if (pending) {
+        toast.info(pendingToast(pending));
+        return true;
+      }
+      plan = answer as DestructivePlan;
     } catch (error) {
       if (planUnavailable(error as { code?: string; status?: number })) return false;
       handleError(error);

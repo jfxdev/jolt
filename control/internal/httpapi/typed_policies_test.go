@@ -82,6 +82,21 @@ func (h *typedHarness) do(user, method, path string, body any) *httptest.Respons
 	return w.ResponseRecorder
 }
 
+// doWith is do with extra request headers.
+func (h *typedHarness) doWith(user, method, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
+	var encoded []byte
+	if body != nil {
+		encoded, _ = json.Marshal(body)
+	}
+	request := authenticatedRequest(method, path, h.sessions[user], encoded)
+	for key, value := range headers {
+		request.Header.Set(key, value)
+	}
+	w := &deadlineRecorder{httptest.NewRecorder()}
+	h.handler.ServeHTTP(w, request)
+	return w.ResponseRecorder
+}
+
 func TestTypedRulesAreAcceptedOnlyWhenTypedPoliciesAreEnabled(t *testing.T) {
 	base := "nodes/n1/files/mounts/m"
 	typedDeny := map[string]any{"path": base + "/**", "capabilities": []string{"deny", "read"}, "file_types": map[string]any{"extensions": []string{"pem"}}}
