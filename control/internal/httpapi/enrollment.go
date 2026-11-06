@@ -375,7 +375,7 @@ func (s *Server) completeEnrollment(ctx context.Context, authority *pki.Manager,
 	if err := s.store.SaveNode(ctx, node); err != nil {
 		return enrollPayload{}, http.StatusInternalServerError, errors.New("não foi possível registrar o node")
 	}
-	if err := s.store.SaveManagedNode(ctx, store.ManagedNode{NodeID: node.ID, EnrolledAt: now, BundleVersion: bundle.Version, CertSerial: leaf.SerialNumber.Text(16), CertNotBefore: leaf.NotBefore, CertNotAfter: leaf.NotAfter}); err != nil {
+	if err := s.store.SaveManagedNode(ctx, store.ManagedNode{NodeID: node.ID, EnrolledAt: now, BundleVersion: bundle.Version, CertSerial: leaf.SerialNumber.Text(16), CertNotBefore: leaf.NotBefore, CertNotAfter: leaf.NotAfter, CertFingerprint: pki.Fingerprint(leaf), CertIssuer: pki.IssuerSerial(chain)}); err != nil {
 		return enrollPayload{}, http.StatusInternalServerError, errors.New("não foi possível registrar o node")
 	}
 	encoded, err := bundle.Marshal()

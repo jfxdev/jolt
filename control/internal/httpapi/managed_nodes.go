@@ -15,10 +15,13 @@ import (
 const managedSyncInterval = time.Minute
 
 type nodeTrustStatus struct {
-	BundleVersion  int64 `json:"bundle_version"`
+	BundleVersion  int64  `json:"bundle_version"`
+	AuthMode       string `json:"auth_mode"`
 	APICertificate struct {
-		NotAfter time.Time `json:"not_after"`
-		Serial   string    `json:"serial"`
+		NotAfter     time.Time `json:"not_after"`
+		Serial       string    `json:"serial"`
+		IssuerSerial string    `json:"issuer_serial"`
+		Fingerprint  string    `json:"fingerprint"`
 	} `json:"api_certificate"`
 }
 
@@ -61,10 +64,18 @@ func (s *Server) syncManagedNodes(ctx context.Context, now time.Time) {
 		s.log.Error("list managed nodes", "error", err)
 		return
 	}
+	// What this authority issued to a node is how the node is recognised when
+	// its certificate has run out or its issuer was replaced.
+	pins := make([]string, 0, len(managed))
+	for _, record := range managed {
+		pins = append(pins, record.CertFingerprint)
+	}
+	authority.Pin(pins)
 	var lag int64
 	soonest := time.Duration(-1)
-	for _, record := range managed {
+	for i, record := range managed {
 		record = s.syncManagedNode(ctx, authority, record, now)
+		managed[i] = record
 		if behind := authority.Bundle().Version - record.BundleVersion; behind > lag {
 			lag = behind
 		}
@@ -72,6 +83,7 @@ func (s *Server) syncManagedNodes(ctx context.Context, now time.Time) {
 			soonest = left
 		}
 	}
+	s.retireRootWhenUnused(ctx, authority, managed)
 	if s.registry != nil {
 		s.registry.SetGauge("jolt_managed_nodes", int64(len(managed)))
 		s.registry.SetGauge("jolt_managed_node_bundle_lag", lag)
@@ -100,6 +112,7 @@ func (s *Server) syncManagedNode(ctx context.Context, authority *pki.Manager, re
 		return fail("read the node's trust state", err)
 	}
 	record.BundleVersion = status.BundleVersion
+	record.AuthMode = status.AuthMode
 	if bundle := authority.Bundle(); status.BundleVersion < bundle.Version {
 		if err := s.callNodeJSON(ctx, node, "PUT", "/api/v1/crypto/trust-bundle", bundle, nil, correlation); err != nil {
 			return fail("send the trust bundle", err)
@@ -111,8 +124,17 @@ func (s *Server) syncManagedNode(ctx context.Context, authority *pki.Manager, re
 		// installed just before a crash. Believe the node about its own.
 		record.CertSerial, record.CertNotAfter = status.APICertificate.Serial, status.APICertificate.NotAfter
 		record.CertNotBefore = status.APICertificate.NotAfter.Add(-90 * 24 * time.Hour)
+		record.CertFingerprint = status.APICertificate.Fingerprint
 	}
-	if pki.RenewalDue(record.CertNotBefore, record.CertNotAfter, now) {
+	if status.APICertificate.IssuerSerial != "" {
+		record.CertIssuer = status.APICertificate.IssuerSerial
+	}
+	// A certificate is replaced when two thirds of its life have passed, and at
+	// once when the intermediate that signed it was revoked or belongs to a root
+	// that a rotation retired.
+	replace := pki.RenewalDue(record.CertNotBefore, record.CertNotAfter, now) ||
+		(record.CertIssuer != "" && (authority.Revoked(record.CertIssuer) || authority.UnderRetiredRoot(record.CertIssuer)))
+	if replace {
 		endpoint, _ := url.Parse(node.Endpoint)
 		host := endpoint.Hostname()
 		var request struct {
@@ -129,6 +151,7 @@ func (s *Server) syncManagedNode(ctx context.Context, authority *pki.Manager, re
 			return fail("install the node's certificate", err)
 		}
 		record.CertSerial, record.CertNotBefore, record.CertNotAfter = leaf.SerialNumber.Text(16), leaf.NotBefore, leaf.NotAfter
+		record.CertFingerprint, record.CertIssuer = pki.Fingerprint(leaf), pki.IssuerSerial(chain)
 		s.store.Audit(ctx, "", "renew", "nodes/"+node.ID+"/api-certificate", "allowed", correlation)
 	}
 	record.LastError, record.LastErrorAt = "", nil
@@ -136,4 +159,26 @@ func (s *Server) syncManagedNode(ctx context.Context, authority *pki.Manager, re
 		s.log.Error("save managed node", "node_id", record.NodeID, "error", err)
 	}
 	return record
+}
+
+// retireRootWhenUnused removes the root a rotation retired once every enrolled
+// node holds the current bundle and a certificate signed under the new chain.
+// With no node enrolled nothing depends on it. A node that has failed its last
+// sync, or has not yet said who signed its certificate, keeps the old root in
+// the bundle.
+func (s *Server) retireRootWhenUnused(ctx context.Context, authority *pki.Manager, managed []store.ManagedNode) {
+	if authority.Rotation().Phase != "promoted" {
+		return
+	}
+	current := authority.Bundle().Version
+	for _, record := range managed {
+		if record.BundleVersion < current || record.LastError != "" || record.CertIssuer == "" || authority.UnderRetiredRoot(record.CertIssuer) {
+			return
+		}
+	}
+	if err := authority.RetireRoot(ctx); err != nil {
+		s.log.Error("retire the previous root", "error", err)
+		return
+	}
+	s.store.Audit(ctx, "", "rotate", certificateResource+"/root/retire", "allowed", "")
 }

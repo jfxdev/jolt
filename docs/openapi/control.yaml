@@ -304,6 +304,106 @@ paths:
         '401': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/crypto/revocations:
+    get:
+      tags: [Administration]
+      summary: Serials the trust bundle revokes
+      description: >-
+        Needs `sudo` on `control-tower`. Each item names the serial, what it was, why and when it was revoked, and
+        when the certificate ends anyway (the serial leaves the bundle a day after that).
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    post:
+      tags: [Administration]
+      summary: Revoke a certificate the authority issued
+      description: >-
+        Needs `sudo` on `control-tower`. Name the certificate by `serial` or by the `node_id` whose API certificate
+        it is, never both. The serial joins the next signed bundle, which the Control Tower pushes to every enrolled
+        node; a certificate of the Control Tower's own that is revoked is replaced in the same pass. A node whose
+        certificate is revoked is no longer reached and must be enrolled again. The intermediate in use cannot be
+        revoked here (409 `use_rotation`), and a root is never revoked (409 `root_not_revocable`). Revoking a serial
+        that is already revoked changes nothing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                serial: {type: string, description: Lowercase hexadecimal}
+                node_id: {type: string}
+                reason: {type: string, maxLength: 200}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/crypto/ca/intermediate/rotate:
+    post:
+      tags: [Administration]
+      summary: Issue a new intermediate and make it the one that signs
+      description: >-
+        Needs `sudo` on `control-tower` and the root key in the database (409 `root_unavailable` otherwise). Without
+        `revoke_previous` the old intermediate stays in the bundle until it expires, as in a planned renewal; at most
+        two intermediates fit (409 `intermediate_limit`). With it, every earlier intermediate is revoked and leaves
+        the bundle at once: the answer to a leaked issuing key. The Control Tower reissues its own certificates in the
+        same pass and replaces every node's API certificate at its next sync.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                revoke_previous: {type: boolean, default: false}
+                reason: {type: string}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/crypto/ca/root/rotate:
+    post:
+      tags: [Administration]
+      summary: Start a root rotation by publishing the next root
+      description: >-
+        Needs `sudo` on `control-tower`. Creates the next root and puts it in the bundle beside the active one;
+        nothing is signed by it yet, so no node or browser has to change. People install it from `/ca`, then
+        `ca/root/promote` makes the Control Tower use it. 409 `rotation_busy` while another rotation is under way.
+      responses:
+        '202': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/v1/control-tower/crypto/ca/root/promote:
+    post:
+      tags: [Administration]
+      summary: Make the next root the one that signs
+      description: >-
+        Needs `sudo` on `control-tower`. Refused (409 `nodes_behind`) while an enrolled node has not confirmed the
+        bundle that carries the next root, because that node would stop trusting the Control Tower; `force` promotes
+        anyway, and the nodes left behind must be enrolled again. From then on the HTTPS and client certificates and
+        every node's API certificate are signed under the new chain, and the previous root leaves the bundle by
+        itself once every node holds the bundle and a certificate from the new chain.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                force: {type: boolean, default: false}
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/pending-operations:
     get:
       tags: [Administration]

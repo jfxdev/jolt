@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -10,11 +11,14 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jfxdev/jolt/control/internal/config"
 	"github.com/jfxdev/jolt/control/internal/pki"
+	"github.com/jfxdev/jolt/control/internal/store"
 )
 
 // nodeServer plays a managed node's API: a certificate its own authority
@@ -109,4 +113,197 @@ func TestACertificateTheNodeDoesNotAskForIsNotOffered(t *testing.T) {
 	if *seen == pki.ControlTowerName {
 		t.Fatal("the client certificate was offered to an authority that does not know it")
 	}
+}
+
+// A node the authority enrolled, served with a certificate the test chooses.
+type issuedNode struct {
+	server      *httptest.Server
+	fingerprint string
+	serial      string
+}
+
+func clockedAuthority(t *testing.T, clock *testClock) *pki.Manager {
+	t.Helper()
+	storage, err := store.Open(filepath.Join(t.TempDir(), "pki.db"), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+	authority, err := pki.NewManager(storage, pki.Options{Key: make([]byte, 32), Now: clock.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := authority.Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return authority
+}
+
+func issueAndServe(t *testing.T, authority *pki.Manager) issuedNode {
+	t.Helper()
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	request, _ := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "n1"}}, key)
+	chain, leaf, err := authority.IssueServerCertificate(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: request}), "n1", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate := tls.Certificate{PrivateKey: key, Leaf: leaf}
+	rest := []byte(chain)
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		certificate.Certificate = append(certificate.Certificate, block.Bytes)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) }))
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{certificate}}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	return issuedNode{server: server, fingerprint: pki.Fingerprint(leaf), serial: leaf.SerialNumber.Text(16)}
+}
+
+// reach calls the node the way the Control Tower does. host, when set, is the
+// name dialed in place of the node's IP address.
+func reach(authority *pki.Manager, node issuedNode, host string) error {
+	address := node.server.URL
+	if host != "" {
+		address = "https://" + host + ":" + address[strings.LastIndex(address, ":")+1:]
+	}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: newNodeTransport(config.Config{Authority: authority}, nil)}
+	response, err := client.Get(address)
+	if err != nil {
+		return err
+	}
+	response.Body.Close()
+	return nil
+}
+
+func TestANodeCertificateTheBundleRevokesIsRefusedEvenIfTheAuthorityIssuedIt(t *testing.T) {
+	clock := &testClock{now: time.Now().UTC()}
+	authority := clockedAuthority(t, clock)
+	node := issueAndServe(t, authority)
+	if err := reach(authority, node, ""); err != nil {
+		t.Fatalf("before the revocation: %v", err)
+	}
+	authority.Pin([]string{node.fingerprint})
+	if err := authority.Revoke(context.Background(), pki.Revocation{Serial: node.serial}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reach(authority, node, ""); err == nil {
+		t.Fatal("a revoked certificate was reached, and being pinned did not make it an exception")
+	}
+}
+
+func TestNodesSignedByARevokedIntermediateAreReachedOnlyIfTheAuthorityIssuedThemTheirCertificate(t *testing.T) {
+	clock := &testClock{now: time.Now().UTC()}
+	authority := clockedAuthority(t, clock)
+	node := issueAndServe(t, authority)
+	if err := authority.RotateIntermediate(context.Background(), true, "key leaked"); err != nil {
+		t.Fatal(err)
+	}
+	if err := reach(authority, node, ""); err == nil {
+		t.Fatal("a certificate signed by a revoked intermediate was trusted")
+	}
+	authority.Pin([]string{node.fingerprint})
+	if err := reach(authority, node, ""); err != nil {
+		t.Fatalf("the node the authority issued this certificate to could not be reached to renew: %v", err)
+	}
+	// What the authority issued but then revoked on its own is not an exception.
+	if err := authority.Revoke(context.Background(), pki.Revocation{Serial: node.serial}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reach(authority, node, ""); err == nil {
+		t.Fatal("a pinned certificate that was also revoked by itself was reached")
+	}
+}
+
+func TestANodeThatWasAwayPastItsExpiryIsReachedOnlyByTheCertificateItWasGiven(t *testing.T) {
+	clock := &testClock{now: time.Now().UTC().Add(-100 * 24 * time.Hour)}
+	authority := clockedAuthority(t, clock)
+	node := issueAndServe(t, authority) // valid for 90 days from 100 days ago
+	clock.now = time.Now().UTC()
+	if err := authority.Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := reach(authority, node, ""); err == nil {
+		t.Fatal("an expired certificate was trusted")
+	}
+	authority.Pin([]string{"0000"})
+	if err := reach(authority, node, ""); err == nil {
+		t.Fatal("a certificate that was not issued to this node was accepted because something else is pinned")
+	}
+	authority.Pin([]string{node.fingerprint})
+	if err := reach(authority, node, ""); err != nil {
+		t.Fatalf("the node could not be reached to renew: %v", err)
+	}
+	// Even then, only for the name it was issued for.
+	if err := reach(authority, node, "localhost"); err == nil {
+		t.Fatal("an expired pinned certificate was accepted for a name it does not cover")
+	}
+}
+
+func TestNodesStayReachableThroughEveryStepOfARootRotationUntilTheOldRootLeaves(t *testing.T) {
+	ctx := context.Background()
+	clock := &testClock{now: time.Now().UTC()}
+	authority := clockedAuthority(t, clock)
+	old := issueAndServe(t, authority)
+	steps := []struct {
+		name string
+		do   func() error
+	}{
+		{"prepared", func() error { return authority.BeginRootRotation(ctx) }},
+		{"promoted", func() error { return authority.PromoteRoot(ctx) }},
+	}
+	for _, step := range steps {
+		if err := step.do(); err != nil {
+			t.Fatal(err)
+		}
+		if err := reach(authority, old, ""); err != nil {
+			t.Fatalf("%s: a node on the old chain was lost: %v", step.name, err)
+		}
+	}
+	fresh := issueAndServe(t, authority)
+	if err := reach(authority, fresh, ""); err != nil {
+		t.Fatalf("a node on the new chain was not reached: %v", err)
+	}
+	if err := authority.RetireRoot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := reach(authority, fresh, ""); err != nil {
+		t.Fatalf("after retirement: %v", err)
+	}
+	if err := reach(authority, old, ""); err == nil {
+		t.Fatal("a node on the retired chain was still trusted, with nothing pinned")
+	}
+}
+
+func TestACertificateForAnotherNameIsRefusedEvenWhenItChainsToTheAuthority(t *testing.T) {
+	clock := &testClock{now: time.Now().UTC()}
+	authority := clockedAuthority(t, clock)
+	node := issueAndServe(t, authority) // covers 127.0.0.1 only
+	if err := reach(authority, node, "localhost"); err == nil {
+		t.Fatal("a certificate that does not cover the name that was dialed was accepted")
+	}
+	if err := reach(authority, node, ""); err != nil {
+		t.Fatalf("the right name was refused: %v", err)
+	}
+}
+
+func TestAnOperatorWhoTurnedVerificationOffKeepsItOff(t *testing.T) {
+	other := clockedAuthority(t, &testClock{now: time.Now().UTC()})
+	foreign := issueAndServe(t, other)
+	ours := clockedAuthority(t, &testClock{now: time.Now().UTC()})
+	strict := &http.Client{Timeout: 5 * time.Second, Transport: newNodeTransport(config.Config{Authority: ours}, nil)}
+	if response, err := strict.Get(foreign.server.URL); err == nil {
+		response.Body.Close()
+		t.Fatal("a node of another authority was reached with verification on")
+	}
+	lax := &http.Client{Timeout: 5 * time.Second, Transport: newNodeTransport(config.Config{Authority: ours}, &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true})}
+	response, err := lax.Get(foreign.server.URL)
+	if err != nil {
+		t.Fatalf("the operator's choice not to verify was overridden: %v", err)
+	}
+	response.Body.Close()
 }

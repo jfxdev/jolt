@@ -40,6 +40,9 @@ type fakeNode struct {
 	calls         []string
 	down          bool
 	refuseBundle  string
+	authMode      string
+	issuer        string
+	fingerprint   string
 	installedKeys []*ecdsa.PublicKey
 	now           func() time.Time
 }
@@ -61,7 +64,7 @@ func (n *fakeNode) handle(r *http.Request) (*http.Response, error) {
 		if n.bundle != nil {
 			version = n.bundle.Version
 		}
-		return reply(200, map[string]any{"bundle_version": version, "api_certificate": map[string]any{"not_after": n.notAfter, "serial": n.serial}})
+		return reply(200, map[string]any{"bundle_version": version, "auth_mode": n.authMode, "api_certificate": map[string]any{"not_after": n.notAfter, "serial": n.serial, "issuer_serial": n.issuer, "fingerprint": n.fingerprint}})
 	case "PUT /api/v1/crypto/trust-bundle":
 		data, _ := io.ReadAll(r.Body)
 		candidate, err := pki.ParseBundle(data)
@@ -93,6 +96,7 @@ func (n *fakeNode) handle(r *http.Request) (*http.Response, error) {
 		}
 		n.installedKeys = append(n.installedKeys, leaf.PublicKey.(*ecdsa.PublicKey))
 		n.serial, n.notAfter, n.pendingKey = leaf.SerialNumber.Text(16), leaf.NotAfter, nil
+		n.issuer, n.fingerprint = pki.IssuerSerial(body.Certificate), pki.Fingerprint(leaf)
 		return reply(200, map[string]any{})
 	}
 	return reply(404, map[string]any{})
@@ -178,6 +182,28 @@ func (h *syncHarness) enrolled(t *testing.T, id string, have *pki.Bundle, notBef
 	node := h.nodes[id]
 	node.bundle, node.serial, node.notAfter = have, "aa", notAfter
 	if err := h.storage.SaveManagedNode(context.Background(), store.ManagedNode{NodeID: id, EnrolledAt: notBefore, BundleVersion: versionOf(have), CertSerial: "aa", CertNotBefore: notBefore, CertNotAfter: notAfter}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// enrolledForReal enrolls a node the way the Control Tower does: it issues the
+// certificate from a request the node made, and the node holds the bundle that
+// was current.
+func (h *syncHarness) enrolledForReal(t *testing.T, id string) {
+	t.Helper()
+	node := h.nodes[id]
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	request, _ := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: id}}, key)
+	chain, leaf, err := h.authority.IssueServerCertificate(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: request}), id, id+".lan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := h.authority.Bundle()
+	node.bundle, node.serial, node.notAfter = &bundle, leaf.SerialNumber.Text(16), leaf.NotAfter
+	node.issuer, node.fingerprint = pki.IssuerSerial(chain), pki.Fingerprint(leaf)
+	record := store.ManagedNode{NodeID: id, EnrolledAt: h.clock.now, BundleVersion: bundle.Version, CertSerial: node.serial, CertNotBefore: leaf.NotBefore, CertNotAfter: leaf.NotAfter,
+		CertFingerprint: node.fingerprint, CertIssuer: node.issuer}
+	if err := h.storage.SaveManagedNode(context.Background(), record); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -356,5 +382,179 @@ func TestTheSyncReportsHowFarNodesAreBehind(t *testing.T) {
 	// The soonest certificate is the one with 10 days, in seconds.
 	if !strings.Contains(text, "jolt_managed_node_certificate_expiry_seconds 8") || strings.Contains(text, "jolt_managed_node_certificate_expiry_seconds 6") {
 		t.Errorf("expiry gauge does not follow the soonest node:\n%s", text)
+	}
+}
+
+func TestTheSyncRecordsHowTheNodeAuthenticatesTheControlTowerAndWhoSignedItsCertificate(t *testing.T) {
+	h := newSyncHarness(t, "token-node", "cert-node")
+	h.enrolledForReal(t, "token-node")
+	h.enrolledForReal(t, "cert-node")
+	h.nodes["token-node"].authMode, h.nodes["cert-node"].authMode = "token", "certificate"
+	h.server.syncManagedNodes(context.Background(), h.clock.now)
+	if got := h.record(t, "token-node").AuthMode; got != "token" {
+		t.Errorf("token node: %q", got)
+	}
+	record := h.record(t, "cert-node")
+	if record.AuthMode != "certificate" || record.CertIssuer == "" || record.CertIssuer != h.nodes["cert-node"].issuer || record.CertFingerprint != h.nodes["cert-node"].fingerprint {
+		t.Errorf("cert node: %+v", record)
+	}
+}
+
+func TestEveryNodeCertificateTheAuthorityIssuedIsKnownByItsFingerprint(t *testing.T) {
+	h := newSyncHarness(t, "n1", "n2")
+	h.enrolledForReal(t, "n1")
+	h.enrolledForReal(t, "n2")
+	h.server.syncManagedNodes(context.Background(), h.clock.now)
+	for _, id := range []string{"n1", "n2"} {
+		if !h.authority.Pinned(h.nodes[id].fingerprint) {
+			t.Errorf("%s: the certificate that was issued is not pinned", id)
+		}
+	}
+	if h.authority.Pinned("0000") || h.authority.Pinned("") {
+		t.Error("something nobody issued is pinned")
+	}
+}
+
+func TestAnIntermediateThatWasRevokedHasEveryNodeCertificateItSignedReplacedAtOnce(t *testing.T) {
+	h := newSyncHarness(t, "n1", "n2")
+	h.enrolledForReal(t, "n1")
+	h.enrolledForReal(t, "n2")
+	h.server.syncManagedNodes(context.Background(), h.clock.now)
+	for _, id := range []string{"n1", "n2"} {
+		if h.nodes[id].count("POST /api/v1/crypto/api-cert/csr") != 0 {
+			t.Fatalf("%s renewed with nothing wrong", id)
+		}
+	}
+	oldIssuer := h.nodes["n1"].issuer
+	if err := h.authority.RotateIntermediate(context.Background(), true, "key leaked"); err != nil {
+		t.Fatal(err)
+	}
+	h.server.syncManagedNodes(context.Background(), h.clock.now)
+	for _, id := range []string{"n1", "n2"} {
+		node := h.nodes[id]
+		if node.count("POST /api/v1/crypto/api-cert/csr") != 1 || node.issuer == oldIssuer || h.record(t, id).CertIssuer != node.issuer {
+			t.Errorf("%s: calls %v issuer %s (was %s)", id, node.calls, node.issuer, oldIssuer)
+		}
+		if node.bundle == nil || node.bundle.Version != h.authority.Bundle().Version {
+			t.Errorf("%s did not receive the bundle that revokes the intermediate", id)
+		}
+	}
+	// With everything replaced the next pass has nothing to do.
+	h.server.syncManagedNodes(context.Background(), h.clock.now.Add(time.Minute))
+	if h.nodes["n1"].count("POST /api/v1/crypto/api-cert/csr") != 1 {
+		t.Fatal("a replaced certificate was replaced again")
+	}
+}
+
+func TestAPlannedIntermediateRotationLeavesNodeCertificatesAlone(t *testing.T) {
+	h := newSyncHarness(t, "n1")
+	h.enrolledForReal(t, "n1")
+	if err := h.authority.RotateIntermediate(context.Background(), false, ""); err != nil {
+		t.Fatal(err)
+	}
+	h.server.syncManagedNodes(context.Background(), h.clock.now)
+	if h.nodes["n1"].count("POST /api/v1/crypto/api-cert/csr") != 0 {
+		t.Fatal("a certificate under a still-trusted intermediate was replaced")
+	}
+}
+
+// settle runs passes until nothing changes, which is how long a rotation takes
+// to reach every node when they all answer.
+func (h *syncHarness) settle(t *testing.T) {
+	t.Helper()
+	for i := 0; i < 4; i++ {
+		h.clock.now = h.clock.now.Add(time.Minute)
+		h.server.syncManagedNodes(context.Background(), h.clock.now)
+	}
+}
+
+func TestARootRotationReachesTwoNodesAndTheOldRootLeavesOnlyWhenBothAreOnTheNewChain(t *testing.T) {
+	ctx := context.Background()
+	h := newSyncHarness(t, "n1", "n2")
+	h.enrolledForReal(t, "n1")
+	h.enrolledForReal(t, "n2")
+	original := h.authority.RootFingerprint()
+	if err := h.authority.BeginRootRotation(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.settle(t)
+	for _, id := range []string{"n1", "n2"} {
+		if node := h.nodes[id]; node.bundle == nil || len(node.bundle.Roots) != 2 {
+			t.Fatalf("%s did not receive the bundle with both roots", id)
+		}
+		if h.nodes[id].count("POST /api/v1/crypto/api-cert/csr") != 0 {
+			t.Fatalf("%s was given a certificate before the promotion", id)
+		}
+	}
+	// n2 goes away. Promoting is allowed here (the test drives the authority),
+	// and from then on the old root must stay while n2 has not moved.
+	if err := h.authority.PromoteRoot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.nodes["n2"].down = true
+	h.settle(t)
+	if h.authority.Rotation().Phase != "promoted" {
+		t.Fatalf("the old root left while n2 was away: %+v", h.authority.Rotation())
+	}
+	if h.nodes["n1"].count("POST /api/v1/crypto/api-cert/csr") != 1 || h.authority.UnderRetiredRoot(h.nodes["n1"].issuer) {
+		t.Fatal("n1 was not moved to the new chain")
+	}
+	// n2 comes back and is moved; only then does the old root go.
+	h.nodes["n2"].down = false
+	h.settle(t)
+	if h.authority.Rotation().Phase != "none" || h.authority.RootFingerprint() == original {
+		t.Fatalf("after both moved: %+v active %s", h.authority.Rotation(), h.authority.RootFingerprint())
+	}
+	for _, id := range []string{"n1", "n2"} {
+		node := h.nodes[id]
+		if node.bundle == nil || len(node.bundle.Roots) != 1 || node.bundle.Version != h.authority.Bundle().Version {
+			t.Fatalf("%s: bundle %+v", id, node.bundle)
+		}
+		if h.record(t, id).LastError != "" {
+			t.Fatalf("%s: %s", id, h.record(t, id).LastError)
+		}
+	}
+}
+
+func TestTheOldRootIsRetiredAtOnceWhenNoNodeDependsOnIt(t *testing.T) {
+	ctx := context.Background()
+	h := newSyncHarness(t)
+	if err := h.authority.BeginRootRotation(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.authority.PromoteRoot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.settle(t)
+	if h.authority.Rotation().Phase != "none" {
+		t.Fatalf("%+v", h.authority.Rotation())
+	}
+}
+
+func TestANodeThatFailsItsSyncKeepsTheOldRootInTheBundle(t *testing.T) {
+	ctx := context.Background()
+	h := newSyncHarness(t, "n1")
+	h.enrolledForReal(t, "n1")
+	_ = h.authority.BeginRootRotation(ctx)
+	h.settle(t)
+	_ = h.authority.PromoteRoot(ctx)
+	h.nodes["n1"].refuseBundle = "not now"
+	h.settle(t)
+	if h.authority.Rotation().Phase != "promoted" {
+		t.Fatal("the old root left while a node refused the bundle")
+	}
+}
+
+func TestANodeThatDoesNotSayWhoSignedItsCertificateKeepsTheOldRootInTheBundle(t *testing.T) {
+	ctx := context.Background()
+	h := newSyncHarness(t, "legacy")
+	held := h.authority.Bundle()
+	h.enrolled(t, "legacy", &held, h.clock.now.Add(-time.Hour), h.clock.now.Add(80*24*time.Hour)) // reports no issuer
+	_ = h.authority.BeginRootRotation(ctx)
+	h.settle(t)
+	_ = h.authority.PromoteRoot(ctx)
+	h.settle(t)
+	if h.authority.Rotation().Phase != "promoted" {
+		t.Fatal("the old root left while one node's chain is unknown")
 	}
 }

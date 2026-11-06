@@ -13,6 +13,7 @@ const (
 	PKIIntermediate = "intermediate"
 	PKISigningKey   = "signing_key"
 	PKIBundle       = "bundle"
+	PKIRevocation   = "revocation"
 )
 
 // PKIObject is one certificate, key or bundle the Control Tower's own

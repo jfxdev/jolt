@@ -70,19 +70,11 @@ func New(cfg config.Config, storage *store.Store, logger *slog.Logger) (http.Han
 // run until its context ends. It is a no-op unless signed local jobs are
 // enabled, in which case it keeps the running jobs' authorizations renewed.
 func NewWithBackground(cfg config.Config, storage *store.Store, logger *slog.Logger) (http.Handler, func(context.Context), error) {
-	transport := &http.Transport{
-		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   5 * time.Second,
-		ExpectContinueTimeout: time.Second,
-	}
 	tlsConfig, err := nodeTLSConfig(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
-	transport.TLSClientConfig = withAuthority(cfg, tlsConfig)
+	transport := newNodeTransport(cfg, tlsConfig)
 	server, handler := newServerHandler(cfg, storage, logger, &http.Client{Transport: transport})
 	return handler, server.background, nil
 }
@@ -170,6 +162,11 @@ func newServerHandler(cfg config.Config, storage *store.Store, logger *slog.Logg
 	mux.Handle("GET /api/v1/control-tower/crypto/ca", s.auth(http.HandlerFunc(s.listCertificates)))
 	mux.Handle("GET /api/v1/control-tower/crypto/trust-bundle", s.auth(http.HandlerFunc(s.trustBundle)))
 	mux.Handle("GET /api/v1/control-tower/crypto/authorization-keys", s.auth(http.HandlerFunc(s.authorizationKeysSnippet)))
+	mux.Handle("GET /api/v1/control-tower/crypto/revocations", s.auth(http.HandlerFunc(s.listRevocations)))
+	mux.Handle("POST /api/v1/control-tower/crypto/revocations", s.auth(http.HandlerFunc(s.revokeCertificate)))
+	mux.Handle("POST /api/v1/control-tower/crypto/ca/intermediate/rotate", s.auth(http.HandlerFunc(s.rotateIntermediate)))
+	mux.Handle("POST /api/v1/control-tower/crypto/ca/root/rotate", s.auth(http.HandlerFunc(s.beginRootRotation)))
+	mux.Handle("POST /api/v1/control-tower/crypto/ca/root/promote", s.auth(http.HandlerFunc(s.promoteRoot)))
 	mux.Handle("GET /api/v1/control-tower/pending-operations", s.auth(http.HandlerFunc(s.listPendingOperations)))
 	mux.Handle("GET /api/v1/control-tower/pending-operations/{operationID}", s.auth(http.HandlerFunc(s.getPendingOperation)))
 	mux.Handle("POST /api/v1/control-tower/pending-operations/{operationID}/approve", s.auth(http.HandlerFunc(s.approvePendingOperation)))

@@ -462,6 +462,9 @@ WHERE path LIKE 'workers/%'`); err != nil {
 		`ALTER TABLE audit_events ADD COLUMN policy_ids TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE audit_events ADD COLUMN evaluated_path TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE audit_events ADD COLUMN capability TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE managed_nodes ADD COLUMN cert_fingerprint TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE managed_nodes ADD COLUMN cert_issuer TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE managed_nodes ADD COLUMN auth_mode TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := s.db.Exec(statement); err != nil &&
 			!strings.Contains(strings.ToLower(err.Error()), "duplicate column") {

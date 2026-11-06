@@ -203,16 +203,19 @@ func TestManagedNodesRoundTripAndGoWithTheirNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	failedAt := t0.Add(time.Hour)
-	node := ManagedNode{NodeID: "n1", EnrolledAt: t0, BundleVersion: 3, CertSerial: "abc", CertNotBefore: t0, CertNotAfter: t0.Add(90 * 24 * time.Hour), LastError: "boom", LastErrorAt: &failedAt}
+	node := ManagedNode{NodeID: "n1", EnrolledAt: t0, BundleVersion: 3, CertSerial: "abc", CertNotBefore: t0, CertNotAfter: t0.Add(90 * 24 * time.Hour), LastError: "boom", LastErrorAt: &failedAt,
+		CertFingerprint: "f1", CertIssuer: "i1", AuthMode: "token"}
 	if err := s.SaveManagedNode(ctx, node); err != nil {
 		t.Fatal(err)
 	}
 	node.BundleVersion, node.LastError, node.LastErrorAt = 4, "", nil
+	node.CertFingerprint, node.CertIssuer, node.AuthMode = "f2", "i2", "certificate"
 	if err := s.SaveManagedNode(ctx, node); err != nil {
 		t.Fatal(err)
 	}
 	nodes, err := s.ListManagedNodes(ctx)
-	if err != nil || len(nodes) != 1 || nodes[0].BundleVersion != 4 || nodes[0].CertSerial != "abc" || nodes[0].LastError != "" || nodes[0].LastErrorAt != nil || !nodes[0].CertNotAfter.Equal(node.CertNotAfter) {
+	if err != nil || len(nodes) != 1 || nodes[0].BundleVersion != 4 || nodes[0].CertSerial != "abc" || nodes[0].LastError != "" || nodes[0].LastErrorAt != nil || !nodes[0].CertNotAfter.Equal(node.CertNotAfter) ||
+		nodes[0].CertFingerprint != "f2" || nodes[0].CertIssuer != "i2" || nodes[0].AuthMode != "certificate" {
 		t.Fatalf("round trip: %+v %v", nodes, err)
 	}
 	if err := s.DeleteNode(ctx, "n1"); err != nil {

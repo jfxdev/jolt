@@ -40,9 +40,10 @@ func ParseCertificate(data []byte) (*x509.Certificate, error) {
 	return x509.ParseCertificate(block.Bytes)
 }
 
-// Chain verifies that leaf was issued by one of the intermediates under one of
-// the roots, for the given usage and instant.
-func Chain(leaf *x509.Certificate, roots, intermediates []*x509.Certificate, usage x509.ExtKeyUsage, now time.Time) error {
+// VerifiedChains verifies that leaf was issued by one of the intermediates
+// under one of the roots, for the given usage and instant, and returns every
+// chain that does.
+func VerifiedChains(leaf *x509.Certificate, roots, intermediates []*x509.Certificate, usage x509.ExtKeyUsage, now time.Time) ([][]*x509.Certificate, error) {
 	rootPool, intermediatePool := x509.NewCertPool(), x509.NewCertPool()
 	for _, cert := range roots {
 		rootPool.AddCert(cert)
@@ -50,6 +51,11 @@ func Chain(leaf *x509.Certificate, roots, intermediates []*x509.Certificate, usa
 	for _, cert := range intermediates {
 		intermediatePool.AddCert(cert)
 	}
-	_, err := leaf.Verify(x509.VerifyOptions{Roots: rootPool, Intermediates: intermediatePool, CurrentTime: now, KeyUsages: []x509.ExtKeyUsage{usage}})
+	return leaf.Verify(x509.VerifyOptions{Roots: rootPool, Intermediates: intermediatePool, CurrentTime: now, KeyUsages: []x509.ExtKeyUsage{usage}})
+}
+
+// Chain is VerifiedChains for a caller that only needs the verdict.
+func Chain(leaf *x509.Certificate, roots, intermediates []*x509.Certificate, usage x509.ExtKeyUsage, now time.Time) error {
+	_, err := VerifiedChains(leaf, roots, intermediates, usage, now)
 	return err
 }

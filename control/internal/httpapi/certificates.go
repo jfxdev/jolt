@@ -31,6 +31,26 @@ type certificateInventory struct {
 	RootFingerprintFmt string     `json:"root_fingerprint_display"`
 	BundleVersion      int64      `json:"bundle_version"`
 	Items              []pki.Item `json:"items"`
+	// Rotation is where a root rotation stands; NextRootFingerprintFmt is the
+	// root people install from /ca before it is promoted.
+	Rotation               pki.Rotation  `json:"rotation"`
+	NextRootFingerprintFmt string        `json:"next_root_fingerprint_display,omitempty"`
+	Nodes                  []nodeCertRow `json:"nodes"`
+}
+
+// nodeCertRow is what the inventory says about an enrolled node: which bundle
+// it holds, when its certificate ends, how it authenticates the Control Tower
+// and what went wrong the last time.
+type nodeCertRow struct {
+	NodeID        string     `json:"node_id"`
+	Name          string     `json:"name"`
+	BundleVersion int64      `json:"bundle_version"`
+	BundleBehind  int64      `json:"bundle_behind"`
+	CertSerial    string     `json:"cert_serial"`
+	CertNotAfter  time.Time  `json:"cert_not_after"`
+	AuthMode      string     `json:"auth_mode,omitempty"`
+	LastError     string     `json:"last_error,omitempty"`
+	LastErrorAt   *time.Time `json:"last_error_at,omitempty"`
 }
 
 // listCertificates is the inventory: what exists, who issued it and when it
@@ -44,9 +64,33 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fingerprint := authority.RootFingerprint()
+	bundle := authority.Bundle()
+	rows := []nodeCertRow{}
+	managed, err := s.store.ListManagedNodes(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	for _, record := range managed {
+		name := record.NodeID
+		if node, err := s.store.GetNode(r.Context(), record.NodeID); err == nil {
+			name = node.Name
+		}
+		behind := bundle.Version - record.BundleVersion
+		if behind < 0 {
+			behind = 0
+		}
+		rows = append(rows, nodeCertRow{NodeID: record.NodeID, Name: name, BundleVersion: record.BundleVersion, BundleBehind: behind, CertSerial: record.CertSerial,
+			CertNotAfter: record.CertNotAfter, AuthMode: record.AuthMode, LastError: record.LastError, LastErrorAt: record.LastErrorAt})
+	}
+	rotation := authority.Rotation()
+	next := ""
+	if rotation.Next != "" {
+		next = pki.DisplayFingerprint(rotation.Next)
+	}
 	writeJSON(w, http.StatusOK, certificateInventory{
 		Mode: "managed", RootFingerprint: fingerprint, RootFingerprintFmt: pki.DisplayFingerprint(fingerprint),
-		BundleVersion: authority.Bundle().Version, Items: authority.Inventory(),
+		BundleVersion: bundle.Version, Items: authority.Inventory(), Rotation: rotation, NextRootFingerprintFmt: next, Nodes: rows,
 	})
 }
 

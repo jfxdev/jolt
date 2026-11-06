@@ -64,14 +64,21 @@ type Enrollment struct {
 
 // ManagedNode is what the Control Tower knows about a node it enrolled.
 type ManagedNode struct {
-	NodeID        string     `json:"node_id"`
-	EnrolledAt    time.Time  `json:"enrolled_at"`
-	BundleVersion int64      `json:"bundle_version"`
-	CertSerial    string     `json:"cert_serial"`
-	CertNotBefore time.Time  `json:"cert_not_before"`
-	CertNotAfter  time.Time  `json:"cert_not_after"`
-	LastError     string     `json:"last_error,omitempty"`
-	LastErrorAt   *time.Time `json:"last_error_at,omitempty"`
+	NodeID        string    `json:"node_id"`
+	EnrolledAt    time.Time `json:"enrolled_at"`
+	BundleVersion int64     `json:"bundle_version"`
+	CertSerial    string    `json:"cert_serial"`
+	CertNotBefore time.Time `json:"cert_not_before"`
+	CertNotAfter  time.Time `json:"cert_not_after"`
+	// CertFingerprint is the SHA-256 of the API certificate the Control Tower
+	// issued, and CertIssuer the serial of the intermediate that signed it.
+	CertFingerprint string `json:"cert_fingerprint,omitempty"`
+	CertIssuer      string `json:"cert_issuer,omitempty"`
+	// AuthMode is what the node reports it authenticates the Control Tower by:
+	// "token" or "certificate". Empty until the first sync.
+	AuthMode    string     `json:"auth_mode,omitempty"`
+	LastError   string     `json:"last_error,omitempty"`
+	LastErrorAt *time.Time `json:"last_error_at,omitempty"`
 }
 
 func formatTime(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
@@ -297,16 +304,18 @@ func (s *Store) SaveManagedNode(ctx context.Context, node ManagedNode) error {
 	if node.LastErrorAt != nil {
 		last = formatTime(*node.LastErrorAt)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO managed_nodes(node_id,enrolled_at,bundle_version,cert_serial,cert_not_before,cert_not_after,last_error,last_error_at)
-VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(node_id) DO UPDATE SET bundle_version=excluded.bundle_version, cert_serial=excluded.cert_serial,
-cert_not_before=excluded.cert_not_before, cert_not_after=excluded.cert_not_after, last_error=excluded.last_error, last_error_at=excluded.last_error_at`,
-		node.NodeID, formatTime(node.EnrolledAt), node.BundleVersion, node.CertSerial, formatTime(node.CertNotBefore), formatTime(node.CertNotAfter), node.LastError, last)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO managed_nodes(node_id,enrolled_at,bundle_version,cert_serial,cert_not_before,cert_not_after,last_error,last_error_at,cert_fingerprint,cert_issuer,auth_mode)
+VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(node_id) DO UPDATE SET bundle_version=excluded.bundle_version, cert_serial=excluded.cert_serial,
+cert_not_before=excluded.cert_not_before, cert_not_after=excluded.cert_not_after, last_error=excluded.last_error, last_error_at=excluded.last_error_at,
+cert_fingerprint=excluded.cert_fingerprint, cert_issuer=excluded.cert_issuer, auth_mode=excluded.auth_mode`,
+		node.NodeID, formatTime(node.EnrolledAt), node.BundleVersion, node.CertSerial, formatTime(node.CertNotBefore), formatTime(node.CertNotAfter), node.LastError, last,
+		node.CertFingerprint, node.CertIssuer, node.AuthMode)
 	return err
 }
 
 // ListManagedNodes returns every enrolled node.
 func (s *Store) ListManagedNodes(ctx context.Context) ([]ManagedNode, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT node_id,enrolled_at,bundle_version,cert_serial,cert_not_before,cert_not_after,last_error,last_error_at FROM managed_nodes ORDER BY node_id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT node_id,enrolled_at,bundle_version,cert_serial,cert_not_before,cert_not_after,last_error,last_error_at,cert_fingerprint,cert_issuer,auth_mode FROM managed_nodes ORDER BY node_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +324,7 @@ func (s *Store) ListManagedNodes(ctx context.Context) ([]ManagedNode, error) {
 	for rows.Next() {
 		var node ManagedNode
 		var enrolled, before, after, last string
-		if err := rows.Scan(&node.NodeID, &enrolled, &node.BundleVersion, &node.CertSerial, &before, &after, &node.LastError, &last); err != nil {
+		if err := rows.Scan(&node.NodeID, &enrolled, &node.BundleVersion, &node.CertSerial, &before, &after, &node.LastError, &last, &node.CertFingerprint, &node.CertIssuer, &node.AuthMode); err != nil {
 			return nil, err
 		}
 		node.EnrolledAt, node.CertNotBefore, node.CertNotAfter, node.LastErrorAt = parseTime(enrolled), parseTime(before), parseTime(after), parseTimePtr(last)

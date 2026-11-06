@@ -43,6 +43,12 @@ const (
 	statePending = "pending"
 	stateRetired = "retired"
 	stateCurrent = "current"
+	stateNext    = "next"
+	stateRevoked = "revoked"
+
+	// revocationKeep is how long a revoked serial stays in the bundle after the
+	// certificate it names has expired anyway.
+	revocationKeep = 24 * time.Hour
 
 	keepBundles = 5
 )
@@ -96,18 +102,23 @@ type Manager struct {
 
 	ensure sync.Mutex // serializes Ensure
 
-	mu          sync.RWMutex
-	signing     ed25519.PrivateKey
-	signingID   string
-	verifying   map[string]ed25519.PublicKey
-	bundle      Bundle
-	bundleJSON  []byte
-	root        *x509.Certificate
-	httpsLeaf   *tls.Certificate
-	httpsParsed *x509.Certificate
-	issuer      *Authority
-	clientLeaf  *tls.Certificate
-	inventory   []Item
+	mu         sync.RWMutex
+	signing    ed25519.PrivateKey
+	signingID  string
+	verifying  map[string]ed25519.PublicKey
+	bundle     Bundle
+	bundleJSON []byte
+	root       *x509.Certificate
+	roots      []*x509.Certificate // every root the bundle lists
+	rotation   Rotation
+	// retiredIssuers are the intermediates a retired root signed.
+	retiredIssuers map[string]bool
+	pins           map[string]bool
+	httpsLeaf      *tls.Certificate
+	httpsParsed    *x509.Certificate
+	issuer         *Authority
+	clientLeaf     *tls.Certificate
+	inventory      []Item
 }
 
 // NewManager builds a manager. Call Ensure before using it.
@@ -183,6 +194,10 @@ func newSigningKeyID(now time.Time) string {
 func (m *Manager) Ensure(ctx context.Context) error {
 	m.ensure.Lock()
 	defer m.ensure.Unlock()
+	return m.ensureLocked(ctx)
+}
+
+func (m *Manager) ensureLocked(ctx context.Context) error {
 	now := m.opts.Now().UTC()
 	objects, err := m.repo.ListPKIObjects(ctx)
 	if err != nil {
@@ -204,29 +219,28 @@ func (m *Manager) Ensure(ctx context.Context) error {
 		put = append(put, object)
 	}
 
-	// Root: created once, and read back only to sign an intermediate.
-	var rootObject *store.PKIObject
+	// Root: created once, and read back only to sign an intermediate. A rotation
+	// adds a "next" root beside the active one and, once promoted, leaves the
+	// old one "retired" until nodes no longer need it.
+	var rootObject, nextRoot, retiredRoot *store.PKIObject
 	for i := range objects {
-		if objects[i].Kind == store.PKIRoot && objects[i].State == stateActive {
+		if objects[i].Kind != store.PKIRoot {
+			continue
+		}
+		switch objects[i].State {
+		case stateActive:
 			rootObject = &objects[i]
+		case stateNext:
+			nextRoot = &objects[i]
+		case stateRetired:
+			retiredRoot = &objects[i]
 		}
 	}
 	if rootObject == nil {
-		root, err := NewRoot(now)
+		created, err := m.newRootObject(now, stateActive)
 		if err != nil {
 			return err
 		}
-		der, err := x509.MarshalECPrivateKey(root.Key)
-		if err != nil {
-			return err
-		}
-		sealed, err := m.seal(store.PKIRoot, der)
-		if err != nil {
-			return err
-		}
-		created := store.PKIObject{ID: "root-" + Fingerprint(root.Cert)[:12], Kind: store.PKIRoot, State: stateActive,
-			Serial: root.Cert.SerialNumber.Text(16), Fingerprint: Fingerprint(root.Cert), Public: string(root.PEM()), Secret: sealed,
-			NotBefore: root.Cert.NotBefore, NotAfter: root.Cert.NotAfter, CreatedAt: now}
 		touch(created)
 		objects = append(objects, created)
 		rootObject = &objects[len(objects)-1]
@@ -234,6 +248,21 @@ func (m *Manager) Ensure(ctx context.Context) error {
 	rootCert, err := ParseCertificate([]byte(rootObject.Public))
 	if err != nil {
 		return err
+	}
+
+	// Revocations: what the bundle lists. One whose certificate has expired
+	// anyway is dropped a day later, which keeps the list short.
+	revoked := map[string]bool{}
+	for i := range objects {
+		if objects[i].Kind != store.PKIRevocation {
+			continue
+		}
+		if now.After(objects[i].NotAfter.Add(revocationKeep)) {
+			remove = append(remove, objects[i].ID)
+			objects[i].Kind = ""
+			continue
+		}
+		revoked[objects[i].Serial] = true
 	}
 
 	renewalBlocked := false
@@ -255,19 +284,7 @@ func (m *Manager) Ensure(ctx context.Context) error {
 			// the end.
 			renewalBlocked = true
 		} else {
-			root, err := m.authority(store.PKIRoot, *rootObject)
-			if err != nil {
-				return err
-			}
-			next, err := root.NewIntermediate(now)
-			if err != nil {
-				return err
-			}
-			der, err := x509.MarshalECPrivateKey(next.Key)
-			if err != nil {
-				return err
-			}
-			sealed, err := m.seal(store.PKIIntermediate, der)
+			created, err := m.newIntermediateObject(*rootObject, now)
 			if err != nil {
 				return err
 			}
@@ -275,16 +292,13 @@ func (m *Manager) Ensure(ctx context.Context) error {
 				issuer.State = stateRetired
 				touch(*issuer)
 			}
-			created := store.PKIObject{ID: "intermediate-" + next.Cert.SerialNumber.Text(16), Kind: store.PKIIntermediate, State: stateActive,
-				Serial: next.Cert.SerialNumber.Text(16), Fingerprint: Fingerprint(next.Cert), Public: string(next.PEM()), Secret: sealed,
-				NotBefore: next.Cert.NotBefore, NotAfter: next.Cert.NotAfter, CreatedAt: now}
 			touch(created)
 			objects = append(objects, created)
 			issuer = &objects[len(objects)-1]
 		}
 	}
 	for i := range objects {
-		if objects[i].Kind == store.PKIIntermediate && objects[i].State == stateRetired && now.After(objects[i].NotAfter) {
+		if objects[i].Kind == store.PKIIntermediate && (objects[i].State == stateRetired || objects[i].State == stateRevoked) && now.After(objects[i].NotAfter) {
 			remove = append(remove, objects[i].ID)
 			objects[i].Kind = "" // out of the view below
 		}
@@ -305,9 +319,16 @@ func (m *Manager) Ensure(ctx context.Context) error {
 	// Bundle: published again only when what nodes trust has changed.
 	var roots, issuers []string
 	roots = append(roots, rootObject.Public)
+	rootObjects := []store.PKIObject{*rootObject}
+	for _, other := range []*store.PKIObject{nextRoot, retiredRoot} {
+		if other != nil {
+			roots = append(roots, other.Public)
+			rootObjects = append(rootObjects, *other)
+		}
+	}
 	var issuerList []store.PKIObject
 	for _, object := range objects {
-		if object.Kind == store.PKIIntermediate {
+		if object.Kind == store.PKIIntermediate && object.State != stateRevoked {
 			issuerList = append(issuerList, object)
 		}
 	}
@@ -327,12 +348,15 @@ func (m *Manager) Ensure(ctx context.Context) error {
 		}
 	}
 	desired := Bundle{Roots: roots, Intermediates: issuers, SigningKeys: published, RevokedSerials: []string{}}
+	for serial := range revoked {
+		desired.RevokedSerials = append(desired.RevokedSerials, serial)
+	}
+	sort.Strings(desired.RevokedSerials)
 	var current Bundle
 	if latest != nil {
 		if current, err = ParseBundle([]byte(latest.Public)); err != nil {
 			return fmt.Errorf("stored trust bundle: %w", err)
 		}
-		desired.RevokedSerials = current.RevokedSerials
 	}
 	if latest == nil || !sameTrust(current, desired) {
 		desired.Version, desired.IssuedAt = current.Version+1, now
@@ -379,7 +403,7 @@ func (m *Manager) Ensure(ctx context.Context) error {
 			return err
 		}
 	}
-	if err := m.publish(*rootObject, rootCert, *issuer, keys, current, now); err != nil {
+	if err := m.publish(rootObjects, rootCert, *issuer, keys, current, now); err != nil {
 		return err
 	}
 	if renewalBlocked {
@@ -389,8 +413,13 @@ func (m *Manager) Ensure(ctx context.Context) error {
 }
 
 func sameTrust(a, b Bundle) bool {
-	if len(a.Roots) != len(b.Roots) || len(a.Intermediates) != len(b.Intermediates) || len(a.SigningKeys) != len(b.SigningKeys) {
+	if len(a.Roots) != len(b.Roots) || len(a.Intermediates) != len(b.Intermediates) || len(a.SigningKeys) != len(b.SigningKeys) || len(a.RevokedSerials) != len(b.RevokedSerials) {
 		return false
+	}
+	for i := range a.RevokedSerials {
+		if a.RevokedSerials[i] != b.RevokedSerials[i] {
+			return false
+		}
 	}
 	for i := range a.Roots {
 		if a.Roots[i] != b.Roots[i] {
@@ -530,7 +559,7 @@ func (m *Manager) manageSigningKeys(objects []store.PKIObject, now time.Time, to
 
 // publish swaps in the new in-memory view and rebuilds the HTTPS certificate
 // when it is missing, due, or no longer covers the configured names.
-func (m *Manager) publish(rootObject store.PKIObject, rootCert *x509.Certificate, issuerObject store.PKIObject, keys []signingKey, bundle Bundle, now time.Time) error {
+func (m *Manager) publish(rootObjects []store.PKIObject, rootCert *x509.Certificate, issuerObject store.PKIObject, keys []signingKey, bundle Bundle, now time.Time) error {
 	m.mu.RLock()
 	leaf, parsed, issuer, client := m.httpsLeaf, m.httpsParsed, m.issuer, m.clientLeaf
 	m.mu.RUnlock()
@@ -544,7 +573,7 @@ func (m *Manager) publish(rootObject store.PKIObject, rootCert *x509.Certificate
 		}
 		issuer = loaded
 	}
-	if client == nil || client.Leaf == nil || renewDue(client.Leaf.NotBefore, client.Leaf.NotAfter, now) || client.Leaf.Issuer.CommonName != issuer.Cert.Subject.CommonName {
+	if client == nil || client.Leaf == nil || renewDue(client.Leaf.NotBefore, client.Leaf.NotAfter, now) || client.Leaf.Issuer.CommonName != issuer.Cert.Subject.CommonName || bundle.Revoked(client.Leaf.SerialNumber.Text(16)) {
 		key, err := generateKey()
 		if err != nil {
 			return err
@@ -555,7 +584,7 @@ func (m *Manager) publish(rootObject store.PKIObject, rootCert *x509.Certificate
 		}
 		client = &tls.Certificate{Certificate: [][]byte{cert.Raw, issuer.Cert.Raw}, PrivateKey: key, Leaf: cert}
 	}
-	if leaf == nil || parsed == nil || renewDue(parsed.NotBefore, parsed.NotAfter, now) || parsed.Issuer.CommonName != issuerCommonName(issuerObject) {
+	if leaf == nil || parsed == nil || renewDue(parsed.NotBefore, parsed.NotAfter, now) || parsed.Issuer.CommonName != issuerCommonName(issuerObject) || bundle.Revoked(parsed.SerialNumber.Text(16)) {
 		key, err := generateKey()
 		if err != nil {
 			return err
@@ -574,14 +603,34 @@ func (m *Manager) publish(rootObject store.PKIObject, rootCert *x509.Certificate
 	verifying := map[string]ed25519.PublicKey{}
 	var signing ed25519.PrivateKey
 	var signingID string
-	inventory := []Item{
-		item("root", rootCert.Subject.CommonName, stateActive, rootCert),
+	var inventory []Item
+	var roots []*x509.Certificate
+	rotation := Rotation{Phase: "none"}
+	for _, object := range rootObjects {
+		cert, err := ParseCertificate([]byte(object.Public))
+		if err != nil {
+			return err
+		}
+		roots = append(roots, cert)
+		inventory = append(inventory, item("root", cert.Subject.CommonName, object.State, cert))
+		switch object.State {
+		case stateNext:
+			rotation = Rotation{Phase: "prepared", Next: Fingerprint(cert)}
+		case stateRetired:
+			rotation = Rotation{Phase: "promoted", Previous: Fingerprint(cert)}
+		}
 	}
 	issuers, _ := parseAll(bundle.Intermediates)
+	retiredIssuers := map[string]bool{}
 	for _, cert := range issuers {
 		state := stateRetired
 		if cert.SerialNumber.Text(16) == issuerObject.Serial {
 			state = stateActive
+		}
+		for i, root := range roots {
+			if rootObjects[i].State == stateRetired && cert.CheckSignatureFrom(root) == nil {
+				retiredIssuers[cert.SerialNumber.Text(16)] = true
+			}
 		}
 		inventory = append(inventory, item("intermediate", cert.Subject.CommonName, state, cert))
 	}
@@ -600,7 +649,8 @@ func (m *Manager) publish(rootObject store.PKIObject, rootCert *x509.Certificate
 	}
 	m.mu.Lock()
 	m.signing, m.signingID, m.verifying = signing, signingID, verifying
-	m.bundle, m.bundleJSON, m.root = bundle, encoded, rootCert
+	m.bundle, m.bundleJSON, m.root, m.roots = bundle, encoded, rootCert, roots
+	m.rotation, m.retiredIssuers = rotation, retiredIssuers
 	m.httpsLeaf, m.httpsParsed, m.inventory = leaf, parsed, inventory
 	m.issuer, m.clientLeaf = issuer, client
 	m.mu.Unlock()
@@ -662,7 +712,8 @@ func (m *Manager) ClientCertificate() (*tls.Certificate, error) {
 	return m.clientLeaf, nil
 }
 
-// RootPool trusts the root of this authority and nothing else.
+// RootPool trusts every root of this authority the bundle lists, and nothing
+// else: two while a rotation is under way.
 func (m *Manager) RootPool() *x509.CertPool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -670,7 +721,9 @@ func (m *Manager) RootPool() *x509.CertPool {
 		return nil
 	}
 	pool := x509.NewCertPool()
-	pool.AddCert(m.root)
+	for _, root := range m.roots {
+		pool.AddCert(root)
+	}
 	return pool
 }
 
