@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -215,13 +216,47 @@ func main() {
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	<-signals
 	cancelSweep()
+	logger.Info("shutting down: waiting for open requests to finish; press Ctrl+C again to force quit")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
-		logger.Error("graceful shutdown failed", "error", err)
-	}
-	if rootServer != nil {
-		_ = rootServer.Shutdown(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Both servers drain under the same deadline, so a slow main server
+		// cannot leave the root server with no time to finish its requests.
+		var drain sync.WaitGroup
+		shutdown := func(name string, srv *http.Server) {
+			defer drain.Done()
+			if err := srv.Shutdown(ctx); err != nil {
+				// The deadline passed with connections still open; drop them
+				// rather than leave the process hanging.
+				logger.Warn("graceful shutdown timed out; closing remaining connections", "server", name, "error", err)
+				_ = srv.Close()
+			}
+		}
+		drain.Add(1)
+		go shutdown("main", server)
+		if rootServer != nil {
+			drain.Add(1)
+			go shutdown("root", rootServer)
+		}
+		drain.Wait()
+	}()
+	for {
+		select {
+		case <-done:
+			logger.Info("shutdown complete")
+			return
+		case <-signals:
+			// Later signals are an explicit request to stop waiting.
+			logger.Warn("forced shutdown: closing connections immediately")
+			_ = server.Close()
+			if rootServer != nil {
+				_ = rootServer.Close()
+			}
+			os.Exit(1)
+		}
 	}
 }
 

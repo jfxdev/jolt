@@ -1,4 +1,4 @@
-.PHONY: build test vet vulncheck check acceptance acceptance-half acceptance-full node control frontend docker nodes node-a node-b node-c
+.PHONY: build test vet vulncheck check acceptance acceptance-half acceptance-full node control control-api frontend docker nodes node-a node-b node-c
 
 TESTDATA_ROOT := $(abspath node/testdata)
 
@@ -69,8 +69,18 @@ node-c:
 	@CONTROL_TOWER_TOKEN="$(NODE_C_TOKEN)" JOLT_STATE_ENCRYPTION_KEY="$(NODE_DEV_ENCRYPTION_KEY)" python3 scripts/dev-node.py nodeC --api $(NODE_C_API_PORT) --mtls $(NODE_C_MTLS_PORT)
 
 
+# Serves the API on :8090 and the frontend through Vite on :5173 (hot reload,
+# proxying /api to the API). Open http://localhost:5173.
 control:
-	cd control/frontend && npm run build
+	@set -m; \
+	$(MAKE) --no-print-directory frontend & fe=$$!; \
+	trap 'kill -TERM -$$fe 2>/dev/null' EXIT; \
+	$(MAKE) --no-print-directory control-api; \
+	status=$$?; \
+	kill -TERM -$$fe 2>/dev/null; wait $$fe 2>/dev/null; \
+	exit $$status
+
+control-api:
 	cd control && CGO_ENABLED=1 CONTROL_TOWER_ADMIN_PASSWORD=development-password CONTROL_TOWER_DB_ENCRYPTION_KEY=development-encryption-key-32chars go run ./cmd/jolt-control
 
 frontend:

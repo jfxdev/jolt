@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { ArrowRight, Check } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
 import {
   Select,
   SelectContent,
@@ -68,6 +69,20 @@ function baseForm(): ConnectionForm {
 
 type Step = 1 | 2 | 3;
 
+// The Select trigger renders the item label for the selected value, so these
+// keep raw ids and mode keys out of the closed control.
+const modeItems = [
+  { value: "dual_channel", label: "Dual channel" },
+  { value: "one_sided", label: "One sided" },
+];
+
+const expiryItems = [
+  { value: "10", label: "10 minutos" },
+  { value: "20", label: "20 minutos" },
+  { value: "30", label: "30 minutos" },
+  { value: "60", label: "1 hora" },
+];
+
 const stepTitles: Record<Step, string> = {
   1: "Nodes e modo",
   2: "Confirmar identidades",
@@ -100,6 +115,9 @@ export function ConnectDialog({
   const [grant, setGrant] = useState<GrantFormValue>(defaultGrantForm());
   const [busy, setBusy] = useState(false);
   const [awaitingPeer, setAwaitingPeer] = useState(false);
+  // Set when the chosen target stopped being valid (it got connected), so the
+  // defaulting effect does not quietly pick another node under the same purpose.
+  const targetInvalidated = useRef(false);
 
   const sourceNode = nodes.find((node) => node.node_id === form.issuer_node_id);
   const managedGrants = sourceNode?.configuration?.grants_mutable === false;
@@ -116,23 +134,71 @@ export function ConnectDialog({
     [connectedNodeIdsByIssuer, form.issuer_node_id, nodes],
   );
 
+  // Resets only when the dialog opens. Creating a connection refreshes `nodes`
+  // and `connectedNodeIdsByIssuer` while the dialog is still on step 2 or 3, and
+  // resetting on those would send the operator back to an empty step 1.
   useEffect(() => {
     if (!open) return;
-    const issuer = issuerNodeId || nodes[0]?.node_id || "";
-    const target =
-      nodes.find(
-        (node) =>
-          node.node_id !== issuer &&
-          !connectedNodeIdsByIssuer[issuer]?.includes(node.node_id),
-      )?.node_id || "";
+    targetInvalidated.current = false;
     setStep(1);
-    setForm({ ...baseForm(), issuer_node_id: issuer, target_node_id: target });
+    setForm({ ...baseForm(), issuer_node_id: issuerNodeId || "" });
     setFingerprints({ issuer: "", target: "" });
     setConfirmed("");
     setAwaitingPeer(false);
-    setGrant({ ...defaultGrantForm(), mount_id: issuerMounts[0]?.mount_id || "" });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, issuerNodeId, nodes, connectedNodeIdsByIssuer]);
+    setGrant(defaultGrantForm());
+  }, [open, issuerNodeId]);
+
+  // Fills defaults once the data is there, and again if it arrives after the
+  // dialog opened, but only while the operator is still choosing nodes.
+  useEffect(() => {
+    if (!open || step !== 1) return;
+    setForm((current) => {
+      // Until the inventory loads there is nothing to validate against.
+      // A fixed issuer that is not in the inventory is cleared rather than
+      // replaced, since its selector is hidden and the operator could not
+      // see the swap.
+      const issuer =
+        nodes.length === 0 || nodes.some((node) => node.node_id === current.issuer_node_id)
+          ? current.issuer_node_id || nodes[0]?.node_id || ""
+          : issuerNodeId
+            ? ""
+            : nodes[0].node_id;
+      const firstTarget = () =>
+        (issuer &&
+          nodes.find(
+            (node) =>
+              node.node_id !== issuer &&
+              !connectedNodeIdsByIssuer[issuer]?.includes(node.node_id),
+          )?.node_id) ||
+        "";
+      let target = current.target_node_id;
+      if (issuer !== current.issuer_node_id) target = firstTarget();
+      else if (!target && !targetInvalidated.current) target = firstTarget();
+      if (issuer === current.issuer_node_id && target === current.target_node_id) {
+        return current;
+      }
+      return { ...current, issuer_node_id: issuer, target_node_id: target };
+    });
+  }, [open, step, nodes, connectedNodeIdsByIssuer, issuerNodeId]);
+
+  // A target that became connected while the dialog was open is dropped, and
+  // the operator has to pick again: the purpose was written for that node.
+  useEffect(() => {
+    if (!open || step !== 1 || !nodes.length) return;
+    if (!form.target_node_id || targets.some((node) => node.node_id === form.target_node_id)) return;
+    targetInvalidated.current = true;
+    setForm((current) => ({ ...current, target_node_id: "" }));
+    toast.warning("O node alvo selecionado já foi conectado. Escolha outro node alvo.");
+  }, [open, step, nodes, targets, form.target_node_id]);
+
+  useEffect(() => {
+    if (!open) return;
+    setGrant((current) =>
+      current.mount_id || !issuerMounts[0]
+        ? current
+        : { ...current, mount_id: issuerMounts[0].mount_id },
+    );
+  }, [open, issuerMounts]);
 
   function changeMode(mode: string) {
     setForm((previous) => ({
@@ -143,8 +209,17 @@ export function ConnectDialog({
     }));
   }
 
-  function nodeLabel(node?: NodeInfo) {
-    return node ? `${node.name} · ${node.state}` : "—";
+  function nodeItems(list: NodeInfo[]) {
+    return list.map((node) => ({ value: node.node_id, label: node.name }));
+  }
+
+  function nodeOption(node: NodeInfo) {
+    return (
+      <SelectItem key={node.node_id} value={node.node_id}>
+        {node.name}
+        <span className="text-xs text-muted-foreground">{node.state}</span>
+      </SelectItem>
+    );
   }
 
   // The dialog shows both fingerprints so the operator verifies the identity
@@ -254,8 +329,10 @@ export function ConnectDialog({
               <div className="grid gap-2">
                 <Label>Node de origem</Label>
                 <Select
+                  items={nodeItems(nodes)}
                   value={form.issuer_node_id}
                   onValueChange={(issuer_node_id) => {
+                    targetInvalidated.current = false;
                     const target =
                       nodes.find(
                         (node) =>
@@ -271,15 +348,11 @@ export function ConnectDialog({
                     }));
                   }}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger className="w-full">
                     <SelectValue placeholder="Selecione um node" />
                   </SelectTrigger>
                   <SelectContent>
-                    {nodes.map((node) => (
-                      <SelectItem key={node.node_id} value={node.node_id}>
-                        {nodeLabel(node)}
-                      </SelectItem>
-                    ))}
+                    {nodes.map(nodeOption)}
                   </SelectContent>
                 </Select>
               </div>
@@ -287,20 +360,18 @@ export function ConnectDialog({
             <div className="grid gap-2">
               <Label>Node alvo</Label>
               <Select
+                items={nodeItems(targets)}
                 value={form.target_node_id}
-                onValueChange={(target_node_id) =>
-                  setForm({ ...form, target_node_id })
-                }
+                onValueChange={(target_node_id) => {
+                  targetInvalidated.current = false;
+                  setForm({ ...form, target_node_id });
+                }}
               >
-                <SelectTrigger>
+                <SelectTrigger className="w-full">
                   <SelectValue placeholder="Selecione um node" />
                 </SelectTrigger>
                 <SelectContent>
-                  {targets.map((node) => (
-                    <SelectItem key={node.node_id} value={node.node_id}>
-                      {nodeLabel(node)}
-                    </SelectItem>
-                  ))}
+                  {targets.map(nodeOption)}
                 </SelectContent>
               </Select>
               {!targets.length && form.issuer_node_id && (
@@ -310,21 +381,49 @@ export function ConnectDialog({
                 </p>
               )}
             </div>
-            <div className="grid gap-2">
-              <Label>Modo operacional</Label>
-              <Select value={form.transfer_mode} onValueChange={changeMode}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="dual_channel">
-                    Dual channel — ambos enviam e recebem
-                  </SelectItem>
-                  <SelectItem value="one_sided">
-                    One sided — fluxo em uma direção
-                  </SelectItem>
-                </SelectContent>
-              </Select>
+            <div className="flex items-start gap-4">
+              <div className="grid flex-1 gap-2">
+                <Label>Modo operacional</Label>
+                <Select
+                  items={modeItems}
+                  value={form.transfer_mode}
+                  onValueChange={changeMode}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="dual_channel">
+                      Dual channel — ambos enviam e recebem
+                    </SelectItem>
+                    <SelectItem value="one_sided">
+                      One sided — fluxo em uma direção
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <Separator orientation="vertical" className="h-14 self-end" />
+              <div className="grid flex-1 gap-2">
+                <Label>Expiração do convite</Label>
+                <Select
+                  items={expiryItems}
+                  value={String(form.expiry_minutes)}
+                  onValueChange={(value) =>
+                    setForm({ ...form, expiry_minutes: Number(value) })
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {expiryItems.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
             {form.transfer_mode === "one_sided" && (
               <div className="grid grid-cols-2 gap-2">
@@ -377,25 +476,6 @@ export function ConnectDialog({
                   setForm({ ...form, purpose: event.target.value })
                 }
               />
-            </div>
-            <div className="grid gap-2">
-              <Label>Expiração do convite</Label>
-              <Select
-                value={String(form.expiry_minutes)}
-                onValueChange={(value) =>
-                  setForm({ ...form, expiry_minutes: Number(value) })
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="10">10 minutos</SelectItem>
-                  <SelectItem value="20">20 minutos</SelectItem>
-                  <SelectItem value="30">30 minutos</SelectItem>
-                  <SelectItem value="60">1 hora</SelectItem>
-                </SelectContent>
-              </Select>
             </div>
             <Button
               type="submit"

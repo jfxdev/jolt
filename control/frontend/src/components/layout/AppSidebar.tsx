@@ -13,6 +13,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useNodes } from "@/context/NodesContext";
 import { usePermissions } from "@/context/PermissionsContext";
 import { cn } from "@/lib/utils";
+import { STATE_COLOR } from "@/components/node/NodeBadge";
 import { AddNodeDialog } from "@/components/node/AddNodeDialog";
 import { AuditDialog } from "@/components/admin/AuditDialog";
 import { BuildVersion } from "@/components/layout/BuildVersion";
@@ -44,13 +45,6 @@ import {
 type AdminPanel = "audit";
 
 type Icon = ComponentType<SVGProps<SVGSVGElement>>;
-
-const STATE_COLOR: Record<string, string> = {
-  online: "bg-emerald-500",
-  offline: "bg-destructive",
-  untrusted: "bg-destructive",
-  degraded: "bg-amber-500",
-};
 
 function SidebarLink({
   to,

@@ -42,6 +42,10 @@ const BLOCKED_MESSAGE = "Bloqueado pela política de acesso: o arquivo aparece, 
 
 interface Props {
   files: FileEntry[];
+  /** Set while the disk usage view is on: sizes become allocated bytes and a
+   * Participação column shows each entry's share of this total. */
+  diskUsageTotal?: number;
+  emptyMessage?: string;
   loading: boolean;
   writable: boolean;
   filePolicyPath: string;
@@ -61,8 +65,15 @@ interface Props {
   onSelectionLimitReached: () => void;
 }
 
+const percentage = new Intl.NumberFormat("pt-BR", {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 1,
+});
+
 export function FileTable({
   files,
+  diskUsageTotal,
+  emptyMessage = "Esta pasta está vazia.",
   loading,
   writable,
   filePolicyPath,
@@ -80,6 +91,8 @@ export function FileTable({
   onSelectionLimitReached,
 }: Props) {
   const { hasPermission } = usePermissions();
+  const usageMode = diskUsageTotal !== undefined;
+  const columns = usageMode ? 5 : 4;
 
   const canRemove = writable && hasPermission(filePolicyPath, "delete");
   const canRead = hasPermission(filePolicyPath, "read");
@@ -131,7 +144,8 @@ export function FileTable({
               />
             </TableHead>
             <TableHead>Nome</TableHead>
-            <TableHead className="w-32">Tamanho</TableHead>
+            <TableHead className="w-32">{usageMode ? "Uso em disco" : "Tamanho"}</TableHead>
+            {usageMode && <TableHead className="w-56">Participação</TableHead>}
             <TableHead className="w-44">Modificado</TableHead>
           </TableRow>
         </TableHeader>
@@ -183,9 +197,20 @@ export function FileTable({
                     )}
                   </button>
                 </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {entry.type === "directory" ? "—" : formatBytes(entry.size)}
-                </TableCell>
+                {usageMode ? (
+                  <>
+                    <TableCell className="font-medium" title={`Tamanho aparente: ${formatBytes(entry.size)}`}>
+                      {formatBytes(entry.disk_usage || 0)}
+                    </TableCell>
+                    <TableCell>
+                      <UsageShare usage={entry.disk_usage || 0} total={diskUsageTotal} />
+                    </TableCell>
+                  </>
+                ) : (
+                  <TableCell className="text-muted-foreground">
+                    {entry.type === "directory" ? "—" : formatBytes(entry.size)}
+                  </TableCell>
+                )}
                 <TableCell className="text-muted-foreground">
                   {formatDate(entry.modified_at)}
                 </TableCell>
@@ -263,15 +288,27 @@ export function FileTable({
           {!files.length && !loading && (
             <TableRow>
               <TableCell
-                colSpan={4}
+                colSpan={columns}
                 className="py-8 text-center text-sm text-muted-foreground"
               >
-                Esta pasta está vazia.
+                {emptyMessage}
               </TableCell>
             </TableRow>
           )}
         </TableBody>
       </Table>
+    </div>
+  );
+}
+
+function UsageShare({ usage, total }: { usage: number; total: number }) {
+  const share = total > 0 ? (usage / total) * 100 : 0;
+  return (
+    <div className="flex items-center gap-3">
+      <div className="h-2 min-w-20 flex-1 overflow-hidden rounded-full bg-muted" aria-hidden="true">
+        <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, share)}%` }} />
+      </div>
+      <span className="w-12 text-right text-xs text-muted-foreground">{percentage.format(share)}%</span>
     </div>
   );
 }

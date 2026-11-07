@@ -204,6 +204,28 @@ jobs:
           cache-from: type=gha,scope=control
           cache-to: type=gha,scope=control,mode=max
 
+      # Same scanner, version and threshold as the release gate, so a HIGH or
+      # CRITICAL finding fails the pull request instead of the post-merge run.
+      - name: Block high and critical vulnerabilities (node)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: jolt-node:smoke
+          version: v0.70.0
+          severity: HIGH,CRITICAL
+          exit-code: 1
+          format: table
+
+      - name: Block high and critical vulnerabilities (control)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: jolt-control:smoke
+          version: v0.70.0
+          severity: HIGH,CRITICAL
+          exit-code: 1
+          format: table
+
       - name: Exercise actual container APIs
         run: python3 scripts/container-smoke.py
 

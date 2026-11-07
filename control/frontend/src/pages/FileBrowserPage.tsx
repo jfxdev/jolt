@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Copy, FolderArchive, HardDrive, MoveRight, Trash2 } from "lucide-react";
+import { ArrowUpDown, ChartColumn, Copy, FolderArchive, MoreHorizontal, MoveRight, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { fileEntryDisplayName, safeDisplayName } from "@/lib/display-name";
 import type { DiskUsageResponse, FileEntry, SearchResponse } from "@/lib/types";
@@ -20,8 +20,16 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
 import { FileTable } from "@/components/files/FileTable";
-import { DiskUsageTable } from "@/components/files/DiskUsageTable";
-import { Switch } from "@/components/ui/switch";
+import { DiskUsageNotices, DiskUsageTotal } from "@/components/files/DiskUsageSummary";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Separator } from "@/components/ui/separator";
+import { Toggle } from "@/components/ui/toggle";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { CrossNodeTransferDialog } from "@/components/files/CrossNodeTransferDialog";
 import { MediaPreviewDialog } from "@/components/files/MediaPreviewDialog";
 import { TextEditorDialog } from "@/components/files/TextEditorDialog";
@@ -50,10 +58,26 @@ export default function FileBrowserPage() {
     [mounts, mountId],
   );
 
+  // Names the target of every destructive confirmation: mount names repeat
+  // across nodes, so the path alone does not say where an action lands.
+  const where = [node?.name, mount?.name].filter(Boolean).join(" / ");
+
+  useEffect(() => {
+    const previous = document.title;
+    if (where) document.title = `${where} · Jolt`;
+    return () => {
+      document.title = previous;
+    };
+  }, [where]);
+
   const [currentPath, setCurrentPath] = useState("");
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [diskUsageMode, setDiskUsageMode] = useState(false);
   const [diskUsage, setDiskUsage] = useState<DiskUsageResponse | null>(null);
+  const [largestFirst, setLargestFirst] = useState(false);
+  // The disk usage view filters its own folder listing, since search results
+  // carry no allocated sizes.
+  const [usageFilter, setUsageFilter] = useState<{ query: string; type: "" | "file" | "directory" } | null>(null);
   const [loading, setLoading] = useState(false);
   const [nextAfter, setNextAfter] = useState("");
   const listingSequence = useRef(0);
@@ -214,6 +238,23 @@ export default function FileBrowserPage() {
     ];
   }, [currentPath, mount?.name]);
 
+  const usageEntries = useMemo(() => {
+    const entries = diskUsage?.entries || [];
+    if (!usageFilter) return entries;
+    const query = usageFilter.query.toLowerCase();
+    return entries.filter(
+      (entry) =>
+        (!usageFilter.type || entry.type === usageFilter.type) &&
+        fileEntryDisplayName(entry).toLowerCase().includes(query),
+    );
+  }, [diskUsage, usageFilter]);
+  const listed = diskUsageMode ? usageEntries : searchResult ? searchResult.entries : files;
+  const visibleFiles = useMemo(() => {
+    if (!largestFirst) return listed;
+    const weight = (entry: FileEntry) => entry.disk_usage ?? (entry.type === "directory" ? 0 : entry.size ?? 0);
+    return [...listed].sort((a, b) => weight(b) - weight(a) || a.name.localeCompare(b.name));
+  }, [listed, largestFirst]);
+
   async function downloadEntry(entry: FileEntry) {
     if (entry.type === "directory") {
       await loadDirectory(entry.path);
@@ -229,7 +270,14 @@ export default function FileBrowserPage() {
   async function changeDiskUsageMode(checked: boolean) {
     setDiskUsageMode(checked);
     setSelectedEntries([]);
-    if (checked) await loadDiskUsage(currentPath);
+    // Disk usage is mostly asked to find what is big, so it starts sorted that way.
+    setLargestFirst(checked);
+    if (checked) {
+      // A previous scan must not stay listed (or selectable) while this one
+      // runs, or after it fails.
+      setDiskUsage(null);
+      await loadDiskUsage(currentPath);
+    }
     else await loadFiles(currentPath);
   }
 
@@ -244,12 +292,17 @@ export default function FileBrowserPage() {
     const names = entries.map((entry) => entry.name);
     try {
       const plan = await api.archivePlan(nodeId, mount.mount_id, currentPath, names);
+      // An empty selection archives the whole folder.
       const target =
-        names.length === 1 ? `“${fileEntryDisplayName(entries[0])}”` : `${names.length} itens`;
+        names.length === 0
+          ? `a pasta “${breadcrumbs[breadcrumbs.length - 1]?.label || "Mount"}”`
+          : names.length === 1
+            ? `“${fileEntryDisplayName(entries[0])}”`
+            : `${names.length} itens`;
       if (
         !(await confirm({
           title: `Baixar ${target} como .zip?`,
-          description: `${plan.files} arquivo${plan.files === 1 ? "" : "s"} · ${formatBytes(plan.bytes)}${
+          description: `Em ${where}. ${plan.files} arquivo${plan.files === 1 ? "" : "s"} · ${formatBytes(plan.bytes)}${
             plan.skipped_symlinks > 0
               ? ` · ${plan.skipped_symlinks} link simbólico ignorado${plan.skipped_symlinks === 1 ? "" : "s"}`
               : ""
@@ -315,10 +368,10 @@ export default function FileBrowserPage() {
     async (entry: FileEntry, content: string) => {
       if (!editorMountID) throw new Error("Mount não encontrado.");
       await api.saveEditorContent(nodeId, editorMountID, entry.path, content);
-      await Promise.all([loadFiles(currentPath), refreshJobs()]);
+      await Promise.all([loadDirectory(currentPath), refreshJobs()]);
       toast.success("Arquivo salvo.");
     },
-    [currentPath, editorMountID, loadFiles, nodeId, refreshJobs],
+    [currentPath, editorMountID, loadDirectory, nodeId, refreshJobs],
   );
 
   async function createDirectory(event: React.FormEvent) {
@@ -329,7 +382,7 @@ export default function FileBrowserPage() {
     try {
       await api.mkdir(nodeId, mount.mount_id, path);
       setNewDirectory("");
-      await Promise.all([loadFiles(currentPath), refreshJobs()]);
+      await Promise.all([loadDirectory(currentPath), refreshJobs()]);
       toast.success("Pasta criada.");
     } catch (error) {
       handleError(error);
@@ -374,13 +427,13 @@ export default function FileBrowserPage() {
     try {
       const approved = await confirm({
         title: `Remover a pasta “${fileEntryDisplayName(entry)}”?`,
-        description: destructivePlanDescription(plan, trashDays(mount)),
+        description: `Em ${where}. ${destructivePlanDescription(plan, trashDays(mount))}`,
         confirmText: "Remover pasta",
         destructive: true,
       });
       if (!approved) return true;
       await api.confirmDestructive(nodeId, mount.mount_id, plan.plan_id, plan.token);
-      await Promise.all([loadFiles(currentPath), refreshJobs()]);
+      await Promise.all([loadDirectory(currentPath), refreshJobs()]);
       toast.success(trashDays(mount) ? "A pasta será movida para a lixeira. Acompanhe nos jobs." : "Remoção iniciada. Acompanhe o andamento nos jobs.");
     } catch (error) {
       handleError(error);
@@ -393,7 +446,7 @@ export default function FileBrowserPage() {
     if (
       !(await confirm({
         title: `Remover “${fileEntryDisplayName(entry)}”?`,
-        description: removeDescription(mount),
+        description: `Em ${where}. ${removeDescription(mount) ?? ""}`.trim(),
         confirmText: "Remover",
         destructive: true,
       }))
@@ -414,7 +467,7 @@ export default function FileBrowserPage() {
         toast.info(pendingToast(pending));
         return;
       }
-      await Promise.all([loadFiles(currentPath), refreshJobs()]);
+      await Promise.all([loadDirectory(currentPath), refreshJobs()]);
       toast.success(removedNotice(mount));
     } catch (error) {
       handleError(error);
@@ -431,10 +484,11 @@ export default function FileBrowserPage() {
   const canTransferCopy = canRead;
   const canTransferMove =
     writable && canTransferCopy && hasPermission(filePolicyPath, "delete");
-  const visibleFiles = searchResult ? searchResult.entries : files;
+  // Disk usage and the selection actions share one floating bar.
+  const floatingBar = diskUsageMode || selectedEntries.length > 0;
 
   return (
-    <div className="grid gap-4">
+    <div className={floatingBar ? "grid gap-4 pb-28" : "grid gap-4"}>
       <div className="flex flex-wrap items-center justify-between gap-4">
         <Breadcrumb>
           <BreadcrumbList>
@@ -458,16 +512,64 @@ export default function FileBrowserPage() {
               <Trash2 /> Lixeira
             </Button>
           )}
-          {!diskUsageMode && canRead && files.length > 0 && (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => downloadArchive([])}
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Toggle
+                  variant="outline"
+                  size="sm"
+                  aria-label="Maiores itens primeiro"
+                  pressed={largestFirst}
+                  onPressedChange={setLargestFirst}
+                />
+              }
             >
-              <FolderArchive /> Baixar pasta (.zip)
-            </Button>
+              <ArrowUpDown />
+            </TooltipTrigger>
+            <TooltipContent>
+              {largestFirst && !diskUsageMode && !searchResult && nextAfter
+                ? "Maiores itens primeiro (só entre os itens já carregados)"
+                : "Maiores itens primeiro"}
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Toggle
+                  variant="outline"
+                  size="sm"
+                  aria-label="Exibir uso de disco"
+                  pressed={diskUsageMode}
+                  onPressedChange={(pressed) => void changeDiskUsageMode(pressed)}
+                />
+              }
+            >
+              <ChartColumn />
+            </TooltipTrigger>
+            <TooltipContent>Uso de disco</TooltipContent>
+          </Tooltip>
+          {canRead && (diskUsageMode ? diskUsage?.entries.length ?? 0 : files.length) > 0 && (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    variant="secondary"
+                    size="icon-sm"
+                    aria-label="Mais ações"
+                    title="Mais ações"
+                  />
+                }
+              >
+                <MoreHorizontal />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => void downloadArchive([])}>
+                  <FolderArchive /> Baixar pasta (.zip)
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
-          {!diskUsageMode && canCreate && (
+          {canCreate && (
             <>
               <form className="flex gap-2" onSubmit={createDirectory}>
                 <Input
@@ -489,34 +591,25 @@ export default function FileBrowserPage() {
         </div>
       </div>
 
-      <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
-        <label className="flex items-center gap-2 text-sm font-medium">
-          <HardDrive className="size-4 text-muted-foreground" />
-          Uso de disco
-          <Switch
-            aria-label="Exibir uso de disco"
-            checked={diskUsageMode}
-            onCheckedChange={(checked) => void changeDiskUsageMode(checked)}
-          />
-        </label>
-        <span className="text-xs text-muted-foreground">Maiores itens primeiro</span>
-      </div>
-
-      {!diskUsageMode && (
-        <FileSearchBar
-          // Remounting on folder change clears the query text, so the box never
-          // shows a stale term with no results beneath it.
-          key={currentPath}
-          scopeLabel={breadcrumbs[breadcrumbs.length - 1]?.label || "Mount"}
-          searching={searching}
-          result={searchResult}
-          onSearch={runSearch}
-          onClear={() => {
-            searchSequence.current += 1;
-            setSearchResult(null);
-          }}
-        />
-      )}
+      <FileSearchBar
+        // Remounting on folder or view change clears the query text, so the box never
+        // shows a stale term with no results beneath it.
+        key={`${currentPath}:${diskUsageMode}`}
+        scopeLabel={breadcrumbs[breadcrumbs.length - 1]?.label || "Mount"}
+        searching={searching}
+        result={diskUsageMode ? null : searchResult}
+        onSearch={(query, type) => {
+          if (diskUsageMode) setUsageFilter({ query, type });
+          else void runSearch(query, type);
+        }}
+        onClear={() => {
+          searchSequence.current += 1;
+          // The invalidated search no longer reaches its own `finally`.
+          setSearching(false);
+          setSearchResult(null);
+          setUsageFilter(null);
+        }}
+      />
 
       {recoveryError && <p role="status" className="text-sm text-destructive">{recoveryError} <Button variant="link" onClick={() => void refreshSessions()}>Tentar novamente</Button></p>}
       <UploadQueue
@@ -528,35 +621,11 @@ export default function FileBrowserPage() {
         onReselect={reselect}
       />
 
-      {selectedEntries.length > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-muted/30 px-3 py-2">
-          <p className="text-sm">
-            {selectedEntries.length} item{selectedEntries.length === 1 ? "" : "ns"} selecionado{selectedEntries.length === 1 ? "" : "s"}
-          </p>
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={!canRead}
-              onClick={() => downloadArchive(selectedEntries)}
-            >
-              <FolderArchive /> Baixar .zip
-            </Button>
-            <Button size="sm" variant="secondary" disabled={!canTransferCopy} onClick={() => setTransfer({ entries: selectedEntries, operation: "copy" })}>
-              <Copy /> Copiar para…
-            </Button>
-            <Button size="sm" disabled={!canTransferMove} onClick={() => setTransfer({ entries: selectedEntries, operation: "move" })}>
-              <MoveRight /> Mover para…
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {diskUsageMode ? (
-        <DiskUsageTable result={diskUsage} loading={loading} onOpen={downloadEntry} />
-      ) : (
-        <FileTable
+      {diskUsageMode && <DiskUsageNotices result={diskUsage} />}
+      <FileTable
           files={visibleFiles}
+          diskUsageTotal={diskUsageMode ? diskUsage?.total_bytes ?? 0 : undefined}
+          emptyMessage={diskUsageMode ? (diskUsage ? (usageFilter ? "Nenhum resultado." : undefined) : loading ? "Analisando uso de disco…" : "Não foi possível analisar o uso de disco desta pasta.") : undefined}
           loading={loading}
           writable={writable}
           filePolicyPath={filePolicyPath}
@@ -572,9 +641,13 @@ export default function FileBrowserPage() {
           selectionLimit={transferLimit}
           onSelectionChange={setSelectedEntries}
           onSelectionLimitReached={() => toast.error(`O limite de ${transferLimit} raízes selecionadas foi atingido. Remova uma seleção para adicionar outra.`)}
-        />
+      />
+      {!diskUsageMode && !searchResult && nextAfter && (
+        <>
+          {largestFirst && <p className="text-xs text-muted-foreground">Ordenado só entre os itens carregados. Carregue mais para incluir os demais.</p>}
+          <Button variant="outline" disabled={loading} onClick={() => void loadFiles(currentPath, nextAfter)}>{loading ? "Carregando…" : "Carregar mais"}</Button>
+        </>
       )}
-      {!diskUsageMode && !searchResult && nextAfter && <Button variant="outline" disabled={loading} onClick={() => void loadFiles(currentPath, nextAfter)}>{loading ? "Carregando…" : "Carregar mais"}</Button>}
       <MediaPreviewDialog
         entry={preview}
         url={
@@ -594,11 +667,12 @@ export default function FileBrowserPage() {
       <TrashDialog
         open={trashOpen}
         nodeId={nodeId}
+        nodeName={node?.name}
         mount={mount}
         canRestore={canCreate}
         canPurge={hasPermission(filePolicyPath, "delete")}
         onClose={() => setTrashOpen(false)}
-        onRestored={() => void loadFiles(currentPath)}
+        onRestored={() => void loadDirectory(currentPath)}
       />
       <ShareDialog
         entry={sharing}
@@ -606,6 +680,38 @@ export default function FileBrowserPage() {
         nodeId={nodeId}
         onClose={() => setSharing(null)}
       />
+
+      {floatingBar && (
+        <div className="fixed bottom-4 left-1/2 z-30 flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-x-4 gap-y-2 rounded-lg border bg-popover px-4 py-3 text-popover-foreground shadow-lg">
+          {diskUsageMode && <DiskUsageTotal result={diskUsage} loading={loading} />}
+          {diskUsageMode && selectedEntries.length > 0 && (
+            <Separator orientation="vertical" className="hidden h-8 sm:block" />
+          )}
+          {selectedEntries.length > 0 && (
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <p className="text-sm">
+                {selectedEntries.length} item{selectedEntries.length === 1 ? "" : "ns"} selecionado{selectedEntries.length === 1 ? "" : "s"}
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={!canRead}
+                  onClick={() => downloadArchive(selectedEntries)}
+                >
+                  <FolderArchive /> Baixar .zip
+                </Button>
+                <Button size="sm" variant="secondary" disabled={!canTransferCopy} onClick={() => setTransfer({ entries: selectedEntries, operation: "copy" })}>
+                  <Copy /> Copiar para…
+                </Button>
+                <Button size="sm" disabled={!canTransferMove} onClick={() => setTransfer({ entries: selectedEntries, operation: "move" })}>
+                  <MoveRight /> Mover para…
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <CrossNodeTransferDialog
         open={transfer !== null}

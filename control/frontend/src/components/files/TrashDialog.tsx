@@ -18,6 +18,7 @@ import {
 interface Props {
   open: boolean;
   nodeId: string;
+  nodeName?: string;
   mount: Mount;
   canRestore: boolean;
   canPurge: boolean;
@@ -27,7 +28,7 @@ interface Props {
 
 // What this mount kept when something was deleted. Restoring puts an entry back
 // where it was and never overwrites; purging removes it for good.
-export function TrashDialog({ open, nodeId, mount, canRestore, canPurge, onClose, onRestored }: Props) {
+export function TrashDialog({ open, nodeId, nodeName, mount, canRestore, canPurge, onClose, onRestored }: Props) {
   const handleError = useApiError();
   const confirm = useConfirm();
   const [entries, setEntries] = useState<TrashEntry[] | null>(null);
@@ -71,7 +72,7 @@ export function TrashDialog({ open, nodeId, mount, canRestore, canPurge, onClose
   async function purge(entry: TrashEntry) {
     const accepted = await confirm({
       title: `Apagar “${entryName(entry)}” de vez?`,
-      description: `Ele está na lixeira, vindo de ${entryFolder(entry)}. Depois disto não há como recuperar.`,
+      description: `Ele está na lixeira de ${[nodeName, mount.name].filter(Boolean).join(" / ")}, vindo de ${entryFolder(entry)}. Depois disto não há como recuperar.`,
       confirmText: "Apagar de vez",
       destructive: true,
     });
