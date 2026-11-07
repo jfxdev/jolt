@@ -256,6 +256,7 @@ export function CrossNodeTransferDialog({
             if (plan) void execute(); else void preview();
           }}>
             <p className="text-sm text-muted-foreground">
+              {operation === "move" ? "Mover" : "Copiar"} de <strong>{[node?.name, mount.name].filter(Boolean).join(" / ")}</strong>.{" "}
               {paths.length} raiz{paths.length === 1 ? "" : "es"} selecionada{paths.length === 1 ? "" : "s"}. O limite efetivo é {limit} por transferência; arquivos dentro de pastas não contam separadamente.
             </p>
             {!targets.length && !busy && (

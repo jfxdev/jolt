@@ -288,16 +288,37 @@ test("disk usage switch sorts allocated sizes and navigates into large folders",
 }) => {
   const state = await fixture(page);
   await page.goto("/nodes/a/mounts/media");
-  await page.getByRole("switch", { name: "Exibir uso de disco" }).click();
+  await page.getByRole("button", { name: "Exibir uso de disco" }).click();
   await expect(page.getByText("1.0 GB em disco", { exact: true })).toBeVisible();
   await expect(page.getByRole("row").nth(1)).toContainText("media");
   await expect(page.getByRole("row").nth(1)).toContainText("75%");
   await expect(page.getByRole("row").nth(2)).toContainText("notes.txt");
-  await expect(page.getByRole("button", { name: "notes.txt", exact: true })).toBeDisabled();
+  await expect(page.getByRole("columnheader", { name: "Participação" })).toBeVisible();
   await page.getByRole("button", { name: "media", exact: true }).click();
   await expect(page.getByText("768 MB em disco", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "movie.mkv", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "movie.mkv", exact: true })).toBeVisible();
   expect(state.usagePaths).toEqual(["", "media"]);
+});
+
+test("largest-first switch sorts the listing without disk usage", async ({ page }) => {
+  await fixture(page);
+  await page.goto("/nodes/a/mounts/media");
+  await expect(page.getByRole("columnheader", { name: "Participação" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Maiores itens primeiro" }).click();
+  await expect(page.getByRole("button", { name: "Maiores itens primeiro" })).toHaveAttribute("aria-pressed", "true");
+});
+
+test("disk usage view keeps the name and type filters", async ({ page }) => {
+  await fixture(page);
+  await page.goto("/nodes/a/mounts/media");
+  await page.getByRole("button", { name: "Exibir uso de disco" }).click();
+  await expect(page.getByRole("button", { name: "notes.txt", exact: true })).toBeVisible();
+  await page.getByRole("textbox", { name: /^Buscar em/ }).fill("notes");
+  await expect(page.getByRole("button", { name: "media", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "notes.txt", exact: true })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "Participação" })).toBeVisible();
+  await page.getByRole("textbox", { name: /^Buscar em/ }).fill("zzz");
+  await expect(page.getByText("Nenhum resultado.", { exact: true })).toBeVisible();
 });
 
 test("disk usage failure does not report an empty folder", async ({ page }) => {
@@ -306,7 +327,7 @@ test("disk usage failure does not report an empty folder", async ({ page }) => {
     route.fulfill({ status: 500, contentType: "application/json", body: "{}" }),
   );
   await page.goto("/nodes/a/mounts/media");
-  await page.getByRole("switch", { name: "Exibir uso de disco" }).click();
+  await page.getByRole("button", { name: "Exibir uso de disco" }).click();
   await expect(page.getByText("Sem dados de uso de disco", { exact: true })).toBeVisible();
   await expect(page.getByText("Não foi possível analisar o uso de disco desta pasta.", { exact: true })).toBeVisible();
   await expect(page.getByText("Esta pasta está vazia.", { exact: true })).toHaveCount(0);

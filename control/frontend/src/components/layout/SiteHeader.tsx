@@ -1,4 +1,4 @@
-import { useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useNodes } from "@/context/NodesContext";
 import {
   Breadcrumb,
@@ -7,6 +7,7 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
+import { NodeBadge } from "@/components/node/NodeBadge";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 
@@ -30,6 +31,11 @@ export function SiteHeader() {
   const { nodes } = useNodes();
   const online = nodes.filter((node) => node.state === "online").length;
   const title = pageTitle(pathname, nodes);
+  // Files lives under a node, so the node is named in the trail instead of
+  // being inferred from the sidebar highlight.
+  const filesNode = pathname.includes("/mounts/")
+    ? nodes.find((item) => pathname.startsWith(`/nodes/${item.node_id}/`))
+    : undefined;
 
   return (
     <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-2 border-b bg-background/95 px-3 backdrop-blur supports-backdrop-filter:bg-background/80 sm:px-4">
@@ -37,10 +43,16 @@ export function SiteHeader() {
       <Separator orientation="vertical" className="mr-1 h-4" />
       <Breadcrumb>
         <BreadcrumbList>
-          <BreadcrumbItem className="hidden md:block">
-            <span className="text-muted-foreground">Jolt</span>
-          </BreadcrumbItem>
-          <BreadcrumbSeparator className="hidden md:block" />
+          {filesNode && (
+            <>
+              <BreadcrumbItem>
+                <Link to={`/nodes/${filesNode.node_id}`}>
+                  <NodeBadge node={filesNode} className="text-foreground" />
+                </Link>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+            </>
+          )}
           <BreadcrumbItem>
             <BreadcrumbPage>{title}</BreadcrumbPage>
           </BreadcrumbItem>

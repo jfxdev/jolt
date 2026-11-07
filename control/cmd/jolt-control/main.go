@@ -215,13 +215,37 @@ func main() {
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	<-signals
 	cancelSweep()
+	logger.Info("shutting down: waiting for open requests to finish; press Ctrl+C again to force quit")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
-		logger.Error("graceful shutdown failed", "error", err)
-	}
-	if rootServer != nil {
-		_ = rootServer.Shutdown(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := server.Shutdown(ctx); err != nil {
+			// The deadline passed with connections still open; drop them
+			// rather than leave the process hanging.
+			logger.Warn("graceful shutdown timed out; closing remaining connections", "error", err)
+			_ = server.Close()
+		}
+		if rootServer != nil {
+			_ = rootServer.Shutdown(ctx)
+		}
+	}()
+	for {
+		select {
+		case <-done:
+			logger.Info("shutdown complete")
+			return
+		case <-signals:
+			// Later signals are an explicit request to stop waiting.
+			logger.Warn("forced shutdown: closing connections immediately")
+			_ = server.Close()
+			if rootServer != nil {
+				_ = rootServer.Close()
+			}
+			os.Exit(1)
+		}
 	}
 }
 
