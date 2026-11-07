@@ -5,7 +5,7 @@ go 1.26.0
 toolchain go1.26.10
 
 require (
-	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/mutecomm/go-sqlcipher/v4 v4.4.2
 	github.com/spiffe/go-spiffe/v2 v2.8.1
