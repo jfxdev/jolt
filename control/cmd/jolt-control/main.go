@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -222,15 +223,25 @@ func main() {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if err := server.Shutdown(ctx); err != nil {
-			// The deadline passed with connections still open; drop them
-			// rather than leave the process hanging.
-			logger.Warn("graceful shutdown timed out; closing remaining connections", "error", err)
-			_ = server.Close()
+		// Both servers drain under the same deadline, so a slow main server
+		// cannot leave the root server with no time to finish its requests.
+		var drain sync.WaitGroup
+		shutdown := func(name string, srv *http.Server) {
+			defer drain.Done()
+			if err := srv.Shutdown(ctx); err != nil {
+				// The deadline passed with connections still open; drop them
+				// rather than leave the process hanging.
+				logger.Warn("graceful shutdown timed out; closing remaining connections", "server", name, "error", err)
+				_ = srv.Close()
+			}
 		}
+		drain.Add(1)
+		go shutdown("main", server)
 		if rootServer != nil {
-			_ = rootServer.Shutdown(ctx)
+			drain.Add(1)
+			go shutdown("root", rootServer)
 		}
+		drain.Wait()
 	}()
 	for {
 		select {

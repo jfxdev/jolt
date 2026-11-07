@@ -32,10 +32,15 @@ export function SiteHeader() {
   const online = nodes.filter((node) => node.state === "online").length;
   const title = pageTitle(pathname, nodes);
   // Files lives under a node, so the node is named in the trail instead of
-  // being inferred from the sidebar highlight.
-  const filesNode = pathname.includes("/mounts/")
-    ? nodes.find((item) => pathname.startsWith(`/nodes/${item.node_id}/`))
+  // being inferred from the sidebar highlight. The node ID comes from the
+  // route, so the link survives a deep link while the inventory still loads.
+  const filesNodeId = pathname.includes("/mounts/")
+    ? pathname.match(/^\/nodes\/([^/]+)/)?.[1]
     : undefined;
+  const filesNode = nodes.find((item) => item.node_id === filesNodeId);
+  // `nodes` is empty until the first load, so only a non-empty inventory that
+  // lacks the ID proves the node is gone.
+  const filesNodeMissing = !!filesNodeId && !filesNode && nodes.length > 0;
 
   return (
     <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-2 border-b bg-background/95 px-3 backdrop-blur supports-backdrop-filter:bg-background/80 sm:px-4">
@@ -43,11 +48,17 @@ export function SiteHeader() {
       <Separator orientation="vertical" className="mr-1 h-4" />
       <Breadcrumb>
         <BreadcrumbList>
-          {filesNode && (
+          {filesNodeId && (
             <>
               <BreadcrumbItem>
-                <Link to={`/nodes/${filesNode.node_id}`}>
-                  <NodeBadge node={filesNode} className="text-foreground" />
+                <Link to={`/nodes/${filesNodeId}`}>
+                  {filesNode ? (
+                    <NodeBadge node={filesNode} className="text-foreground" />
+                  ) : (
+                    <span className="inline-flex items-center rounded-md border bg-muted/40 px-2 py-1 text-sm font-medium text-muted-foreground">
+                      {filesNodeMissing ? "Node indisponível" : "Node"}
+                    </span>
+                  )}
                 </Link>
               </BreadcrumbItem>
               <BreadcrumbSeparator />

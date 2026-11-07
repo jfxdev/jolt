@@ -72,7 +72,13 @@ node-c:
 # Serves the API on :8090 and the frontend through Vite on :5173 (hot reload,
 # proxying /api to the API). Open http://localhost:5173.
 control:
-	@$(MAKE) --no-print-directory -j2 control-api frontend
+	@set -m; \
+	$(MAKE) --no-print-directory frontend & fe=$$!; \
+	trap 'kill -TERM -$$fe 2>/dev/null' EXIT; \
+	$(MAKE) --no-print-directory control-api; \
+	status=$$?; \
+	kill -TERM -$$fe 2>/dev/null; wait $$fe 2>/dev/null; \
+	exit $$status
 
 control-api:
 	cd control && CGO_ENABLED=1 CONTROL_TOWER_ADMIN_PASSWORD=development-password CONTROL_TOWER_DB_ENCRYPTION_KEY=development-encryption-key-32chars go run ./cmd/jolt-control

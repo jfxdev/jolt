@@ -272,7 +272,12 @@ export default function FileBrowserPage() {
     setSelectedEntries([]);
     // Disk usage is mostly asked to find what is big, so it starts sorted that way.
     setLargestFirst(checked);
-    if (checked) await loadDiskUsage(currentPath);
+    if (checked) {
+      // A previous scan must not stay listed (or selectable) while this one
+      // runs, or after it fails.
+      setDiskUsage(null);
+      await loadDiskUsage(currentPath);
+    }
     else await loadFiles(currentPath);
   }
 
@@ -287,8 +292,13 @@ export default function FileBrowserPage() {
     const names = entries.map((entry) => entry.name);
     try {
       const plan = await api.archivePlan(nodeId, mount.mount_id, currentPath, names);
+      // An empty selection archives the whole folder.
       const target =
-        names.length === 1 ? `“${fileEntryDisplayName(entries[0])}”` : `${names.length} itens`;
+        names.length === 0
+          ? `a pasta “${breadcrumbs[breadcrumbs.length - 1]?.label || "Mount"}”`
+          : names.length === 1
+            ? `“${fileEntryDisplayName(entries[0])}”`
+            : `${names.length} itens`;
       if (
         !(await confirm({
           title: `Baixar ${target} como .zip?`,
@@ -516,7 +526,11 @@ export default function FileBrowserPage() {
             >
               <ArrowUpDown />
             </TooltipTrigger>
-            <TooltipContent>Maiores itens primeiro</TooltipContent>
+            <TooltipContent>
+              {largestFirst && !diskUsageMode && !searchResult && nextAfter
+                ? "Maiores itens primeiro (só entre os itens já carregados)"
+                : "Maiores itens primeiro"}
+            </TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger
@@ -534,7 +548,7 @@ export default function FileBrowserPage() {
             </TooltipTrigger>
             <TooltipContent>Uso de disco</TooltipContent>
           </Tooltip>
-          {canRead && visibleFiles.length > 0 && (
+          {canRead && (diskUsageMode ? diskUsage?.entries.length ?? 0 : files.length) > 0 && (
             <DropdownMenu>
               <DropdownMenuTrigger
                 render={
@@ -590,6 +604,8 @@ export default function FileBrowserPage() {
         }}
         onClear={() => {
           searchSequence.current += 1;
+          // The invalidated search no longer reaches its own `finally`.
+          setSearching(false);
           setSearchResult(null);
           setUsageFilter(null);
         }}
@@ -609,7 +625,7 @@ export default function FileBrowserPage() {
       <FileTable
           files={visibleFiles}
           diskUsageTotal={diskUsageMode ? diskUsage?.total_bytes ?? 0 : undefined}
-          emptyMessage={diskUsageMode ? (diskUsage ? (usageFilter ? "Nenhum resultado." : undefined) : "Não foi possível analisar o uso de disco desta pasta.") : undefined}
+          emptyMessage={diskUsageMode ? (diskUsage ? (usageFilter ? "Nenhum resultado." : undefined) : loading ? "Analisando uso de disco…" : "Não foi possível analisar o uso de disco desta pasta.") : undefined}
           loading={loading}
           writable={writable}
           filePolicyPath={filePolicyPath}
@@ -626,7 +642,12 @@ export default function FileBrowserPage() {
           onSelectionChange={setSelectedEntries}
           onSelectionLimitReached={() => toast.error(`O limite de ${transferLimit} raízes selecionadas foi atingido. Remova uma seleção para adicionar outra.`)}
       />
-      {!diskUsageMode && !searchResult && nextAfter && <Button variant="outline" disabled={loading} onClick={() => void loadFiles(currentPath, nextAfter)}>{loading ? "Carregando…" : "Carregar mais"}</Button>}
+      {!diskUsageMode && !searchResult && nextAfter && (
+        <>
+          {largestFirst && <p className="text-xs text-muted-foreground">Ordenado só entre os itens carregados. Carregue mais para incluir os demais.</p>}
+          <Button variant="outline" disabled={loading} onClick={() => void loadFiles(currentPath, nextAfter)}>{loading ? "Carregando…" : "Carregar mais"}</Button>
+        </>
+      )}
       <MediaPreviewDialog
         entry={preview}
         url={

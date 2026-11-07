@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { ArrowRight, Check } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -115,6 +115,9 @@ export function ConnectDialog({
   const [grant, setGrant] = useState<GrantFormValue>(defaultGrantForm());
   const [busy, setBusy] = useState(false);
   const [awaitingPeer, setAwaitingPeer] = useState(false);
+  // Set when the chosen target stopped being valid (it got connected), so the
+  // defaulting effect does not quietly pick another node under the same purpose.
+  const targetInvalidated = useRef(false);
 
   const sourceNode = nodes.find((node) => node.node_id === form.issuer_node_id);
   const managedGrants = sourceNode?.configuration?.grants_mutable === false;
@@ -136,6 +139,7 @@ export function ConnectDialog({
   // resetting on those would send the operator back to an empty step 1.
   useEffect(() => {
     if (!open) return;
+    targetInvalidated.current = false;
     setStep(1);
     setForm({ ...baseForm(), issuer_node_id: issuerNodeId || "" });
     setFingerprints({ issuer: "", target: "" });
@@ -149,25 +153,43 @@ export function ConnectDialog({
   useEffect(() => {
     if (!open || step !== 1) return;
     setForm((current) => {
-      const issuer = current.issuer_node_id || nodes[0]?.node_id || "";
-      const target = nodes.some(
-        (node) =>
-          node.node_id === current.target_node_id &&
-          node.node_id !== issuer &&
-          !connectedNodeIdsByIssuer[issuer]?.includes(node.node_id),
-      )
-        ? current.target_node_id
-        : nodes.find(
+      // Until the inventory loads there is nothing to validate against.
+      // A fixed issuer that is not in the inventory is cleared rather than
+      // replaced, since its selector is hidden and the operator could not
+      // see the swap.
+      const issuer =
+        nodes.length === 0 || nodes.some((node) => node.node_id === current.issuer_node_id)
+          ? current.issuer_node_id || nodes[0]?.node_id || ""
+          : issuerNodeId
+            ? ""
+            : nodes[0].node_id;
+      const firstTarget = () =>
+        (issuer &&
+          nodes.find(
             (node) =>
               node.node_id !== issuer &&
               !connectedNodeIdsByIssuer[issuer]?.includes(node.node_id),
-          )?.node_id || "";
+          )?.node_id) ||
+        "";
+      let target = current.target_node_id;
+      if (issuer !== current.issuer_node_id) target = firstTarget();
+      else if (!target && !targetInvalidated.current) target = firstTarget();
       if (issuer === current.issuer_node_id && target === current.target_node_id) {
         return current;
       }
       return { ...current, issuer_node_id: issuer, target_node_id: target };
     });
-  }, [open, step, nodes, connectedNodeIdsByIssuer]);
+  }, [open, step, nodes, connectedNodeIdsByIssuer, issuerNodeId]);
+
+  // A target that became connected while the dialog was open is dropped, and
+  // the operator has to pick again: the purpose was written for that node.
+  useEffect(() => {
+    if (!open || step !== 1 || !nodes.length) return;
+    if (!form.target_node_id || targets.some((node) => node.node_id === form.target_node_id)) return;
+    targetInvalidated.current = true;
+    setForm((current) => ({ ...current, target_node_id: "" }));
+    toast.warning("O node alvo selecionado já foi conectado. Escolha outro node alvo.");
+  }, [open, step, nodes, targets, form.target_node_id]);
 
   useEffect(() => {
     if (!open) return;
@@ -310,6 +332,7 @@ export function ConnectDialog({
                   items={nodeItems(nodes)}
                   value={form.issuer_node_id}
                   onValueChange={(issuer_node_id) => {
+                    targetInvalidated.current = false;
                     const target =
                       nodes.find(
                         (node) =>
@@ -339,9 +362,10 @@ export function ConnectDialog({
               <Select
                 items={nodeItems(targets)}
                 value={form.target_node_id}
-                onValueChange={(target_node_id) =>
-                  setForm({ ...form, target_node_id })
-                }
+                onValueChange={(target_node_id) => {
+                  targetInvalidated.current = false;
+                  setForm({ ...form, target_node_id });
+                }}
               >
                 <SelectTrigger className="w-full">
                   <SelectValue placeholder="Selecione um node" />
