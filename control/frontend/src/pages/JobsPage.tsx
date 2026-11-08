@@ -47,7 +47,7 @@ function progressPercent(bytesCompleted = 0, bytesTotal = 0) {
 }
 
 export default function JobsPage() {
-  const { nodes } = useNodes();
+  const { nodes, loaded: inventoryLoaded } = useNodes();
   const [results, setResults] = useState<NodeJobs[]>([]);
   const [failed, setFailed] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -55,22 +55,37 @@ export default function JobsPage() {
   const [page, setPage] = useState(1);
 
   // Only the latest load may write state: a slower, superseded load must not
-  // overwrite newer results or clear the loading flag early.
+  // overwrite newer results or clear the loading flag early. Its requests are
+  // aborted too, so they stop downloading jobs nobody will read.
   const latestLoad = useRef(0);
+  const inFlight = useRef<AbortController | null>(null);
+
+  const cancelLoad = useCallback(() => {
+    latestLoad.current++;
+    inFlight.current?.abort();
+    inFlight.current = null;
+  }, []);
 
   const load = useCallback(async () => {
-    const id = ++latestLoad.current;
+    cancelLoad();
+    const id = latestLoad.current;
+    const controller = new AbortController();
+    inFlight.current = controller;
     setLoading(true);
     const settled = await Promise.allSettled(
       nodes.map((node) =>
         api.jobs(
           node.node_id,
           NODE_JOB_LIMIT,
-          AbortSignal.timeout(NODE_REQUEST_TIMEOUT_MS),
+          AbortSignal.any([
+            controller.signal,
+            AbortSignal.timeout(NODE_REQUEST_TIMEOUT_MS),
+          ]),
         ),
       ),
     );
     if (id !== latestLoad.current) return;
+    inFlight.current = null;
     const next: NodeJobs[] = [];
     const unavailable: string[] = [];
     settled.forEach((outcome, index) => {
@@ -82,11 +97,25 @@ export default function JobsPage() {
     setFailed(unavailable);
     setLoaded(true);
     setLoading(false);
-  }, [nodes]);
+  }, [nodes, cancelLoad]);
 
   useEffect(() => {
-    if (nodes.length) void load();
-  }, [nodes.length, load]);
+    // Wait for the inventory: an empty list before the first fetch is not "no nodes".
+    if (!inventoryLoaded) return;
+    if (nodes.length) {
+      void load();
+    } else {
+      // Nothing to ask: drop any load in flight and the jobs of removed nodes.
+      cancelLoad();
+      setResults([]);
+      setFailed([]);
+      setLoaded(true);
+      setLoading(false);
+    }
+  }, [inventoryLoaded, nodes, load, cancelLoad]);
+
+  // Leaving the page cancels what is still in flight.
+  useEffect(() => cancelLoad, [cancelLoad]);
 
   const jobs = useMemo(() => mergeNetworkJobs(results), [results]);
   const pages = pageCount(jobs.length, PAGE_SIZE);

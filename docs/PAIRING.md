@@ -64,12 +64,15 @@ curl -s -b "$JAR" -H 'Content-Type: application/json' "$CT/connections" -d '{
 | `expiry_minutes` | De 5 a 1440. Padrão: 20. O convite é de uso único. |
 | `purpose`, `cluster_id` | Opcionais. O cluster só agrupa; nunca cria confiança transitiva. |
 
-Antes de criar a conexão, confira o fingerprint do emissor por outro canal: leia-o
-direto no node (`GET /api/v1/node`, campo `fingerprint`, com o token do node) e
-compare com o que o responsável por aquele node informa. Se você tem permissão para
-aprovar (passo 3), a conexão é aprovada no mesmo pedido, usando o fingerprint que o
-próprio emissor registrado reporta. Um node registrado com o endpoint errado seria
-confiado sem ninguém ter conferido.
+Antes de criar a conexão, confira **os dois nodes**, o emissor e o alvo, por outro
+canal: leia o `node_id` e o `fingerprint` direto em cada node (`GET /api/v1/node`, com o
+token do node) e compare com o que o responsável por aquele node informa. Um registro
+com endpoint ou token errado apontaria para um node que você não pretendia, e o
+emissor passaria a confiar nele e a poder trocar arquivos, se houver grants.
+
+Essa conferência é pontual. Ela não protege contra um node comprometido que informe um
+fingerprint na conferência e outro na criação da conexão. Quando isso importa, use o
+caminho com confirmação explícita do passo 3, em vez da aprovação automática.
 
 Um pareamento é entre dois nodes. Para três nodes que precisam se enxergar, crie as
 três conexões (A↔B, A↔C, B↔C).
@@ -93,8 +96,17 @@ O pedido chega ao alvo como `pending_review`. Há dois caminhos:
 
   Pegue o fingerprint por outro canal, direto no emissor
   (`GET /api/v1/node`, campo `fingerprint`), e não da própria resposta da conexão.
-  É essa conferência que impede um node falso de se passar pelo emissor. Para recusar:
-  `POST $CT/connections/<request_id>/reject`.
+  O Control Tower compara a fingerprint confirmada com a que registrou ao criar o
+  pedido; se diferirem, responde `409 fingerprint_mismatch` e não estabelece a
+  confiança. É essa conferência que impede um node falso de se passar pelo emissor.
+  Para recusar: `POST $CT/connections/<request_id>/reject`.
+
+A aprovação automática **não** faz essa comparação independente: ela usa a fingerprint
+que o próprio emissor reportou ao criar o pedido. Para pareamentos em que a identidade
+do emissor precisa ser provada (nodes de terceiros, redes não confiáveis), crie a
+conexão com uma sessão que não aprove sozinha, como uma conta de serviço, ou com um
+usuário sem `sudo` em `nodes/<alvo>/admin/pairing`, e aprove com a fingerprint obtida
+fora de banda.
 
 Leia a resposta da criação. Se `trust_established` vier `false`, a aprovação automática
 não terminou, por exemplo porque um dos nodes ficou indisponível no meio do handshake.
@@ -118,7 +130,10 @@ Em cada node, o outro deve aparecer com `state: online`.
 Com a confiança estabelecida, declare os grants em cada `node.yaml` e reinicie. Cada
 lado autoriza o outro de forma independente.
 
-Um grant aponta para um mount que já existe no mesmo `node.yaml`. Se o mount não
+Um grant aponta para um mount que já existe no mesmo `node.yaml`, e o diretório do
+mount (`local_path`) precisa existir no disco e ser legível e gravável pelo usuário do
+node. O node não cria esse diretório: se ele faltar, o mount fica indisponível e as
+transferências são recusadas ou esperam o diretório voltar. Se o mount não
 existir, ou não tiver o modo e a publicação que o grant exige, o node recusa a
 configuração e **não sobe** no restart. Para trocar arquivos nos dois sentidos, o
 mount precisa ser `read_write`, e `published: true` quando o grant usa
@@ -186,5 +201,18 @@ confirmar os IDs atuais dos nodes. Nesse caso a confiança e os grants podem con
 ativos num dos lados. Restabeleça a conexão com o node, repita a revogação e confira
 com `GET $CT/nodes/<ID>/trust` e `GET /api/v1/peers` que **os dois** lados deixaram de
 confiar um no outro antes de considerar o assunto encerrado.
+
+Verifique também depois de um `200`. A revogação remove os IDs que cada node tem
+**hoje**. Se um node foi recriado com outro ID no mesmo endpoint (por exemplo, com
+`keys/` apagada), o outro node pode continuar confiando no ID antigo. Compare a lista de
+`/api/v1/peers` de cada node com os IDs que foram pareados originalmente (guarde-os, o
+`GET $CT/connections` traz `issuer_node_id` e `target_node_id`). Para cada ID antigo que
+sobrar, revogue-o direto no node, com o token dele:
+
+```sh
+curl -s -X DELETE -H "Authorization: Bearer <token do node>" \
+  https://node-b.example:8080/api/v1/peers/<ID antigo>
+```
+
 Os IDs de grant usados com um peer revogado ficam bloqueados para sempre. Ao parear
 de novo, dê **IDs novos** aos grants (por exemplo `nodeA-nodeB-files-2`).

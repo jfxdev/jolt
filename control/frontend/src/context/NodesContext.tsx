@@ -31,6 +31,8 @@ const CONTROL_PERMISSION_PATHS = [
 interface NodesContextValue {
   nodes: NodeInfo[];
   loading: boolean;
+  /** True once the inventory has been fetched at least once for this session. */
+  loaded: boolean;
   loadNodes: () => Promise<NodeInfo[]>;
 }
 
@@ -42,6 +44,7 @@ export function NodesProvider({ children }: { children: ReactNode }) {
   const handleError = useApiError();
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
   const actorRef = useRef(user?.user_id); actorRef.current = user?.user_id;
   const inFlight = useRef<{ actor?: string; key: symbol; promise: Promise<NodeInfo[]> } | null>(null);
@@ -60,7 +63,10 @@ export function NodesProvider({ children }: { children: ReactNode }) {
         if (actorRef.current === actor) handleError(error);
         throw error;
       } finally {
-        if (actorRef.current === actor) setLoading(false);
+        if (actorRef.current === actor) {
+          setLoading(false);
+          setLoaded(true);
+        }
         if (inFlight.current?.key === key) inFlight.current = null;
       }
     })();
@@ -73,6 +79,7 @@ export function NodesProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!user) {
       setNodes([]);
+      setLoaded(false);
       return;
     }
     (async () => {
@@ -83,8 +90,8 @@ export function NodesProvider({ children }: { children: ReactNode }) {
   }, [user]);
 
   const value = useMemo(
-    () => ({ nodes, loading, loadNodes }),
-    [nodes, loading, loadNodes],
+    () => ({ nodes, loading, loaded, loadNodes }),
+    [nodes, loading, loaded, loadNodes],
   );
 
   return (
