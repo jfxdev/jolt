@@ -9,6 +9,7 @@ import { WorkspaceLayout } from "@/components/layout/WorkspaceLayout";
 import LoginPage from "@/pages/LoginPage";
 import NetworkOverviewPage from "@/pages/NetworkOverviewPage";
 import RelationshipsPage from "@/pages/RelationshipsPage";
+import JobsPage from "@/pages/JobsPage";
 import NodeWorkspacePage from "@/pages/NodeWorkspacePage";
 import FileBrowserPage from "@/pages/FileBrowserPage";
 import AccessPage from "@/pages/AccessPage";
@@ -43,6 +44,7 @@ function Gate() {
         <Route element={<AppShell />}>
           <Route index element={<NetworkOverviewPage />} />
           <Route path="relationships" element={<RelationshipsPage />} />
+          <Route path="jobs" element={<JobsPage />} />
           <Route path="access" element={<AccessPage />} />
           <Route path="identity" element={<IdentityPage />} />
           <Route path="nodes/:nodeId" element={<WorkspaceLayout />}>

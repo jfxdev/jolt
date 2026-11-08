@@ -493,9 +493,10 @@ export const api = {
       },
     ),
   jobSummary: (nodeId: string, signal?: AbortSignal) => request<import("./types").JobSummary>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/jobs/summary`, { signal }),
-  jobs: (nodeId: string) =>
+  jobs: (nodeId: string, limit?: number, signal?: AbortSignal) =>
     request<ListResponse<Job>>(
-      `/api/v1/nodes/${encodeURIComponent(nodeId)}/jobs`,
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/jobs${limit ? `?limit=${limit}` : ""}`,
+      { signal },
     ),
   jobItems: (nodeId: string, jobId: string, after = 0) =>
     request<ListResponse<JobItem>>(

@@ -4,6 +4,7 @@ import {
   Activity,
   FileKey2,
   Link2,
+  ListChecks,
   Plus,
   ScrollText,
   ShieldKeyhole,
@@ -133,6 +134,14 @@ export function AppSidebar() {
               label="Relacionamentos"
                     icon={Link2}
                     active={pathname === "/relationships"}
+                  />
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarLink
+                    to="/jobs"
+                    label="Jobs"
+                    icon={ListChecks}
+                    active={pathname === "/jobs"}
                   />
                 </SidebarMenuItem>
               </SidebarMenu>

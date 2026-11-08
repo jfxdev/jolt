@@ -64,7 +64,7 @@ Use explicit `enabled: true` and `published: true` when desired. Grants require
 `permissions`. Omitted `enabled`/`published`/permission booleans are false.
 Receiving grants default to conflict policy `fail`; send grants have no conflict
 policy. Grants can be declared before pairing and become effective only after
-trust and filesystem checks succeed. Trust never grants access by itself.
+trust and filesystem checks succeed. Trust never grants access by itself. See [pairing](PAIRING.md) for how to establish trust.
 
 An optional grant `exclude` lists up to 64 case-insensitive basename globs.
 Sending grants omit matching files and directories before manifest pagination
