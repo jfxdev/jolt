@@ -14,6 +14,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 function pageTitle(pathname: string, nodes: ReturnType<typeof useNodes>["nodes"]) {
   if (pathname === "/") return "Visão da rede";
   if (pathname === "/relationships") return "Relacionamentos";
+  if (pathname === "/jobs") return "Jobs";
   if (pathname === "/access") return "Access";
   if (pathname === "/identity") return "Identity";
 
