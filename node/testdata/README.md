@@ -29,3 +29,6 @@ encrypted state in `node/testdata/node*/state/`, and identity keys in
 `node/testdata/node*/keys/`. All three paths are ignored by Git. Existing legacy
 `data` directories are not migrated. The development key is public fixture
 material and must never be used for a deployment.
+
+Trust between the nodes is not configured in `node.yaml`. To pair them, see
+[docs/PAIRING.md](../../docs/PAIRING.md).
