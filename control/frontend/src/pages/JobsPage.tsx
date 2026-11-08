@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
@@ -26,6 +26,9 @@ import {
 const PAGE_SIZE = 20;
 // The node returns at most 500 jobs per request, newest first.
 const NODE_JOB_LIMIT = 500;
+// A node that accepts the connection but never answers must not hold back the
+// jobs of the others: its request is aborted and reported as unavailable.
+const NODE_REQUEST_TIMEOUT_MS = 15_000;
 
 function stateVariant(
   state: string,
@@ -51,11 +54,23 @@ export default function JobsPage() {
   const [loaded, setLoaded] = useState(false);
   const [page, setPage] = useState(1);
 
+  // Only the latest load may write state: a slower, superseded load must not
+  // overwrite newer results or clear the loading flag early.
+  const latestLoad = useRef(0);
+
   const load = useCallback(async () => {
+    const id = ++latestLoad.current;
     setLoading(true);
     const settled = await Promise.allSettled(
-      nodes.map((node) => api.jobs(node.node_id, NODE_JOB_LIMIT)),
+      nodes.map((node) =>
+        api.jobs(
+          node.node_id,
+          NODE_JOB_LIMIT,
+          AbortSignal.timeout(NODE_REQUEST_TIMEOUT_MS),
+        ),
+      ),
     );
+    if (id !== latestLoad.current) return;
     const next: NodeJobs[] = [];
     const unavailable: string[] = [];
     settled.forEach((outcome, index) => {
@@ -76,6 +91,11 @@ export default function JobsPage() {
   const jobs = useMemo(() => mergeNetworkJobs(results), [results]);
   const pages = pageCount(jobs.length, PAGE_SIZE);
   const current = Math.min(page, pages);
+  // Keep the clamped page: if the list shrinks (a node failed) and grows back on
+  // a later refresh, the view must not jump back to the old page.
+  useEffect(() => {
+    if (page > pages) setPage(pages);
+  }, [page, pages]);
   const visible = pageSlice(jobs, current, PAGE_SIZE);
   const first = jobs.length ? (current - 1) * PAGE_SIZE + 1 : 0;
 

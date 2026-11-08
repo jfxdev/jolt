@@ -64,6 +64,13 @@ curl -s -b "$JAR" -H 'Content-Type: application/json' "$CT/connections" -d '{
 | `expiry_minutes` | De 5 a 1440. Padrão: 20. O convite é de uso único. |
 | `purpose`, `cluster_id` | Opcionais. O cluster só agrupa; nunca cria confiança transitiva. |
 
+Antes de criar a conexão, confira o fingerprint do emissor por outro canal: leia-o
+direto no node (`GET /api/v1/node`, campo `fingerprint`, com o token do node) e
+compare com o que o responsável por aquele node informa. Se você tem permissão para
+aprovar (passo 3), a conexão é aprovada no mesmo pedido, usando o fingerprint que o
+próprio emissor registrado reporta. Um node registrado com o endpoint errado seria
+confiado sem ninguém ter conferido.
+
 Um pareamento é entre dois nodes. Para três nodes que precisam se enxergar, crie as
 três conexões (A↔B, A↔C, B↔C).
 
@@ -89,6 +96,12 @@ O pedido chega ao alvo como `pending_review`. Há dois caminhos:
   É essa conferência que impede um node falso de se passar pelo emissor. Para recusar:
   `POST $CT/connections/<request_id>/reject`.
 
+Leia a resposta da criação. Se `trust_established` vier `false`, a aprovação automática
+não terminou, por exemplo porque um dos nodes ficou indisponível no meio do handshake.
+A conexão fica `pending_review` ou `partially_connected`: não assuma que há confiança.
+Restabeleça a conexão com o node, confira o status em `GET $CT/connections` e então
+aprove (`approve`) ou complete a metade que falta (`reconcile`, veja abaixo).
+
 ## 4. Conferir
 
 ```sh
@@ -103,10 +116,23 @@ Em cada node, o outro deve aparecer com `state: online`.
 ## 5. Autorizar o acesso
 
 Com a confiança estabelecida, declare os grants em cada `node.yaml` e reinicie. Cada
-lado autoriza o outro de forma independente. Este grant deixa o node A trocar
-arquivos com o node B no mount `files`:
+lado autoriza o outro de forma independente.
+
+Um grant aponta para um mount que já existe no mesmo `node.yaml`. Se o mount não
+existir, ou não tiver o modo e a publicação que o grant exige, o node recusa a
+configuração e **não sobe** no restart. Para trocar arquivos nos dois sentidos, o
+mount precisa ser `read_write`, e `published: true` quando o grant usa
+`visible_to_peer: true`:
 
 ```yaml
+mounts:
+  - id: files
+    name: Files
+    local_path: "/srv/jolt/files"
+    mode: read_write
+    published: true
+    enabled: true
+
 transfer_grants:
   - id: "nodeA-nodeB-files"
     peer_node_id: "<ID do node B>"
@@ -119,9 +145,26 @@ transfer_grants:
     enabled: true
 ```
 
-No node B, faça o espelho com o ID do node A. Campos, regras e restrições estão em
-[node.yaml](NODE_YAML.md). Comece com o menor acesso que resolve: `direction: send`
-ou `receive`, e um `path` mais restrito que `.`.
+No node B, faça o espelho com o ID do node A. Esse `send_receive` vale para trocas
+nos dois sentidos. Para um sentido só, os dois lados declaram grants **complementares**,
+não iguais:
+
+| Node | `direction` | Permissões | `conflict_policies` | Mount |
+| --- | --- | --- | --- | --- |
+| Origem | `send` | `read: true`; `write` e `rename` precisam ser `false`; `delete` é opcional | não se aplica (o node recusa se vier preenchida) | qualquer modo; `read_write` se `delete: true` |
+| Destino | `receive` | `write: true` | opcional; padrão `[fail]` | `read_write` |
+
+Se os dois lados declaram `send`, nenhum recebe. Se os dois declaram `receive`, nenhum
+envia.
+
+Não troque só o `direction` de um grant que já foi aplicado. Além de as permissões e
+as políticas de conflito precisarem acompanhar a direção (senão o node recusa o grant e
+não sobe), o ID fica ligado ao par peer, mount, path e direção: mudar qualquer um deles
+exige um **ID novo**. Remover e readicionar o mesmo ID não apaga essa ligação.
+
+Campos, regras e restrições estão em [node.yaml](NODE_YAML.md). Comece com o menor
+acesso que resolve: `send` ou `receive` em vez de `send_receive`, e um `path` mais
+restrito que `.`.
 
 ## Quando algo sai do normal
 
@@ -136,5 +179,12 @@ ou `receive`, e um `path` mais restrito que `.`.
 
 Para encerrar uma relação, use **Revogar** na interface ou
 `POST $CT/connections/<request_id>/revoke`, que remove a confiança nos dois nodes.
+Só é sucesso quando a resposta é `200` com `status: revoked`. Se um node estiver
+indisponível, a revogação não termina: a resposta é `409 revoke_incomplete` (com o
+resultado de cada lado em `sides`) ou `502`, quando o Control Tower nem consegue
+confirmar os IDs atuais dos nodes. Nesse caso a confiança e os grants podem continuar
+ativos num dos lados. Restabeleça a conexão com o node, repita a revogação e confira
+com `GET $CT/nodes/<ID>/trust` e `GET /api/v1/peers` que **os dois** lados deixaram de
+confiar um no outro antes de considerar o assunto encerrado.
 Os IDs de grant usados com um peer revogado ficam bloqueados para sempre. Ao parear
 de novo, dê **IDs novos** aos grants (por exemplo `nodeA-nodeB-files-2`).
