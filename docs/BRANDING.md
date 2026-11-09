@@ -10,6 +10,7 @@ this page says which file to use where and how the Control Tower applies it.
 | --- | --- |
 | `jolt-primary.svg` / `.png` | App icon, avatars. Gradient mark with glow on ink. |
 | `jolt-transparent.svg` | Mark with glow on any dark surface. |
+| `jolt-neon.svg` / `.png` | Mark with the folder lit up, tuned to read at icon sizes. |
 | `jolt-monochrome.svg` | Mark without glow, for small sizes and print. |
 | `jolt-light.svg` | Ink mark on Jolt yellow, for light contexts. |
 | `jolt-horizontal.svg` / `-light.svg` | Lockup with the wordmark (README, slides). |
@@ -19,6 +20,9 @@ In the frontend, use `JoltMark` and `JoltLogo` from
 `control/frontend/src/components/brand/JoltLogo.tsx` rather than an `<img>`:
 they are inline SVG, so they stay sharp and need no extra request under the
 Control Tower's `default-src 'self'` CSP. `tone="mono"` follows `currentColor`.
+`glow` adds the artwork's soft halo, which only reads at hero sizes;
+`glow="neon"` is the icon-size variant (≤48px) used in the sidebar, where the
+folder outline itself glows and the halo may spill past the mark's box.
 
 Keep clear space of at least the bolt's width around the mark. Do not recolor
 the gradient, rotate the mark, or set the wordmark in another typeface.

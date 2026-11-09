@@ -10,21 +10,26 @@ const BOLT = "M 226 151 L 163 221 L 205 221 L 175 277 L 254 195 L 209 195 Z";
 type MarkProps = SVGProps<SVGSVGElement> & {
   /** "gradient" is the primary mark; "mono" follows `currentColor`. */
   tone?: "gradient" | "mono";
-  /** Soft amber halo behind the folder outline, for large hero placements. */
-  glow?: boolean;
+  /**
+   * Halo around the folder outline. `true` is the artwork's own soft glow,
+   * which only reads at hero sizes; "neon" is tuned for icon sizes (≤48px),
+   * where the folder itself lights up and the halo spills past the box.
+   */
+  glow?: boolean | "neon";
 };
 
 /** The Jolt mark: a folder outline charged with a lightning bolt. */
 export function JoltMark({ tone = "gradient", glow = false, className, ...props }: MarkProps) {
   const id = useId().replace(/:/g, "");
   const paint = tone === "gradient" ? `url(#${id}-amber)` : "currentColor";
+  const neon = glow === "neon";
 
   return (
     <svg
       viewBox="58 77 298 235"
       fill="none"
       aria-hidden="true"
-      className={cn("shrink-0", className)}
+      className={cn("shrink-0", neon && "overflow-visible", className)}
       {...props}
     >
       <defs>
@@ -34,18 +39,33 @@ export function JoltMark({ tone = "gradient", glow = false, className, ...props 
         </linearGradient>
         {glow && (
           <filter id={`${id}-glow`} x="-50%" y="-50%" width="200%" height="200%">
-            <feGaussianBlur stdDeviation="7" />
+            <feGaussianBlur stdDeviation={neon ? 10 : 7} />
+          </filter>
+        )}
+        {neon && (
+          <filter id={`${id}-bloom`} x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="30" />
           </filter>
         )}
       </defs>
+      {neon && (
+        <path
+          d={FOLDER}
+          stroke={paint}
+          strokeWidth="36"
+          strokeLinejoin="round"
+          filter={`url(#${id}-bloom)`}
+          opacity=".55"
+        />
+      )}
       {glow && (
         <path
           d={FOLDER}
           stroke={paint}
-          strokeWidth="17"
+          strokeWidth={neon ? 24 : 17}
           strokeLinejoin="round"
           filter={`url(#${id}-glow)`}
-          opacity=".7"
+          opacity={neon ? 0.9 : 0.7}
         />
       )}
       <path
