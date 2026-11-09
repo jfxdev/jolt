@@ -71,7 +71,7 @@ export function SiteHeader() {
         </BreadcrumbList>
       </Breadcrumb>
       <div className="ml-auto flex items-center gap-2 font-mono text-xs uppercase tracking-wide text-muted-foreground">
-        <span className="size-1.5 rounded-full bg-emerald-500" />
+        <span className="size-1.5 rounded-full bg-success" />
         <span className="hidden sm:inline">{online} nodes online</span>
         <span className="sm:hidden">{online}</span>
       </div>

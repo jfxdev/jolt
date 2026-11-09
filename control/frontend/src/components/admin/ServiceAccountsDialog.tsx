@@ -404,7 +404,7 @@ export function ServiceAccountsDialog({
                         <TableCell>
                           <span
                             className={
-                              target.enabled ? "text-emerald-500" : "text-destructive"
+                              target.enabled ? "text-success" : "text-destructive"
                             }
                           >
                             {target.enabled ? "Ativa" : "Inativa"}
@@ -465,7 +465,7 @@ export function ServiceAccountsDialog({
                   </span>
                   <small
                     className={
-                      target.enabled ? "text-emerald-500" : "text-destructive"
+                      target.enabled ? "text-success" : "text-destructive"
                     }
                   >
                     {target.enabled ? "Ativa" : "Inativa"}

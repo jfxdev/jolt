@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 const TONE_CLASS: Record<Tone, string> = {
   ok: "text-muted-foreground",
   neutral: "text-muted-foreground",
-  warning: "text-amber-600 dark:text-amber-400",
+  warning: "text-warning",
   critical: "font-medium text-destructive",
 };
 

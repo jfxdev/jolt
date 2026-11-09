@@ -178,7 +178,7 @@ export function EnrollmentsPanel() {
       </form>
 
       {created && (
-        <div className="grid gap-3 rounded-md border border-amber-500/60 p-3" role="status" data-testid="created-token">
+        <div className="grid gap-3 rounded-md border border-warning/60 p-3" role="status" data-testid="created-token">
           <p className="text-sm font-medium">Token para {created.node_name}. Aparece só agora; copie antes de sair desta tela.</p>
           <pre className="overflow-x-auto break-all whitespace-pre-wrap rounded-md border bg-muted p-3 text-xs" data-testid="token-value">
             {environmentLine(created.token)}

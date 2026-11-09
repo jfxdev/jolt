@@ -105,7 +105,7 @@ export function FileSearchBar({
             ? "Nenhum resultado."
             : `${result.entries.length} resultado${result.entries.length === 1 ? "" : "s"} · ${result.scanned} itens varridos`}
           {result.truncated && result.truncated_reason && (
-            <span className="ml-1 text-amber-600 dark:text-amber-500">
+            <span className="ml-1 text-warning">
               {truncationMessage[result.truncated_reason]}
             </span>
           )}

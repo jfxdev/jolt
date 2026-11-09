@@ -264,7 +264,7 @@ export function AccessGroupsDialog({
                         <TableCell>
                           <span
                             className={
-                              group.enabled ? "text-emerald-500" : "text-destructive"
+                              group.enabled ? "text-success" : "text-destructive"
                             }
                           >
                             {group.enabled ? "Ativo" : "Inativo"}
@@ -311,7 +311,7 @@ export function AccessGroupsDialog({
               {groups.map((group) => (
                 <button key={group.group_id} className={cn("flex items-center justify-between rounded-md border p-2 text-left text-sm hover:bg-accent", editingId === group.group_id && "bg-accent")} onClick={() => edit(group)}>
                   <span><strong className="block">{group.name}</strong><small className="text-muted-foreground">{group.node_ids?.length || 0} node(s) · {group.policy_ids?.length || 0} policy(s)</small></span>
-                  <small className={group.enabled ? "text-emerald-500" : "text-destructive"}>{group.enabled ? "Ativo" : "Inativo"}</small>
+                  <small className={group.enabled ? "text-success" : "text-destructive"}>{group.enabled ? "Ativo" : "Inativo"}</small>
                 </button>
               ))}
               {!groups.length && <div className="p-2 text-xs text-muted-foreground">{search ? "Nenhum grupo encontrado." : "Nenhum grupo cadastrado."}</div>}

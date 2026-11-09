@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/jolt-horizontal-light.png">
+    <img src="docs/assets/jolt-horizontal.png" alt="Jolt" width="320">
+  </picture>
+</p>
+
 # jolt
 
 `jolt` is split into two independent products:
@@ -91,6 +98,7 @@ Product and historical references:
 - [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md), [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md), [`docs/ROADMAP.md`](docs/ROADMAP.md).
 - [`docs/REMEDIATION.md`](docs/REMEDIATION.md), [`docs/DISCOVERY.md`](docs/DISCOVERY.md), [`docs/RELEASE_0.1.0.md`](docs/RELEASE_0.1.0.md) — historical analysis; where they conflict, the current documents above prevail.
 - [`docs/TRANSFERS_API.md`](docs/TRANSFERS_API.md), [`docs/SHARING_AND_BROWSING.md`](docs/SHARING_AND_BROWSING.md), [`docs/ACCESS_CENTER.md`](docs/ACCESS_CENTER.md).
+- [`docs/BRANDING.md`](docs/BRANDING.md) — logo, color, type and icon usage.
 
 **Production status:** mature for a release candidate, not yet declared
 production-ready while the final container/browser/recovery, full-scale and

@@ -1,10 +1,23 @@
 @import "tailwindcss";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
 @import "tw-animate-css";
 @import "./styles/shadcn.css";
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --color-brand: var(--brand);
+  --color-brand-ember: var(--brand-ember);
+  --color-brand-ink: var(--brand-ink);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -46,75 +59,94 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
+/* Jolt brand tokens. Dark is the product theme; the light set mirrors it for
+ * surfaces that opt out of `.dark`. Brand values come from docs/assets:
+ * Jolt yellow #FACC15, ember #F97316, ink #0B0B0B. See docs/branding.md. */
 :root {
   --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
+  --brand: oklch(0.861 0.173 91.9);
+  --brand-ember: oklch(0.705 0.187 47.6);
+  --brand-ink: oklch(0.15 0 0);
+  --brand-gradient: linear-gradient(135deg, var(--brand), var(--brand-ember));
+  --background: oklch(0.99 0.003 90);
+  --foreground: oklch(0.17 0.004 85);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --card-foreground: oklch(0.17 0.004 85);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
+  --popover-foreground: oklch(0.17 0.004 85);
+  --primary: oklch(0.861 0.173 91.9);
+  --primary-foreground: oklch(0.18 0.01 85);
+  --secondary: oklch(0.96 0.005 90);
+  --secondary-foreground: oklch(0.21 0.006 85);
+  --muted: oklch(0.96 0.005 90);
+  --muted-foreground: oklch(0.52 0.012 85);
+  --accent: oklch(0.95 0.03 95);
+  --accent-foreground: oklch(0.21 0.006 85);
+  --destructive: oklch(0.577 0.215 27);
   --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --success: oklch(0.6 0.15 155);
+  --success-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.64 0.17 50);
+  --warning-foreground: oklch(0.985 0 0);
+  --info: oklch(0.58 0.14 240);
+  --info-foreground: oklch(0.985 0 0);
+  --border: oklch(0.91 0.006 90);
+  --input: oklch(0.89 0.008 90);
+  --ring: oklch(0.78 0.16 80);
+  --chart-1: oklch(0.8 0.17 88);
+  --chart-2: oklch(0.68 0.19 47);
+  --chart-3: oklch(0.6 0.11 185);
+  --chart-4: oklch(0.58 0.14 240);
+  --chart-5: oklch(0.56 0.18 295);
+  --sidebar: oklch(0.975 0.004 90);
+  --sidebar-foreground: oklch(0.17 0.004 85);
+  --sidebar-primary: oklch(0.861 0.173 91.9);
+  --sidebar-primary-foreground: oklch(0.18 0.01 85);
+  --sidebar-accent: oklch(0.94 0.008 90);
+  --sidebar-accent-foreground: oklch(0.17 0.004 85);
+  --sidebar-border: oklch(0.91 0.006 90);
+  --sidebar-ring: oklch(0.78 0.16 80);
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
+  --background: oklch(0.16 0.002 85);
+  --foreground: oklch(0.97 0.004 90);
+  --card: oklch(0.185 0.003 85);
+  --card-foreground: oklch(0.97 0.004 90);
+  --popover: oklch(0.2 0.004 85);
+  --popover-foreground: oklch(0.97 0.004 90);
+  --primary: oklch(0.861 0.173 91.9);
+  --primary-foreground: oklch(0.18 0.01 85);
+  --secondary: oklch(0.24 0.004 85);
+  --secondary-foreground: oklch(0.97 0.004 90);
+  --muted: oklch(0.23 0.004 85);
+  --muted-foreground: oklch(0.7 0.012 85);
+  --accent: oklch(0.25 0.008 85);
+  --accent-foreground: oklch(0.97 0.004 90);
+  --destructive: oklch(0.68 0.19 25);
   --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --success: oklch(0.74 0.16 155);
+  --success-foreground: oklch(0.18 0.02 155);
+  --warning: oklch(0.76 0.16 55);
+  --warning-foreground: oklch(0.18 0.03 55);
+  --info: oklch(0.74 0.12 235);
+  --info-foreground: oklch(0.18 0.03 235);
+  --border: oklch(1 0.01 85 / 9%);
+  --input: oklch(1 0.01 85 / 14%);
+  --ring: oklch(0.82 0.16 85);
+  --chart-1: oklch(0.861 0.173 91.9);
+  --chart-2: oklch(0.705 0.187 47.6);
+  --chart-3: oklch(0.72 0.12 185);
+  --chart-4: oklch(0.7 0.13 240);
+  --chart-5: oklch(0.66 0.17 295);
+  --sidebar: oklch(0.13 0.002 85);
+  --sidebar-foreground: oklch(0.93 0.004 90);
+  --sidebar-primary: oklch(0.861 0.173 91.9);
+  --sidebar-primary-foreground: oklch(0.18 0.01 85);
+  --sidebar-accent: oklch(0.2 0.005 85);
+  --sidebar-accent-foreground: oklch(0.98 0.004 90);
+  --sidebar-border: oklch(1 0.01 85 / 8%);
+  --sidebar-ring: oklch(0.82 0.16 85);
 }
 
 @layer base {
@@ -123,6 +155,34 @@
   }
 
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background font-sans text-foreground antialiased;
+    font-feature-settings: "cv11", "ss01";
   }
+
+  ::selection {
+    background: color-mix(in oklch, var(--brand) 35%, transparent);
+  }
+
+  * {
+    scrollbar-color: color-mix(in oklch, var(--foreground) 18%, transparent) transparent;
+    scrollbar-width: thin;
+  }
+}
+
+@utility text-brand-gradient {
+  background-image: var(--brand-gradient);
+  background-clip: text;
+  color: transparent;
+}
+
+@utility bg-brand-gradient {
+  background-image: var(--brand-gradient);
+}
+
+/* Faint blueprint grid used behind brand surfaces (login, public shares). */
+@utility bg-brand-grid {
+  background-image:
+    linear-gradient(color-mix(in oklch, var(--foreground) 5%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in oklch, var(--foreground) 5%, transparent) 1px, transparent 1px);
+  background-size: 32px 32px;
 }
