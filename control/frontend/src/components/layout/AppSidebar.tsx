@@ -111,9 +111,7 @@ export function AppSidebar() {
                 render={<NavLink to="/" aria-label="Jolt, visão da rede" />}
                 className="hover:bg-transparent active:bg-transparent"
               >
-                <span className="grid size-8 place-content-center rounded-lg border border-sidebar-border bg-brand-ink">
-                  <JoltMark glow="neon" className="size-5!" />
-                </span>
+                <JoltMark glow="neon" className="size-8!" />
                 <span className="grid leading-tight">
                   <span className="text-base font-bold tracking-tight">Jolt</span>
                   <span className="font-mono text-[10px] uppercase tracking-widest text-sidebar-foreground/60">

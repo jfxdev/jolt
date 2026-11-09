@@ -14,7 +14,12 @@ this page says which file to use where and how the Control Tower applies it.
 | `jolt-monochrome.svg` | Mark without glow, for small sizes and print. |
 | `jolt-light.svg` | Ink mark on Jolt yellow, for light contexts. |
 | `jolt-horizontal.svg` / `-light.svg` | Lockup with the wordmark (README, slides). |
-| `favicon*.png`, `favicon.ico` | Browser and touch icons. |
+| `favicon*.png`, `favicon.ico` | Opaque icon sources (apple-touch stays opaque). |
+
+The Control Tower's tab icon is `control/frontend/public/favicon.svg`: the neon
+mark on a transparent background, cropped tight. It drops the glow under
+`prefers-color-scheme: light`, where a yellow halo turns muddy. `favicon.ico`
+(16/32/48) is the same mark without glow, for browsers that skip SVG icons.
 
 In the frontend, use `JoltMark` and `JoltLogo` from
 `control/frontend/src/components/brand/JoltLogo.tsx` rather than an `<img>`:
