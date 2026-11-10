@@ -3,7 +3,7 @@ import { ArrowRight } from "lucide-react";
 import { TransferDestinationFolder } from "@/components/files/TransferDestinationFolder";
 import { TransferDestinationPreview } from "@/components/files/TransferDestinationPreview";
 import { RelationshipTrustDialog } from "@/components/relationships/RelationshipTrustDialog";
-import { transferDestinations, type TransferDestination } from "@/lib/transfer-access";
+import { transferDestinations, transferTargetMountKey, transferTargetMountLabel, type TransferDestination } from "@/lib/transfer-access";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -76,7 +76,7 @@ export function CrossNodeTransferDialog({
   const [relationshipOpen, setRelationshipOpen] = useState(false);
   const [limit, setLimit] = useState(1000);
   const [targetNodeId, setTargetNodeId] = useState("");
-  const [targetMountId, setTargetMountId] = useState("");
+  const [targetMountKey, setTargetMountKey] = useState("");
   const [destinationPath, setDestinationPath] = useState("");
   const [conflictPolicy, setConflictPolicy] = useState("fail");
   const [verifyChecksum, setVerifyChecksum] = useState(false);
@@ -91,7 +91,7 @@ export function CrossNodeTransferDialog({
   const target = targets.find((candidate) => candidate.node_id === targetNodeId);
   const targetNode = nodes.find((candidate) => candidate.node_id === targetNodeId);
   const targetMount = target?.mounts.find(
-    (candidate) => candidate.mount_id === targetMountId,
+    (candidate) => transferTargetMountKey(candidate) === targetMountKey,
   );
 
   useEffect(() => {
@@ -131,14 +131,14 @@ export function CrossNodeTransferDialog({
   useEffect(() => {
     // Rechecking access after closing the relationship must keep a destination
     // folder that is still covered by the refreshed authorization.
-    const selectedMount = target?.mounts.find((item) => item.mount_id === targetMountId && item.available);
+    const selectedMount = target?.mounts.find((item) => transferTargetMountKey(item) === targetMountKey && item.available);
     const withinRoot = (path: string, root: string) => !root || path === root || path.startsWith(`${root}/`);
     if (selectedMount && withinRoot(destinationPath, selectedMount.root_path) && selectedMount.conflict_policies.includes(conflictPolicy)) {
       setPlan(null);
       return;
     }
     const firstMount = target?.mounts.find((item) => item.available);
-    setTargetMountId(firstMount?.mount_id || "");
+    setTargetMountKey(firstMount ? transferTargetMountKey(firstMount) : "");
     setDestinationPath(firstMount?.root_path || "");
     setConflictPolicy(firstMount?.conflict_policies.includes("fail") ? "fail" : firstMount?.conflict_policies[0] || "fail");
     setPlan(null);
@@ -150,16 +150,16 @@ export function CrossNodeTransferDialog({
     const nextTarget = targets.find((candidate) => candidate.node_id === nextNodeID);
     const nextMount = nextTarget?.mounts.find((item) => item.available);
     setTargetNodeId(nextNodeID);
-    setTargetMountId(nextMount?.mount_id || "");
+    setTargetMountKey(nextMount ? transferTargetMountKey(nextMount) : "");
     setDestinationPath(nextMount?.root_path || "");
     setConflictPolicy(nextMount?.conflict_policies.includes("fail") ? "fail" : nextMount?.conflict_policies[0] || "fail");
     setPlan(null);
     setRelationshipOpen(false);
   }
 
-  function selectTargetMount(nextMountID: string) {
-    const nextMount = target?.mounts.find((item) => item.mount_id === nextMountID);
-    setTargetMountId(nextMountID);
+  function selectTargetMount(nextMountKey: string) {
+    const nextMount = target?.mounts.find((item) => transferTargetMountKey(item) === nextMountKey);
+    setTargetMountKey(nextMountKey);
     setDestinationPath(nextMount?.root_path || "");
     setConflictPolicy(nextMount?.conflict_policies.includes("fail") ? "fail" : nextMount?.conflict_policies[0] || "fail");
     setPlan(null);
@@ -222,7 +222,7 @@ export function CrossNodeTransferDialog({
   const canSubmit = Boolean(
     target?.available &&
       targetMount?.available &&
-      targetMountId &&
+      targetMountKey &&
       targetMount.conflict_policies.includes(conflictPolicy) &&
       destinationFolder !== null &&
       (!destinationRoot || destinationFolder === destinationRoot || destinationFolder.startsWith(`${destinationRoot}/`)) &&
@@ -290,12 +290,12 @@ export function CrossNodeTransferDialog({
               </div>
               <div className="grid gap-2">
                 <Label>Mount de destino</Label>
-                <Select value={targetMountId} onValueChange={selectTargetMount} disabled={busy || !target?.mounts.length}>
-                  <SelectTrigger className="w-full"><SelectValue placeholder={target?.reasons?.length ? "Configure o acesso abaixo" : "Selecione o node"}>{targetMount?.name}</SelectValue></SelectTrigger>
+                <Select value={targetMountKey} onValueChange={selectTargetMount} disabled={busy || !target?.mounts.length}>
+                  <SelectTrigger className="w-full"><SelectValue placeholder={target?.reasons?.length ? "Configure o acesso abaixo" : "Selecione o node"}>{targetMount && transferTargetMountLabel(targetMount)}</SelectValue></SelectTrigger>
                   <SelectContent>
                     {target?.mounts.map((candidate) => (
-                      <SelectItem key={candidate.mount_id} value={candidate.mount_id} disabled={!candidate.available}>
-                        {candidate.name} · {candidate.state}
+                      <SelectItem key={transferTargetMountKey(candidate)} value={transferTargetMountKey(candidate)} disabled={!candidate.available}>
+                        {transferTargetMountLabel(candidate)} · {candidate.state}
                       </SelectItem>
                     ))}
                   </SelectContent>

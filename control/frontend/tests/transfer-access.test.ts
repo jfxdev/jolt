@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { matchingTransferGrant, transferDestinations, transferGrantAuthorization, transferPeer, transferSourceAccess, transferSourceFolder } from "../src/lib/transfer-access.ts";
-import type { Grant, TransferTargetNode, TrustPeer } from "../src/lib/types.ts";
+import { matchingTransferGrant, transferDestinations, transferGrantAuthorization, transferPeer, transferSourceAccess, transferSourceFolder, transferTargetMountKey, transferTargetMountLabel } from "../src/lib/transfer-access.ts";
+import type { Grant, TransferTargetMount, TransferTargetNode, TrustPeer } from "../src/lib/types.ts";
 
 test("a blocked Node A remains selectable alongside a ready destination", () => {
   const ready: TransferTargetNode = { node_id: "c", name: "Node C", available: true, state: "online", mounts: [] };
@@ -108,4 +108,35 @@ test("updating an existing bidirectional authorization preserves its other permi
   const receive = transferGrantAuthorization("a-current", "files", "", "receive", "copy", "rename", existing);
   assert.deepEqual(receive.conflict_policies, ["fail", "rename"]);
   assert.deepEqual(transferGrantAuthorization("a-current", "files", "", "receive", "copy", "fail", existing).conflict_policies, ["fail"]);
+});
+
+test("receive grants on one mount stay distinct destinations, keyed and labelled by root", () => {
+  const root = (root_path: string, conflict_policies: string[] = ["fail"]): TransferTargetMount => ({
+    mount_id: "media", name: "Media", root_path, conflict_policies, can_browse: true, available: true, state: "available",
+  });
+  const [target] = transferDestinations({
+    max_source_paths: 1000,
+    targets: [{ node_id: "b", name: "Node B", available: true, state: "online", mounts: [root("shows"), root("movies")] }],
+  });
+  const keys = target.mounts.map(transferTargetMountKey);
+  assert.equal(new Set(keys).size, 2);
+  assert.equal(target.mounts.find((mount) => transferTargetMountKey(mount) === keys[1])?.root_path, "movies");
+  assert.deepEqual(target.mounts.map(transferTargetMountLabel), ["Media · /shows", "Media · /movies"]);
+  assert.equal(transferTargetMountLabel(root("")), "Media");
+  assert.notEqual(transferTargetMountKey({ mount_id: "a", root_path: "b" }), transferTargetMountKey({ mount_id: "a/b", root_path: "" }));
+});
+
+test("grants sharing a mount and root become one destination with every conflict policy", () => {
+  const entry = (conflict_policies: string[], can_browse: boolean): TransferTargetMount => ({
+    mount_id: "media", name: "Media", root_path: "movies", conflict_policies, can_browse, available: true, state: "available",
+  });
+  const original = entry(["fail"], false);
+  const [target] = transferDestinations({
+    max_source_paths: 1000,
+    targets: [{ node_id: "b", name: "Node B", available: true, state: "online", mounts: [original, entry(["rename", "fail"], true)] }],
+  });
+  assert.equal(target.mounts.length, 1);
+  assert.deepEqual(target.mounts[0].conflict_policies, ["fail", "rename"]);
+  assert.equal(target.mounts[0].can_browse, true);
+  assert.deepEqual(original.conflict_policies, ["fail"]);
 });

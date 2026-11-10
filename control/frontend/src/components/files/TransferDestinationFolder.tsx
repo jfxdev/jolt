@@ -26,7 +26,7 @@ export function TransferDestinationFolder({ nodeId, mount, value, onChange, disa
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const folder = transferDestinationFolder(value);
-  const current = useRef(""); current.current = `${nodeId}:${mount.mount_id}:${folder}`;
+  const current = useRef(""); current.current = `${nodeId}:${mount.mount_id}:${mount.root_path}:${folder}`;
   const root = transferDestinationFolder(mount.root_path) || "";
   const withinRoot = folder !== null && (!root || folder === root || folder.startsWith(`${root}/`));
   const parent = folder?.split("/").slice(0, -1).join("/") || "";
