@@ -565,7 +565,8 @@ for (const operation of ["add", "remove"] as const) {
         mutated = true;
         return route.fulfill({ status: 204 });
       });
-      await page.getByRole("button", { name: "Remover node", exact: true }).click();
+      await page.getByRole("button", { name: "Configurações", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Remover node", exact: true }).click();
       await page.getByRole("textbox", { name: "Digite Node A para confirmar", exact: true }).fill("Node A");
       await page.getByRole("button", { name: "Remover da Control Tower", exact: true }).click();
       await expect(page.getByText("Node removido da Control Tower. O node e seus dados não foram alterados.", { exact: true })).toBeVisible();

@@ -63,7 +63,7 @@ export function FileSearchBar({
   return (
     <div className="grid gap-2">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative min-w-56 flex-1">
+        <div className="relative min-w-0 flex-1 basis-48">
           {searching ? (
             <Loader2 className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 animate-spin text-muted-foreground" />
           ) : (

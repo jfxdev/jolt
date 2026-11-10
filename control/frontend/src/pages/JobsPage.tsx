@@ -1,6 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
+import {
+  Ban,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Circle,
+  CircleHelp,
+  Clock,
+  LoaderCircle,
+  RefreshCw,
+  TriangleAlert,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import { api } from "@/lib/api";
 import { formatBytes, formatDate } from "@/lib/format";
 import {
@@ -22,6 +35,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 const PAGE_SIZE = 20;
 // The node returns at most 500 jobs per request, newest first.
@@ -39,6 +57,42 @@ function stateVariant(
     return "warning";
   if (["running", "queued"].includes(state)) return "default";
   return "secondary";
+}
+
+function stateIcon(state: string): LucideIcon {
+  if (state === "completed") return Check;
+  if (state === "failed") return X;
+  if (state === "canceled") return Ban;
+  if (state === "completed_with_warnings") return TriangleAlert;
+  if (state === "waiting_user_decision") return CircleHelp;
+  if (state === "running") return LoaderCircle;
+  if (state === "queued") return Clock;
+  return Circle;
+}
+
+function StateBadge({ state }: { state: string }) {
+  const Icon = stateIcon(state);
+  const label = state.replaceAll("_", " ");
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Badge
+            variant={stateVariant(state)}
+            tabIndex={0}
+            aria-label={label}
+            className="size-5 px-0"
+          />
+        }
+      >
+        <Icon
+          aria-hidden="true"
+          className={state === "running" ? "animate-spin" : undefined}
+        />
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 function progressPercent(bytesCompleted = 0, bytesTotal = 0) {
@@ -129,7 +183,7 @@ export default function JobsPage() {
   const first = jobs.length ? (current - 1) * PAGE_SIZE + 1 : 0;
 
   return (
-    <section className="grid gap-4 p-4">
+    <section className="grid grid-cols-1 gap-4 p-4">
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
@@ -163,11 +217,12 @@ export default function JobsPage() {
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="min-w-36">Criado em</TableHead>
+              <TableHead className="min-w-36">Concluído em</TableHead>
               <TableHead className="min-w-64">Job</TableHead>
               <TableHead>Node</TableHead>
               <TableHead className="min-w-44">Progresso</TableHead>
               <TableHead>Estado</TableHead>
-              <TableHead className="min-w-36">Criado em</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -178,6 +233,12 @@ export default function JobsPage() {
               );
               return (
                 <TableRow key={`${node.node_id}:${job.job_id}`}>
+                  <TableCell className="text-sm text-muted-foreground opacity-80">
+                    {job.created_at ? formatDate(job.created_at) : "—"}
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground opacity-80">
+                    {job.completed_at ? formatDate(job.completed_at) : "—"}
+                  </TableCell>
                   <TableCell className="whitespace-normal">
                     <div className="min-w-0">
                       <strong className="block text-sm">
@@ -220,10 +281,7 @@ export default function JobsPage() {
                     )}
                   </TableCell>
                   <TableCell>
-                    <Badge variant={stateVariant(job.state)}>{job.state}</Badge>
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {job.created_at ? formatDate(job.created_at) : "—"}
+                    <StateBadge state={job.state} />
                   </TableCell>
                 </TableRow>
               );
@@ -231,7 +289,7 @@ export default function JobsPage() {
             {!visible.length && (
               <TableRow>
                 <TableCell
-                  colSpan={5}
+                  colSpan={6}
                   className="py-8 text-center text-sm text-muted-foreground"
                 >
                   {loaded ? "Nenhum job registrado." : "Carregando jobs…"}
