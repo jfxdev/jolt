@@ -1185,6 +1185,77 @@ func TestLogicalTransfersResolveGrantsWithoutLeakingThemAndForwardIdempotency(t 
 	}
 }
 
+func TestLogicalTransferTargetsListEveryReceiveRootOfOneMount(t *testing.T) {
+	var receivedPlan map[string]any
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		header := make(http.Header)
+		header.Set("Content-Type", "application/json")
+		body := `{}`
+		switch request.URL.Path {
+		case "/api/v1/node":
+			body = `{"node_id":"` + strings.TrimSuffix(request.URL.Host, ".test") + `","fingerprint":"FP"}`
+		case "/api/v1/grants":
+			if request.URL.Host == "source.test" {
+				body = `{"items":[{"grant_id":"source-grant","peer_node_id":"destination","mount_id":"source-media","path":"exports","direction":"send","enabled":true,"permissions":{"read":true}}]}`
+			} else {
+				body = `{"items":[` +
+					`{"grant_id":"receive-shows","peer_node_id":"source","mount_id":"media","path":"shows","direction":"receive","enabled":true,"permissions":{"write":true},"conflict_policies":["fail"]},` +
+					`{"grant_id":"receive-movies","peer_node_id":"source","mount_id":"media","path":"movies","direction":"receive","enabled":true,"permissions":{"write":true},"conflict_policies":["fail"]}]}`
+			}
+		case "/api/v1/mounts":
+			body = `{"items":[{"mount_id":"media","name":"Media","enabled":true,"state":"available","writable":true}]}`
+		case "/api/v1/transfers/pull/batch/plan":
+			if err := json.NewDecoder(request.Body).Decode(&receivedPlan); err != nil {
+				t.Error(err)
+			}
+			body = `{"files_total":1,"bytes_total":1,"copy_count":1,"skip_count":0,"rename_count":0,"conflict_count":0}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	handler, storage, session := testUserHandlerWithClient(t, store.User{
+		ID: "admin-1", Username: "admin", Role: "admin", Enabled: true,
+	}, client)
+	now := time.Now().UTC()
+	encrypted, err := security.Encrypt(make([]byte, 32), "node-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []store.Node{
+		{ID: "source", Name: "Source", Endpoint: "http://source.test", TokenEncrypted: encrypted, State: "online", CreatedAt: now, UpdatedAt: now},
+		{ID: "destination", Name: "Destination", Endpoint: "http://destination.test", TokenEncrypted: encrypted, State: "online", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := storage.SaveNode(context.Background(), node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	targets := httptest.NewRecorder()
+	handler.ServeHTTP(targets, authenticatedRequest(http.MethodPost, "/api/v1/nodes/source/transfers/targets", session,
+		[]byte(`{"operation":"copy","source":{"mount_id":"source-media","paths":["exports/film.mkv"]}}`)))
+	var response struct {
+		Targets []transferTargetNode `json:"targets"`
+	}
+	if err := json.Unmarshal(targets.Body.Bytes(), &response); err != nil || targets.Code != http.StatusOK ||
+		len(response.Targets) != 1 || strings.Contains(targets.Body.String(), "grant_id") {
+		t.Fatalf("targets status=%d body=%s err=%v", targets.Code, targets.Body.String(), err)
+	}
+	roots := []string{}
+	for _, mount := range response.Targets[0].Mounts {
+		if mount.MountID != "media" {
+			t.Fatalf("unexpected mount: %+v", mount)
+		}
+		roots = append(roots, mount.RootPath)
+	}
+	if strings.Join(roots, ",") != "shows,movies" {
+		t.Fatalf("every receive root must be a destination: %v", roots)
+	}
+	plan := httptest.NewRecorder()
+	handler.ServeHTTP(plan, authenticatedRequest(http.MethodPost, "/api/v1/nodes/destination/transfers/plan", session,
+		[]byte(`{"operation":"copy","source":{"node_id":"source","mount_id":"source-media","paths":["exports/film.mkv"]},"destination":{"mount_id":"media","path":"movies/2026"},"conflict_policy":"fail"}`)))
+	if plan.Code != http.StatusOK || receivedPlan["destination_grant_id"] != "receive-movies" || receivedPlan["destination_path"] != "2026" {
+		t.Fatalf("plan status=%d body=%s node payload=%+v", plan.Code, plan.Body.String(), receivedPlan)
+	}
+}
+
 func TestLogicalTransferSelectionLimitIsStructured(t *testing.T) {
 	handler, _, session := testUserHandler(t, store.User{ID: "admin-1", Username: "admin", Role: "admin", Enabled: true})
 	paths := make([]string, 1001)

@@ -1,4 +1,4 @@
-import type { Grant, GrantDirection, TransferTargetNode, TransferTargetsResponse, TrustPeer } from "./types";
+import type { Grant, GrantDirection, TransferTargetMount, TransferTargetNode, TransferTargetsResponse, TrustPeer } from "./types";
 
 export type TransferDestination = TransferTargetNode & {
   reasons?: NonNullable<TransferTargetsResponse["blocked_targets"]>[number]["reasons"];
@@ -6,13 +6,40 @@ export type TransferDestination = TransferTargetNode & {
 
 // Blocked nodes are still destinations the user can choose and configure.
 export function transferDestinations(response: TransferTargetsResponse): TransferDestination[] {
-  const ready = response.targets || [];
+  const ready = (response.targets || []).map((target) => ({ ...target, mounts: uniqueTransferTargetMounts(target.mounts || []) }));
   return [
     ...ready,
     ...(response.blocked_targets || [])
       .filter((blocked) => !ready.some((target) => target.node_id === blocked.node_id))
       .map((blocked) => ({ ...blocked, state: "online" as const, available: false, mounts: [] })),
   ];
+}
+
+// One destination entry per receive grant: a mount can appear once per grant
+// root, so the selection is keyed by mount and root, never by mount alone.
+export function transferTargetMountKey(mount: Pick<TransferTargetMount, "mount_id" | "root_path">): string {
+  return `${mount.mount_id}\u0000${mount.root_path}`;
+}
+
+export function transferTargetMountLabel(mount: Pick<TransferTargetMount, "name" | "root_path">): string {
+  return mount.root_path ? `${mount.name} · /${mount.root_path}` : mount.name;
+}
+
+// Grants sharing a mount and root become one entry; the server still picks the
+// grant that accepts the chosen conflict policy.
+function uniqueTransferTargetMounts(mounts: TransferTargetMount[]): TransferTargetMount[] {
+  const byKey = new Map<string, TransferTargetMount>();
+  for (const mount of mounts) {
+    const key = transferTargetMountKey(mount);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, { ...mount, conflict_policies: [...mount.conflict_policies] });
+      continue;
+    }
+    existing.conflict_policies = [...new Set([...existing.conflict_policies, ...mount.conflict_policies])];
+    existing.can_browse ||= mount.can_browse;
+  }
+  return [...byKey.values()];
 }
 
 export function transferSourceFolder(paths: string[]): string {
