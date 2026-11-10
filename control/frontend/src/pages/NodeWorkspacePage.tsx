@@ -10,6 +10,7 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs";
 import { NodeActionsBar } from "@/components/workspace/NodeActionsBar";
+import { NodeConnectButton } from "@/components/workspace/NodeConnectButton";
 import { NodeSettingsMenu } from "@/components/workspace/NodeSettingsMenu";
 import { MtlsRolloutMetrics } from "@/components/workspace/MtlsRolloutMetrics";
 import { MountStrip } from "@/components/workspace/MountStrip";
@@ -32,25 +33,29 @@ export default function NodeWorkspacePage() {
     return <p className="text-sm text-muted-foreground">Carregando node…</p>;
   }
 
+  const endpointLine = `${node.endpoint} · visto ${formatDate(node.last_seen_at)}`;
   const needsAttention =
     peersNeedingAttention(trustPeers).length +
     pairingRequests.filter((request) => request.status === "pending_review")
       .length;
 
   return (
-    <div className="grid gap-8">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
+    <div className="grid grid-cols-1 gap-8">
+      <div className="flex items-end justify-between gap-4 sm:items-start">
+        <div className="min-w-0">
           <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
             Node selecionado
           </p>
-          <h1 className="text-3xl font-semibold tracking-tight">{node.name}</h1>
-          <p className="text-sm text-muted-foreground">
-            {node.endpoint} · visto {formatDate(node.last_seen_at)}
+          <h1 className="truncate text-3xl font-semibold tracking-tight">
+            {node.name}
+          </h1>
+          <p className="hidden text-sm text-muted-foreground sm:block">
+            {endpointLine}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <Badge variant="secondary">{node.state}</Badge>
+          <NodeConnectButton />
           <NodeSettingsMenu />
         </div>
       </div>
@@ -70,7 +75,11 @@ export default function NodeWorkspacePage() {
           );
         }}
       >
-        <TabsList>
+        {/* On mobile the endpoint sits above the tabs, out of the title row. */}
+        <p className="truncate text-xs text-muted-foreground opacity-70 sm:hidden">
+          {endpointLine}
+        </p>
+        <TabsList className="w-full sm:w-fit">
           <TabsTrigger value="overview">Visão geral</TabsTrigger>
           <TabsTrigger value="trust">
             Confiança

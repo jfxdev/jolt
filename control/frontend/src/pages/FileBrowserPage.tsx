@@ -488,7 +488,7 @@ export default function FileBrowserPage() {
   const floatingBar = diskUsageMode || selectedEntries.length > 0;
 
   return (
-    <div className={floatingBar ? "grid gap-4 pb-28" : "grid gap-4"}>
+    <div className={floatingBar ? "grid grid-cols-1 gap-4 pb-28" : "grid grid-cols-1 gap-4"}>
       <div className="flex flex-wrap items-center justify-between gap-4">
         <Breadcrumb>
           <BreadcrumbList>
@@ -506,7 +506,7 @@ export default function FileBrowserPage() {
           </BreadcrumbList>
         </Breadcrumb>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {trashDays(mount) > 0 && canRead && (
             <Button variant="secondary" size="sm" onClick={() => setTrashOpen(true)}>
               <Trash2 /> Lixeira
@@ -571,11 +571,11 @@ export default function FileBrowserPage() {
           )}
           {canCreate && (
             <>
-              <form className="flex gap-2" onSubmit={createDirectory}>
+              <form className="order-last flex w-full gap-2 sm:order-none sm:w-auto" onSubmit={createDirectory}>
                 <Input
                   value={newDirectory}
                   placeholder="Nova pasta"
-                  className="h-9 w-40"
+                  className="h-9 min-w-0 flex-1 sm:w-40 sm:flex-none"
                   onChange={(e) => setNewDirectory(e.target.value)}
                 />
                 <Button variant="secondary" size="sm" type="submit">
