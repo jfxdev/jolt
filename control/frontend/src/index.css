@@ -61,7 +61,7 @@
 
 /* Jolt brand tokens. Dark is the product theme; the light set mirrors it for
  * surfaces that opt out of `.dark`. Brand values come from docs/assets:
- * Jolt yellow #FACC15, ember #F97316, ink #0B0B0B. See docs/branding.md. */
+ * Jolt yellow #FACC15, ember #F97316, ink #0B0B0B. See docs/BRANDING.md. */
 :root {
   --radius: 0.625rem;
   --brand: oklch(0.861 0.173 91.9);

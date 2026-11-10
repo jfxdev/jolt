@@ -7,10 +7,16 @@ import {
   ChevronRight,
   Circle,
   CircleHelp,
+  CirclePause,
   Clock,
+  HardDrive,
   LoaderCircle,
+  Network,
+  Pause,
   RefreshCw,
+  ShieldQuestionMark,
   TriangleAlert,
+  Unplug,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -67,6 +73,12 @@ function stateIcon(state: string): LucideIcon {
   if (state === "waiting_user_decision") return CircleHelp;
   if (state === "running") return LoaderCircle;
   if (state === "queued") return Clock;
+  if (state === "paused") return Pause;
+  if (state === "pause_requested") return CirclePause;
+  if (state === "interrupted") return Unplug;
+  if (state === "waiting_peer") return Network;
+  if (state === "waiting_mount") return HardDrive;
+  if (state === "waiting_validation") return ShieldQuestionMark;
   return Circle;
 }
 
@@ -80,7 +92,6 @@ function StateBadge({ state }: { state: string }) {
           <Badge
             variant={stateVariant(state)}
             tabIndex={0}
-            aria-label={label}
             className="size-5 px-0"
           />
         }
@@ -89,6 +100,7 @@ function StateBadge({ state }: { state: string }) {
           aria-hidden="true"
           className={state === "running" ? "animate-spin" : undefined}
         />
+        <span className="sr-only">{label}</span>
       </TooltipTrigger>
       <TooltipContent>{label}</TooltipContent>
     </Tooltip>
