@@ -53,7 +53,7 @@ export function TransferDestinationFolder({ nodeId, mount, value, onChange, disa
       }).finally(() => { if (active) setLoading(false); });
     }, 250);
     return () => { active = false; clearTimeout(timer); };
-  }, [nodeId, mount.mount_id, mount.can_browse, folder, withinRoot, handleError]);
+  }, [nodeId, mount.mount_id, mount.root_path, mount.can_browse, folder, withinRoot, handleError]);
 
   async function loadMore() {
     const target = current.current; setLoading(true); setError("");
