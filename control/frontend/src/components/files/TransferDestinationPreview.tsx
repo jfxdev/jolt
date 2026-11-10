@@ -7,13 +7,13 @@ import { transferPreviewEntries } from "@/lib/transfer-preview";
 import type { FileEntry, TransferPlan } from "@/lib/types";
 
 const actions: Record<string, { label: string; Icon: LucideIcon; className: string }> = {
-  copy: { label: "Copiar", Icon: Copy, className: "text-sky-700 dark:text-sky-300" },
-  create: { label: "Criar pasta", Icon: FolderPlus, className: "text-sky-700 dark:text-sky-300" },
-  merge: { label: "Mesclar pasta", Icon: FolderSync, className: "text-sky-700 dark:text-sky-300" },
-  rename: { label: "Renomear", Icon: PenLine, className: "text-amber-700 dark:text-amber-300" },
-  overwrite: { label: "Sobrescrever", Icon: Replace, className: "text-amber-700 dark:text-amber-300" },
+  copy: { label: "Copiar", Icon: Copy, className: "text-info" },
+  create: { label: "Criar pasta", Icon: FolderPlus, className: "text-info" },
+  merge: { label: "Mesclar pasta", Icon: FolderSync, className: "text-info" },
+  rename: { label: "Renomear", Icon: PenLine, className: "text-warning" },
+  overwrite: { label: "Sobrescrever", Icon: Replace, className: "text-warning" },
   skip: { label: "Manter existente", Icon: SkipForward, className: "text-muted-foreground" },
-  conflict: { label: "Conflito · não transferir", Icon: TriangleAlert, className: "text-rose-700 dark:text-rose-300" },
+  conflict: { label: "Conflito · não transferir", Icon: TriangleAlert, className: "text-destructive" },
 };
 
 interface Props {

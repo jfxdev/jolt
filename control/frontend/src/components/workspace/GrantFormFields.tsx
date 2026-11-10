@@ -175,7 +175,7 @@ export function GrantFormFields({
         <p className="text-xs text-muted-foreground">Copiar mantém os arquivos na origem.</p>
       </div>}
       {value.permissions.delete && (
-        <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-muted-foreground">
+        <p className="rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-muted-foreground">
           Ao mover, permite remover a origem autorizada após validar o SHA-256.
           Falhas e cancelamentos preservam os arquivos.
         </p>

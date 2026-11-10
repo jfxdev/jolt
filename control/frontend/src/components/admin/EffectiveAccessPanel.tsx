@@ -43,11 +43,11 @@ interface CheckRow extends EffectiveAccessCheck {
 }
 
 const CELL_STYLE = {
-  allowed: "text-emerald-700 dark:text-emerald-400",
+  allowed: "text-success",
   denied: "text-destructive",
-  hidden: "text-amber-700 dark:text-amber-400",
-  blocked: "text-amber-700 dark:text-amber-400",
-  approval: "text-sky-700 dark:text-sky-400",
+  hidden: "text-warning",
+  blocked: "text-warning",
+  approval: "text-info",
 } as const;
 
 // Shows what an identity can do at concrete paths, as the Control Tower and the
@@ -237,7 +237,7 @@ export function EffectiveAccessPanel({ active }: { active: boolean }) {
             {answer.subject.enabled ? "" : " (desativada)"}
           </p>
           {answer.notes.length > 0 && (
-            <ul className="grid gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm" role="status">
+            <ul className="grid gap-1 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm" role="status">
               {answer.notes.map((note) => (
                 <li key={note}>{note}</li>
               ))}

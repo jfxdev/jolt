@@ -287,7 +287,7 @@ export function UsersDialog({
                         <TableCell>
                           <span
                             className={
-                              target.enabled ? "text-emerald-500" : "text-destructive"
+                              target.enabled ? "text-success" : "text-destructive"
                             }
                           >
                             {target.enabled ? "Ativo" : "Inativo"}
@@ -350,7 +350,7 @@ export function UsersDialog({
                   </span>
                   <small
                     className={
-                      target.enabled ? "text-emerald-500" : "text-destructive"
+                      target.enabled ? "text-success" : "text-destructive"
                     }
                   >
                     {target.enabled ? "Ativo" : "Inativo"}

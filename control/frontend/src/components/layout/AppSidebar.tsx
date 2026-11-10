@@ -1,15 +1,6 @@
 import { useState, type ComponentType, type SVGProps } from "react";
 import { NavLink, useLocation } from "react-router-dom";
-import {
-  Activity,
-  FileKey2,
-  Link2,
-  ListChecks,
-  Plus,
-  ScrollText,
-  ShieldKeyhole,
-  Users,
-} from "lucide-react";
+import { Plus, ScrollText } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useNodes } from "@/context/NodesContext";
 import { usePermissions } from "@/context/PermissionsContext";
@@ -18,6 +9,15 @@ import { STATE_COLOR } from "@/components/node/NodeBadge";
 import { AddNodeDialog } from "@/components/node/AddNodeDialog";
 import { AuditDialog } from "@/components/admin/AuditDialog";
 import { BuildVersion } from "@/components/layout/BuildVersion";
+import { JoltMark } from "@/components/brand/JoltLogo";
+import {
+  AccessIcon,
+  JobsIcon,
+  NetworkIcon,
+  TransferIcon,
+  TrustIcon,
+  VolumesIcon,
+} from "@/components/brand/icons";
 import {
   Sidebar,
   SidebarContent,
@@ -72,6 +72,7 @@ function SidebarLink({
       }
       isActive={active}
       tooltip={label}
+      className="relative data-active:text-sidebar-accent-foreground data-active:[&_svg]:text-sidebar-primary before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-sidebar-primary before:opacity-0 data-active:before:opacity-100"
     >
       <IconComponent />
       <span>{label}</span>
@@ -105,12 +106,19 @@ export function AppSidebar() {
         <SidebarHeader>
           <SidebarMenu>
             <SidebarMenuItem>
-              <SidebarLink
-                to="/"
-                label="Jolt"
-                icon={Activity}
-                active={pathname === "/"}
-              />
+              <SidebarMenuButton
+                size="lg"
+                render={<NavLink to="/" aria-label="Jolt, visão da rede" />}
+                className="hover:bg-transparent active:bg-transparent"
+              >
+                <JoltMark glow="neon" className="size-8!" />
+                <span className="grid leading-tight">
+                  <span className="text-base font-bold tracking-tight">Jolt</span>
+                  <span className="font-mono text-[10px] uppercase tracking-widest text-sidebar-foreground/60">
+                    Control Tower
+                  </span>
+                </span>
+              </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>
         </SidebarHeader>
@@ -124,15 +132,15 @@ export function AppSidebar() {
                   <SidebarLink
                     to="/"
                     label="Visão da rede"
-                    icon={Activity}
+                    icon={NetworkIcon}
                     active={pathname === "/"}
                   />
                 </SidebarMenuItem>
                 <SidebarMenuItem>
                   <SidebarLink
                     to="/relationships"
-              label="Relacionamentos"
-                    icon={Link2}
+                    label="Relacionamentos"
+                    icon={TransferIcon}
                     active={pathname === "/relationships"}
                   />
                 </SidebarMenuItem>
@@ -140,7 +148,7 @@ export function AppSidebar() {
                   <SidebarLink
                     to="/jobs"
                     label="Jobs"
-                    icon={ListChecks}
+                    icon={JobsIcon}
                     active={pathname === "/jobs"}
                   />
                 </SidebarMenuItem>
@@ -166,7 +174,7 @@ export function AppSidebar() {
                     <SidebarLink
                       to={`/nodes/${node.node_id}`}
                       label={node.name}
-                      icon={FileKey2}
+                      icon={VolumesIcon}
                       active={pathname.startsWith(`/nodes/${node.node_id}`)}
                     />
                     <SidebarMenuBadge title={node.state}>
@@ -199,7 +207,7 @@ export function AppSidebar() {
                       <SidebarLink
                         to="/access"
                         label="Access"
-                        icon={ShieldKeyhole}
+                        icon={TrustIcon}
                         active={pathname === "/access"}
                       />
                     </SidebarMenuItem>
@@ -209,7 +217,7 @@ export function AppSidebar() {
                       <SidebarLink
                         to="/identity"
                         label="Identity"
-                        icon={Users}
+                        icon={AccessIcon}
                         active={pathname === "/identity"}
                       />
                     </SidebarMenuItem>
@@ -237,7 +245,7 @@ export function AppSidebar() {
             <SidebarMenuItem>
               <DropdownMenu>
                 <DropdownMenuTrigger render={<SidebarMenuButton size="lg" />}>
-                  <span className="grid size-7 place-content-center rounded-md bg-sidebar-primary text-xs font-semibold text-sidebar-primary-foreground">
+                  <span className="grid size-7 place-content-center rounded-md bg-brand-gradient text-xs font-semibold text-sidebar-primary-foreground">
                     {user?.username.slice(0, 1).toUpperCase() || "J"}
                   </span>
                   <span>{user?.username || "Conta"}</span>

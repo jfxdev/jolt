@@ -2,10 +2,10 @@ import { cn } from "@/lib/utils";
 import type { NodeInfo } from "@/lib/types";
 
 export const STATE_COLOR: Record<string, string> = {
-  online: "bg-emerald-500",
+  online: "bg-success",
   offline: "bg-destructive",
   untrusted: "bg-destructive",
-  degraded: "bg-amber-500",
+  degraded: "bg-warning",
 };
 
 /** Node name with its state dot, the same indicator the sidebar uses. */

@@ -1,4 +1,5 @@
-import { Settings, Fingerprint, RefreshCw, ShieldPlus, Share2, ShieldCheck, KeyRound } from "lucide-react";
+import { useState } from "react";
+import { Settings, Fingerprint, RefreshCw, ShieldPlus, Share2, ShieldCheck, KeyRound, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useWorkspace } from "@/context/WorkspaceContext";
 import { usePermissions } from "@/context/PermissionsContext";
@@ -16,6 +17,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { DeleteNodeDialog } from "@/components/workspace/DeleteNodeDialog";
 
 export function NodeSettingsMenu() {
   const { nodeId, node, mtlsState, nodePath, refreshMTLSState } =
@@ -24,6 +26,7 @@ export function NodeSettingsMenu() {
   const handleError = useApiError();
   const confirm = useConfirm();
   const prompt = usePrompt();
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   if (!node) return null;
 
@@ -35,8 +38,9 @@ export function NodeSettingsMenu() {
     `control-tower/nodes/${nodeId}/token`,
     "sudo",
   );
+  const canDelete = hasPermission("control-tower/nodes", "sudo");
 
-  if (!canIdentity && !canMtls && !canToken) return null;
+  if (!canIdentity && !canMtls && !canToken && !canDelete) return null;
 
   async function rotateIdentity() {
     try {
@@ -184,12 +188,19 @@ export function NodeSettingsMenu() {
   }
 
   return (
+    <>
     <DropdownMenu>
       <DropdownMenuTrigger
-        render={<Button variant="outline" size="sm" />}
+        render={
+          <Button
+            variant="outline"
+            size="sm"
+            className="max-sm:size-10 max-sm:px-0"
+          />
+        }
       >
-          <Settings className="h-4 w-4" />
-          Configurações
+          <Settings className="h-4 w-4 max-sm:size-5" />
+          <span className="max-sm:sr-only">Configurações</span>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-64">
         {canIdentity && (
@@ -243,7 +254,23 @@ export function NodeSettingsMenu() {
             </DropdownMenuGroup>
           </>
         )}
+        {canDelete && (
+          <>
+            {(canIdentity || canMtls || canToken) && <DropdownMenuSeparator />}
+            <DropdownMenuGroup>
+              <DropdownMenuItem
+                variant="destructive"
+                onClick={() => setDeleteOpen(true)}
+              >
+                <Trash2 className="h-4 w-4" />
+                Remover node
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
+    <DeleteNodeDialog open={deleteOpen} onOpenChange={setDeleteOpen} />
+    </>
   );
 }

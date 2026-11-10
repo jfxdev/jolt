@@ -10,6 +10,7 @@ import { usePermissions } from "@/context/PermissionsContext";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { AddNodeDialog } from "@/components/node/AddNodeDialog";
+import { JoltMark } from "@/components/brand/JoltLogo";
 
 export default function NetworkOverviewPage() {
   const { nodes } = useNodes();
@@ -31,8 +32,16 @@ export default function NetworkOverviewPage() {
 
   return (
     <div className="grid gap-8">
-      <Card className="flex min-h-[46vh] flex-col items-start justify-center gap-5 p-10 lg:p-16">
-        <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
+      <Card className="relative isolate flex min-h-[46vh] flex-col items-start justify-center gap-5 overflow-hidden p-10 lg:p-16">
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 -z-10 bg-brand-grid mask-[radial-gradient(ellipse_at_80%_50%,black,transparent_70%)]"
+        />
+        <JoltMark
+          glow
+          className="absolute top-1/2 -right-16 -z-10 hidden w-[26rem] -translate-y-1/2 opacity-10 md:block"
+        />
+        <p className="font-mono text-xs uppercase tracking-widest text-brand">
           Visão da rede
         </p>
         <h1 className="max-w-2xl text-4xl font-semibold tracking-tight lg:text-6xl">

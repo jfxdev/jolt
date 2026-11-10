@@ -582,7 +582,7 @@ export function ConnectDialog({
         )}
         {step === 3 && !managedGrants && (
           <form className="grid gap-4" onSubmit={createGrant}>
-            <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-muted-foreground">
+            <p className="rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-muted-foreground">
               A conexão está estabelecida, mas sem grant ela não transfere
               nada. Você pode criar o primeiro agora ou depois na aba
               Confiança.

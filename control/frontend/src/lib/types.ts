@@ -320,6 +320,7 @@ export interface Job {
   files_failed?: number;
   error?: string;
   created_at?: string;
+  completed_at?: string;
 }
 
 export interface JobItem {

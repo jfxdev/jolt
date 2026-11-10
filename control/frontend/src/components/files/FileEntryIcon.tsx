@@ -119,7 +119,7 @@ const stylesByExtension = new Map(
 
 function styleForEntry(entry: Pick<FileEntry, "name" | "type">): IconStyle {
   if (entry.type === "directory") {
-    return { icon: Folder, className: "fill-yellow-500/15 text-yellow-600 dark:text-yellow-400" };
+    return { icon: Folder, className: "fill-brand/15 text-brand" };
   }
   if (entry.type === "symlink") {
     return { icon: FileSymlink, className: "text-violet-600 dark:text-violet-400" };

@@ -6,6 +6,7 @@ import { fileEntryDisplayName, safeDisplayName } from "@/lib/display-name";
 import type { ApiError, FileEntry, PublicShare } from "@/lib/types";
 import { formatBytes, formatDate } from "@/lib/format";
 import { FileEntryIcon } from "@/components/files/FileEntryIcon";
+import { BrandBackdrop } from "@/components/brand/BrandBackdrop";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -107,28 +108,28 @@ export default function PublicSharePage() {
 
   if (status === "loading") {
     return (
-      <div className="grid min-h-screen place-content-center text-muted-foreground">
-        Carregando link…
-      </div>
+      <BrandBackdrop center>
+        <p className="text-muted-foreground">Carregando link…</p>
+      </BrandBackdrop>
     );
   }
 
   if (status === "error" || !share) {
     return (
-      <div className="grid min-h-screen place-content-center px-4">
+      <BrandBackdrop center>
         <Card className="max-w-md">
           <CardHeader>
             <CardTitle>Link indisponível</CardTitle>
             <CardDescription>{message}</CardDescription>
           </CardHeader>
         </Card>
-      </div>
+      </BrandBackdrop>
     );
   }
 
   if (!share.unlocked) {
     return (
-      <div className="grid min-h-screen place-content-center px-4">
+      <BrandBackdrop center>
         <Card className="w-full max-w-md">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -157,14 +158,14 @@ export default function PublicSharePage() {
             </form>
           </CardContent>
         </Card>
-      </div>
+      </BrandBackdrop>
     );
   }
 
   const crumbs = ["", ...path.split("/").filter(Boolean)];
 
   return (
-    <div className="mx-auto grid max-w-4xl gap-4 px-4 py-8">
+    <BrandBackdrop>
       <Card>
         <CardHeader>
           <CardTitle>{safeDisplayName(share.name)}</CardTitle>
@@ -275,6 +276,6 @@ export default function PublicSharePage() {
           </CardContent>
         </Card>
       )}
-    </div>
+    </BrandBackdrop>
   );
 }

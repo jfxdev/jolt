@@ -34,12 +34,12 @@ export function DiskUsageNotices({ result }: Pick<Props, "result">) {
   return (
     <>
       {result?.truncated && (
-        <p role="status" className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
+        <p role="status" className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
           Análise parcial: o limite de {result.truncated_reason === "timeout" ? "tempo" : "itens"} foi atingido. Os valores abaixo não representam todo o conteúdo.
         </p>
       )}
       {!!result?.read_errors && (
-        <p role="status" className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
+        <p role="status" className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
           {result.read_errors} {result.read_errors === 1 ? "item não pôde" : "itens não puderam"} ser lido. O total pode estar incompleto.
         </p>
       )}

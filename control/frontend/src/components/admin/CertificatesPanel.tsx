@@ -14,7 +14,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 const TONE_CLASS: Record<Tone, string> = {
   ok: "",
   neutral: "text-muted-foreground",
-  warning: "text-amber-600 dark:text-amber-400",
+  warning: "text-warning",
   critical: "font-medium text-destructive",
 };
 
@@ -99,7 +99,7 @@ export function CertificatesPanel({ active }: { active: boolean }) {
         </div>
       )}
       {inventory && needsAttention(inventory.items, now) && (
-        <p role="alert" className="text-sm text-amber-600 dark:text-amber-400" data-testid="certificate-attention">
+        <p role="alert" className="text-sm text-warning" data-testid="certificate-attention">
           Algo em uso está perto de vencer. Confira as datas abaixo.
         </p>
       )}

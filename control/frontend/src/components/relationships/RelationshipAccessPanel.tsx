@@ -121,7 +121,7 @@ export function RelationshipAccessPanel({ node, otherName, peer, canListGrants, 
       <div className="flex items-center gap-2"><h3 className="font-semibold">{node.name}</h3>{canListGrants && <Badge variant="secondary" aria-label={`${grants.length} autorizações em ${node.name}`} title="Autorizações">{grants.length}</Badge>}</div>
       {peer && canCreate && !form && <Button type="button" size="sm" variant="outline" aria-label={`Adicionar autorização em ${node.name}`} disabled={busy || !canListMounts || !!mountError || peer.trust_status !== "connected"} onClick={() => start()}><Plus /> Adicionar</Button>}
     </div>
-    {sourceAccess?.status === "removal_missing" && <div role="status" className="grid gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+    {sourceAccess?.status === "removal_missing" && <div role="status" className="grid gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3">
       <p className="text-sm font-medium">A origem permite copiar. Mover precisa de mais uma permissão.</p>
       <p className="text-xs text-muted-foreground">Permita a remoção dos arquivos de origem ao mover entre hosts no envio de {node.name} · {selection!.mount.name}. A origem só será removida após validar a transferência por SHA-256.</p>
       {canUpdate && <Button type="button" size="sm" variant="outline" className="w-fit" disabled={busy || !!form || !canListMounts || !!mountError} onClick={() => start(sourceAccess.grant)}>Revisar permissão para mover</Button>}

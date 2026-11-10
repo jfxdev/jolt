@@ -12,6 +12,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import type { ApiError } from "@/lib/types";
+import { JoltLogo, JoltMark } from "@/components/brand/JoltLogo";
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -36,28 +37,41 @@ export default function LoginPage() {
 
   return (
     <div className="grid min-h-screen lg:grid-cols-2">
-      <div className="hidden flex-col justify-center gap-6 bg-muted/40 p-16 lg:flex">
-        <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
-          Jolt network
-        </p>
-        <h1 className="text-5xl font-semibold leading-tight tracking-tight">
-          Seus arquivos.
-          <br />
-          Sob seu comando.
-        </h1>
-        <p className="max-w-md text-muted-foreground">
-          Uma torre de controle privada para navegar e operar seus nodes sem
-          abrir o filesystem dos servidores.
-        </p>
+      <div className="relative isolate hidden flex-col justify-between overflow-hidden border-r bg-sidebar p-16 lg:flex">
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 -z-10 bg-brand-grid mask-[radial-gradient(ellipse_at_30%_40%,black,transparent_75%)]"
+        />
+        <JoltMark
+          glow
+          aria-hidden="true"
+          className="absolute -right-24 -bottom-16 -z-10 w-[28rem] opacity-15"
+        />
+        <JoltLogo className="text-2xl" />
+        <div className="grid gap-6">
+          <p className="font-mono text-xs uppercase tracking-widest text-brand">
+            Jolt network
+          </p>
+          <h1 className="text-5xl font-semibold leading-tight tracking-tight">
+            Seus arquivos.
+            <br />
+            <span className="text-brand-gradient">Sob seu comando.</span>
+          </h1>
+          <p className="max-w-md text-muted-foreground">
+            Uma torre de controle privada para navegar e operar seus nodes sem
+            abrir o filesystem dos servidores.
+          </p>
+        </div>
         <div className="flex items-center gap-2 font-mono text-xs text-muted-foreground">
-          <span className="h-1.5 w-1.5 rounded-full bg-foreground" />
-          <span className="h-1.5 w-1.5 rounded-full bg-foreground/60" />
-          <span className="h-1.5 w-1.5 rounded-full bg-foreground/30" />
+          <span className="size-1.5 rounded-full bg-brand" />
+          <span className="size-1.5 rounded-full bg-brand/60" />
+          <span className="size-1.5 rounded-full bg-brand/30" />
           Conexão direta entre nodes
         </div>
       </div>
 
-      <div className="flex items-center justify-center p-6">
+      <div className="flex flex-col items-center justify-center gap-8 p-6">
+        <JoltLogo className="text-2xl lg:hidden" />
         <Card className="w-full max-w-md">
           <CardHeader>
             <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">

@@ -54,7 +54,7 @@ export function UploadQueue({ items, onCancel, onRetry, onReplace, onDismiss, on
               <span className="min-w-0"><span className="block truncate font-medium">{safeDisplayName(item.name)}</span>{item.destination && <span className="block truncate text-xs text-muted-foreground">Destino: {safeDisplayPath(item.destination)}</span>}</span>
               <span className="flex shrink-0 items-center gap-2 text-muted-foreground">
                 {item.status === "done" && (
-                  <CheckCircle2 className="size-4 text-emerald-600 dark:text-emerald-500" />
+                  <CheckCircle2 className="size-4 text-success" />
                 )}
                 {(item.status === "failed" || item.status === "conflict") && (
                   <AlertTriangle className="size-4 text-destructive" />

@@ -17,9 +17,9 @@ export function MountStrip() {
           Volumes
         </p>
         <h2 className="text-lg font-semibold">Arquivos deste node</h2>
-        {node?.configuration?.source === "yaml" && <p className="text-sm text-muted-foreground">Gerenciado por arquivo. Alterações nos volumes e permissões são aplicadas após reiniciar o node.</p>}
+        {node?.configuration?.source === "yaml" && <p className="text-sm text-muted-foreground">Gerenciado por arquivo. Reinicie o node para aplicar alterações.</p>}
         <p className="text-sm text-muted-foreground">
-          Selecione um volume para abrir seu explorador de arquivos.
+          Selecione um volume para explorar.
         </p>
       </div>
 
