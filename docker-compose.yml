@@ -111,3 +111,44 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+
+  # MCP over HTTP, from the same image as the Control Tower. It holds no
+  # credential: each agent sends its own token, which the Control Tower checks
+  # on every call. Bearer tokens cross this port in plain text unless TLS is
+  # set, so it stays on loopback unless MCP_HTTP_BIND is widened.
+  jolt-mcp:
+    build:
+      context: ./control
+    restart: unless-stopped
+    depends_on:
+      jolt-control:
+        condition: service_healthy
+    entrypoint: ["/usr/local/bin/jolt-mcp"]
+    command: ["serve"]
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      JOLT_MCP_HTTP_ADDRESS: :8092
+      # With CONTROL_TOWER_TLS_MODE=managed, use https://jolt-control:8090,
+      # mount the root read-only and set JOLT_MCP_CA_FILE instead.
+      JOLT_MCP_CONTROL_URL: ${JOLT_MCP_CONTROL_URL:-http://jolt-control:8090}
+      JOLT_MCP_INSECURE_CONTROL_URL: ${JOLT_MCP_INSECURE_CONTROL_URL:-true}
+      JOLT_MCP_TOOLSETS: ${JOLT_MCP_TOOLSETS:-files,inspect,files_write,jobs}
+      JOLT_MCP_READ_ONLY: ${JOLT_MCP_READ_ONLY:-false}
+      JOLT_MCP_ALLOWED_ORIGINS: ${JOLT_MCP_ALLOWED_ORIGINS:-}
+    ports:
+      - "${MCP_HTTP_BIND:-127.0.0.1}:8092:8092"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: ${JOLT_MCP_MEMORY_LIMIT:-256m}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8092/health >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
