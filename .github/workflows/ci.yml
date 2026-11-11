@@ -69,6 +69,16 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: ${{ matrix.module }}/go.sum
 
+      # The runner's apt mirrors all live under ubuntu.com (Azure's mirror
+      # included), so an outage of that domain fails the job before any test
+      # runs. apt moves down the list on failure and checks Canonical's
+      # signatures whatever the mirror, so one outside ubuntu.com goes last.
+      - name: Add an apt mirror outside ubuntu.com as a fallback
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            echo 'https://mirrors.edge.kernel.org/ubuntu/' | sudo tee -a /etc/apt/apt-mirrors.txt >/dev/null
+          fi
+
       # The SQLCipher binding is CGO; the race detector needs the C toolchain too.
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y build-essential
@@ -121,6 +131,16 @@ jobs:
       - name: Test
         run: npm test
 
+      # The runner's apt mirrors all live under ubuntu.com (Azure's mirror
+      # included), so an outage of that domain fails the job before any test
+      # runs. apt moves down the list on failure and checks Canonical's
+      # signatures whatever the mirror, so one outside ubuntu.com goes last.
+      - name: Add an apt mirror outside ubuntu.com as a fallback
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            echo 'https://mirrors.edge.kernel.org/ubuntu/' | sudo tee -a /etc/apt/apt-mirrors.txt >/dev/null
+          fi
+
       - name: Install browser for desktop/mobile tests
         run: npx playwright install --with-deps chromium
 
@@ -142,9 +162,6 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: node/go.sum
-
-      - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential
 
       # Interrupt/resume and parallel-directory transfers are the paths that
       # replace manual copies, so they gate every merge rather than running
