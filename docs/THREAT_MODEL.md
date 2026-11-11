@@ -111,7 +111,7 @@ A distribuição injeta versão/commit/data nos binários e labels OCI, publica
 SBOM/provenance por Buildx, imagens por tag/digest e inventário nativo. A
 publicação estável preserva a correspondência entre tag, SHA e digests, sem rebuild.
 
-Inventário de referência: Go `1.26.10`, Node `24` no build do frontend, Alpine
+Inventário de referência: Go `1.26.11`, Node `24` no build do frontend, Alpine
 `3.22`, binding `github.com/mutecomm/go-sqlcipher/v4 v4.4.2` e amalgamation
 SQLite `3.33.0` (`SQLITE_VERSION_NUMBER 3033000`). O artifact da candidata é a
 fonte da versão efetivamente publicada.
