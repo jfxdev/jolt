@@ -2,7 +2,8 @@
 
 Toda alteração em `main` deve chegar por pull request. A CI valida workflows e
 formatação, build/vet/testes Go com race, frontend e Playwright desktop/mobile,
-aceitação rápida, `govulncheck`, build das imagens e smoke real entre containers.
+aceitação rápida, aceitação do provider Terraform com OpenTofu e build
+reproduzível dele, `govulncheck`, build das imagens e smoke real entre containers.
 O check **PR Gate** exige todos esses validadores.
 
 ## Release estável e artefatos
