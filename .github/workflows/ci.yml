@@ -97,11 +97,38 @@ jobs:
           CGO_ENABLED=0 go build ./backend/cmd/jolt-node
           if go list -deps ./backend/cmd/jolt-node | grep -E '(^database/sql$|sqlcipher|sqlite)'; then exit 1; fi
 
+      # The IaC image builds the provider without a C toolchain, and the same
+      # commit must give the same binary or .terraform.lock.hcl stops matching.
+      - name: Verify the Terraform provider builds reproducibly without CGO
+        if: matrix.module == 'control'
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath -buildvcs=false -o "$RUNNER_TEMP/provider-a" ./cmd/terraform-provider-jolt
+          go build -trimpath -buildvcs=false -o "$RUNNER_TEMP/provider-b" ./cmd/terraform-provider-jolt
+          cmp "$RUNNER_TEMP/provider-a" "$RUNNER_TEMP/provider-b"
+          if go list -deps ./cmd/terraform-provider-jolt | grep -E '(^database/sql$|sqlcipher|sqlite)'; then exit 1; fi
+
       - name: Vet
         run: go vet ./...
 
       - name: Test (race)
         run: go test -race -timeout 20m ./...
+
+      # The IaC pipeline runs OpenTofu. The wrapper is off so the tests drive
+      # the tofu binary itself; the action checks it against SHA256SUMS.
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        if: matrix.module == 'control'
+        with:
+          tofu_version: 1.12.6
+          tofu_wrapper: false
+
+      - name: Terraform provider acceptance (OpenTofu)
+        if: matrix.module == 'control'
+        env:
+          TF_ACC: "1"
+          TF_ACC_PROVIDER_HOST: registry.opentofu.org
+        run: TF_ACC_TERRAFORM_PATH="$(command -v tofu)" go test -timeout 10m -run '^TestAcc' ./internal/tfprovider/
 
   frontend:
     name: Frontend

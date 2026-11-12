@@ -725,6 +725,9 @@ paths:
     get:
       tags: [Administration]
       summary: List Node Path RBAC policies
+      parameters:
+        - {name: q, in: query, required: false, schema: {type: string}, description: 'Case-insensitive substring of the name or description.'}
+        - {name: name, in: query, required: false, schema: {type: string}, description: 'Exact name; returns at most one policy and takes precedence over q.'}
       responses:
         '200': {$ref: '#/components/responses/JSONObject'}
     post:
@@ -741,6 +744,12 @@ paths:
         '409': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/policies/{policyID}:
     parameters: [{$ref: '#/components/parameters/PolicyID'}]
+    get:
+      tags: [Administration]
+      summary: Read an RBAC policy
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '404': {$ref: '#/components/responses/Error'}
     patch:
       tags: [Administration]
       summary: Update an RBAC policy

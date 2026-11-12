@@ -202,6 +202,7 @@ func newServerHandler(cfg config.Config, storage *store.Store, logger *slog.Logg
 	mux.Handle("PUT /api/v1/control-tower/access-groups/{groupID}/policies", s.auth(http.HandlerFunc(s.assignAccessGroupPolicies)))
 	mux.Handle("GET /api/v1/control-tower/policies", s.auth(http.HandlerFunc(s.listPolicies)))
 	mux.Handle("POST /api/v1/control-tower/policies", s.auth(http.HandlerFunc(s.createPolicy)))
+	mux.Handle("GET /api/v1/control-tower/policies/{policyID}", s.auth(http.HandlerFunc(s.getPolicy)))
 	mux.Handle("PATCH /api/v1/control-tower/policies/{policyID}", s.auth(http.HandlerFunc(s.updatePolicy)))
 	mux.Handle("DELETE /api/v1/control-tower/policies/{policyID}", s.auth(http.HandlerFunc(s.deletePolicy)))
 	mux.Handle("GET /api/v1/control-tower/roles", s.auth(http.HandlerFunc(s.listRoles)))
@@ -1697,12 +1698,44 @@ func (s *Server) listPolicies(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r, "list", "control-tower/policies") {
 		return
 	}
+	// name matches one policy exactly, so a lookup by name stays one row
+	// however many other policies contain it.
+	if name := r.URL.Query().Get("name"); name != "" {
+		items := []store.Policy{}
+		policy, err := s.store.GetPolicyByName(r.Context(), name)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			s.fail(w, r, err)
+			return
+		}
+		if err == nil {
+			items = append(items, policy)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+		return
+	}
 	policies, err := s.store.SearchPolicies(r.Context(), r.URL.Query().Get("q"))
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": policies})
+}
+
+func (s *Server) getPolicy(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("policyID"))
+	if !s.requireAdmin(w, r, "read", "control-tower/policies/"+id) {
+		return
+	}
+	policy, err := s.store.GetPolicy(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, r, http.StatusNotFound, "policy_not_found", "Policy não encontrada.")
+		return
+	}
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, policy)
 }
 
 func (s *Server) createPolicy(w http.ResponseWriter, r *http.Request) {
