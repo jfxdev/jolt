@@ -33,6 +33,27 @@ type Policy struct {
 	UpdatedAt   time.Time   `json:"updated_at"`
 }
 
+// Node is a node registered in the Control Tower, as the API returns it.
+// State and LastSeenAt come from a probe the Control Tower makes on each list.
+type Node struct {
+	ID            string             `json:"node_id"`
+	Name          string             `json:"name"`
+	Endpoint      string             `json:"endpoint"`
+	State         string             `json:"state"`
+	Configuration *NodeConfiguration `json:"configuration,omitempty"`
+	LastSeenAt    *time.Time         `json:"last_seen_at,omitempty"`
+	CreatedAt     time.Time          `json:"created_at"`
+	UpdatedAt     time.Time          `json:"updated_at"`
+}
+
+// NodeConfiguration is how the node's mounts and grants are managed.
+type NodeConfiguration struct {
+	Source        string `json:"source"`
+	ApplyMode     string `json:"apply_mode"`
+	MountsMutable bool   `json:"mounts_mutable"`
+	GrantsMutable bool   `json:"grants_mutable"`
+}
+
 // PolicyInput is the body of a policy create or update.
 type PolicyInput struct {
 	Name        string      `json:"name"`
@@ -133,6 +154,16 @@ func (c *Client) FindPolicyByName(ctx context.Context, name string) (Policy, err
 		}
 	}
 	return Policy{}, &APIError{Status: http.StatusNotFound, Code: "policy_not_found", Message: "no policy named " + name}
+}
+
+// ListNodes returns the nodes this token may list: those in one of its
+// access groups that a policy grants list on nodes/<id>.
+func (c *Client) ListNodes(ctx context.Context) ([]Node, error) {
+	var page struct {
+		Items []Node `json:"items"`
+	}
+	err := c.do(ctx, http.MethodGet, "/api/v1/control-tower/nodes", nil, nil, &page)
+	return page.Items, err
 }
 
 func (c *Client) CreatePolicy(ctx context.Context, input PolicyInput) (Policy, error) {

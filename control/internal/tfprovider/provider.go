@@ -1,7 +1,8 @@
 // Package tfprovider is the Terraform and OpenTofu provider for the Control
 // Tower. It manages RBAC policies through the same API as the web UI and
 // validates them with the Control Tower's own rules, so a plan refuses what
-// the server would refuse or rewrite.
+// the server would refuse or rewrite. Nodes can be read by name, so
+// configurations need not hard-code node ids.
 package tfprovider
 
 import (
@@ -41,14 +42,14 @@ func (p *joltProvider) Metadata(_ context.Context, _ provider.MetadataRequest, r
 
 func (p *joltProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manages Jolt Control Tower RBAC policies.",
+		Description: "Manages Jolt Control Tower RBAC policies and reads its nodes.",
 		Attributes: map[string]schema.Attribute{
 			"control_url": schema.StringAttribute{
 				Description: "Control Tower URL, such as https://jolt.example.com. HTTPS is required outside loopback. Defaults to JOLT_CONTROL_URL.",
 				Optional:    true,
 			},
 			"token": schema.StringAttribute{
-				Description: "Service account token with sudo on control-tower/policies. Defaults to JOLT_TOKEN.",
+				Description: "Service account token with sudo on control-tower/policies, and list on the nodes jolt_node reads. Defaults to JOLT_TOKEN.",
 				Optional:    true,
 				Sensitive:   true,
 			},
@@ -108,5 +109,5 @@ func (p *joltProvider) Resources(context.Context) []func() resource.Resource {
 }
 
 func (p *joltProvider) DataSources(context.Context) []func() datasource.DataSource {
-	return []func() datasource.DataSource{newPolicyDataSource}
+	return []func() datasource.DataSource{newPolicyDataSource, newNodeDataSource}
 }

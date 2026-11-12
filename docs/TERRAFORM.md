@@ -1,6 +1,7 @@
 # Provider Terraform / OpenTofu
 
-`terraform-provider-jolt` gerencia as policies RBAC do Control Tower como código.
+`terraform-provider-jolt` gerencia as policies RBAC do Control Tower como código
+e lê os nodes por nome, para que a configuração não dependa de ids.
 Ele fala com a mesma API da tela Access → Policies e valida cada policy com as
 regras do próprio Control Tower (`control/internal/rbac` e `control/internal/filetypes`),
 compiladas no binário. O provider não é publicado em registry: a imagem de IaC
@@ -12,6 +13,7 @@ Por enquanto ele cobre:
 |---|---|---|
 | resource | `jolt_policy` | Cria, altera e remove uma policy; importa por id ou por nome |
 | data source | `jolt_policy` | Lê uma policy por `id` ou `name` |
+| data source | `jolt_node` | Lê um node por `id` ou `name`: endpoint, estado e configuração |
 
 A atribuição de policies a usuários, API keys e grupos continua na UI e na API.
 
@@ -22,8 +24,17 @@ O provider usa o token de uma API key (service account), enviado como
 policy que dê `sudo` em `control-tower/policies`:
 
 ```json
-{"name": "iac-policies", "rules": [{"path": "control-tower/policies", "capabilities": ["sudo"]}]}
+{"name": "iac-policies", "rules": [
+  {"path": "control-tower/policies", "capabilities": ["sudo"]},
+  {"path": "nodes/*", "capabilities": ["list"]}
+]}
 ```
+
+A segunda regra só é necessária para o `jolt_node`. Uma API key só enxerga os
+nodes do seu grupo de acesso, e só aqueles em que tem `list` em `nodes/<id>`:
+inclua no grupo os nodes que a configuração cita. `nodes/*` cobre exatamente
+`nodes/<id>`, sem arquivos, mounts ou nada abaixo; além da lista de nodes, ela só
+mostra as conexões entre dois nodes visíveis.
 
 **Atenção.** Quem tem `sudo` em `control-tower/policies` muda o que todos os
 detentores de cada policy podem fazer: ampliar uma regra de uma policy já
@@ -130,6 +141,17 @@ resource "jolt_policy" "media" {
 data "jolt_policy" "admins" {
   name = "admins"
 }
+
+data "jolt_node" "backup" {
+  name = "backup-01"
+}
+
+resource "jolt_policy" "backup" {
+  name  = "backup-read"
+  rules = [
+    { path = "nodes/${data.jolt_node.backup.id}/files/**", capabilities = ["list", "read"] },
+  ]
+}
 ```
 
 | Atributo do provider | Variável | |
@@ -174,6 +196,14 @@ auditoria.
   dela, como acontece pela UI.
 - Uma policy removida fora do Terraform é criada de novo no próximo `apply`, com
   outro id. As atribuições que ela tinha não voltam.
+- Nomes de node não são únicos. Um `name` que mais de um node visível tenha é
+  erro, com os ids de cada um; use `id` nesse caso. A comparação diferencia
+  maiúsculas.
+- Um node que não existe e um que a key não pode listar dão o mesmo erro.
+- Cada leitura de `jolt_node` lista os nodes, e a lista sonda cada node visível
+  (até 4 s por node, 4 em paralelo). `state`, `last_seen_at` e `configuration`
+  vêm dessa sonda e mudam de um plan para o outro; não os use em atributos de
+  recursos, ou o plan mostrará mudança a cada node que oscilar.
 
 ## Testes
 
