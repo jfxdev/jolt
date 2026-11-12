@@ -95,7 +95,7 @@ printf '{"Authorization":"Bearer %s"}\n' "$token"
 }
 ```
 
-`read` e `printf` são embutidos do shell, então o token não aparece em argumentos de processo. O helper roda de novo a cada conexão e após um `401`/`403`, então substituir o arquivo do token basta para rotacioná-lo.
+`read` e `printf` são embutidos do shell, então o token não aparece em argumentos de processo. O helper roda de novo a cada nova conexão e quando o próprio `/mcp` responde `401`/`403` (token ausente ou malformado). Um token revogado ou expirado não gera esse `401`/`403`: o Control Tower recusa a chamada e a recusa volta como erro da ferramenta. Por isso, depois de substituir o arquivo do token, reconecte o servidor (`/mcp` no Claude Code) para que o helper leia o token novo.
 
 ## Ferramentas
 
