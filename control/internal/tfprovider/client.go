@@ -89,6 +89,14 @@ func isStatus(err error, status int) bool {
 	return errors.As(err, &failure) && failure.Status == status
 }
 
+// isMissing reports a 404 that names the missing object. A 404 without the
+// code, from a proxy or a route the Control Tower lacks, says nothing about
+// the object and must not be taken for its absence.
+func isMissing(err error, code string) bool {
+	var failure *APIError
+	return errors.As(err, &failure) && failure.Status == http.StatusNotFound && failure.Code == code
+}
+
 // Client calls the Control Tower API with a service account token.
 type Client struct {
 	base  *url.URL
@@ -139,13 +147,12 @@ func (c *Client) GetPolicy(ctx context.Context, id string) (Policy, error) {
 	return policy, err
 }
 
-// FindPolicyByName returns the policy with exactly this name. The search
-// matches substrings, so the result is filtered.
+// FindPolicyByName returns the policy with exactly this name.
 func (c *Client) FindPolicyByName(ctx context.Context, name string) (Policy, error) {
 	var page struct {
 		Items []Policy `json:"items"`
 	}
-	if err := c.do(ctx, http.MethodGet, "/api/v1/control-tower/policies", url.Values{"q": {name}}, nil, &page); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/api/v1/control-tower/policies", url.Values{"name": {name}}, nil, &page); err != nil {
 		return Policy{}, err
 	}
 	for _, policy := range page.Items {

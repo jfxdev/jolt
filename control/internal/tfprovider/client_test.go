@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -87,5 +88,32 @@ func TestNewClientRefusesUnsafeURLs(t *testing.T) {
 	}
 	if _, err := NewClient("https://jolt.example.com", " ", ""); err == nil {
 		t.Error("accepted an empty token")
+	}
+}
+
+func TestOnlyPolicyNotFoundMeansThePolicyIsGone(t *testing.T) {
+	controlURL, _ := newControl(t)
+	client, err := NewClient(controlURL, testToken, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := client.GetPolicy(ctx, "pol_missing"); !isMissing(err, policyNotFound) {
+		t.Fatalf("read of a missing policy: %v", err)
+	}
+	if err := client.DeletePolicy(ctx, "pol_missing"); !isMissing(err, policyNotFound) {
+		t.Fatalf("delete of a missing policy: %v", err)
+	}
+
+	// A proxy, or a Control Tower without the route, answers 404 without
+	// the code: that is not evidence the policy is gone.
+	proxy := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(proxy.Close)
+	client, err = NewClient(proxy.URL, testToken, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.GetPolicy(ctx, "pol_1"); err == nil || isMissing(err, policyNotFound) {
+		t.Fatalf("bare 404 taken for a missing policy: %v", err)
 	}
 }

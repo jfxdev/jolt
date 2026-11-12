@@ -3,7 +3,6 @@ package tfprovider
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"regexp"
 	"strings"
 
@@ -21,6 +20,9 @@ import (
 
 // importByName is the prefix of an import id that names the policy.
 const importByName = "name:"
+
+// policyNotFound is the code the Control Tower gives a policy it does not have.
+const policyNotFound = "policy_not_found"
 
 type policyResource struct {
 	client *Client
@@ -166,7 +168,7 @@ func (r *policyResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 	policy, err := r.client.GetPolicy(ctx, state.ID.ValueString())
-	if isStatus(err, http.StatusNotFound) {
+	if isMissing(err, policyNotFound) {
 		resp.State.RemoveResource(ctx)
 		return
 	}
@@ -205,7 +207,7 @@ func (r *policyResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.client.DeletePolicy(ctx, state.ID.ValueString()); err != nil && !isStatus(err, http.StatusNotFound) {
+	if err := r.client.DeletePolicy(ctx, state.ID.ValueString()); err != nil && !isMissing(err, policyNotFound) {
 		resp.Diagnostics.AddError("Could not delete policy "+state.ID.ValueString(), err.Error())
 	}
 }

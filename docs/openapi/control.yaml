@@ -725,6 +725,9 @@ paths:
     get:
       tags: [Administration]
       summary: List Node Path RBAC policies
+      parameters:
+        - {name: q, in: query, required: false, schema: {type: string}, description: 'Case-insensitive substring of the name or description.'}
+        - {name: name, in: query, required: false, schema: {type: string}, description: 'Exact name; returns at most one policy and takes precedence over q.'}
       responses:
         '200': {$ref: '#/components/responses/JSONObject'}
     post:

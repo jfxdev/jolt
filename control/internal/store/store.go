@@ -1148,9 +1148,18 @@ func (s *Store) SearchPolicies(ctx context.Context, query string) ([]Policy, err
 }
 
 func (s *Store) GetPolicy(ctx context.Context, id string) (Policy, error) {
+	return s.getPolicy(ctx, `id`, id)
+}
+
+// GetPolicyByName finds the policy with exactly this name; names are unique.
+func (s *Store) GetPolicyByName(ctx context.Context, name string) (Policy, error) {
+	return s.getPolicy(ctx, `name`, name)
+}
+
+func (s *Store) getPolicy(ctx context.Context, column, value string) (Policy, error) {
 	var policy Policy
 	var createdAt, updatedAt string
-	err := s.db.QueryRowContext(ctx, `SELECT id,name,description,created_at,updated_at FROM policies WHERE id=?`, id).
+	err := s.db.QueryRowContext(ctx, `SELECT id,name,description,created_at,updated_at FROM policies WHERE `+column+`=?`, value).
 		Scan(&policy.ID, &policy.Name, &policy.Description, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return policy, ErrNotFound
@@ -1160,7 +1169,7 @@ func (s *Store) GetPolicy(ctx context.Context, id string) (Policy, error) {
 	}
 	policy.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	policy.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
-	policy.Rules, err = s.policyRules(ctx, id)
+	policy.Rules, err = s.policyRules(ctx, policy.ID)
 	return policy, err
 }
 

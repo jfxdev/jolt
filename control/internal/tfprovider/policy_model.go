@@ -68,8 +68,8 @@ func (m *policyModel) setPolicy(ctx context.Context, policy Policy) diag.Diagnos
 	m.ID = types.StringValue(policy.ID)
 	m.Name = types.StringValue(policy.Name)
 	m.Description = types.StringValue(policy.Description)
-	m.CreatedAt = types.StringValue(policy.CreatedAt.UTC().Format(time.RFC3339))
-	m.UpdatedAt = types.StringValue(policy.UpdatedAt.UTC().Format(time.RFC3339))
+	m.CreatedAt = types.StringValue(policy.CreatedAt.UTC().Format(time.RFC3339Nano))
+	m.UpdatedAt = types.StringValue(policy.UpdatedAt.UTC().Format(time.RFC3339Nano))
 	rules := make([]ruleModel, 0, len(policy.Rules))
 	for _, rule := range policy.Rules {
 		model := ruleModel{

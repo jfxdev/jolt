@@ -1698,6 +1698,21 @@ func (s *Server) listPolicies(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r, "list", "control-tower/policies") {
 		return
 	}
+	// name matches one policy exactly, so a lookup by name stays one row
+	// however many other policies contain it.
+	if name := r.URL.Query().Get("name"); name != "" {
+		items := []store.Policy{}
+		policy, err := s.store.GetPolicyByName(r.Context(), name)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			s.fail(w, r, err)
+			return
+		}
+		if err == nil {
+			items = append(items, policy)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+		return
+	}
 	policies, err := s.store.SearchPolicies(r.Context(), r.URL.Query().Get("q"))
 	if err != nil {
 		s.fail(w, r, err)

@@ -111,11 +111,11 @@ func (d *nodeDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 	config.Name = types.StringValue(node.Name)
 	config.Endpoint = types.StringValue(node.Endpoint)
 	config.State = types.StringValue(node.State)
-	config.CreatedAt = types.StringValue(node.CreatedAt.UTC().Format(time.RFC3339))
-	config.UpdatedAt = types.StringValue(node.UpdatedAt.UTC().Format(time.RFC3339))
+	config.CreatedAt = types.StringValue(node.CreatedAt.UTC().Format(time.RFC3339Nano))
+	config.UpdatedAt = types.StringValue(node.UpdatedAt.UTC().Format(time.RFC3339Nano))
 	config.LastSeenAt = types.StringNull()
 	if node.LastSeenAt != nil {
-		config.LastSeenAt = types.StringValue(node.LastSeenAt.UTC().Format(time.RFC3339))
+		config.LastSeenAt = types.StringValue(node.LastSeenAt.UTC().Format(time.RFC3339Nano))
 	}
 	config.Configuration = types.ObjectNull(nodeConfigurationAttrTypes)
 	if c := node.Configuration; c != nil {
