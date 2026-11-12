@@ -110,7 +110,10 @@ test("real HTTPS browser journey with two nodes", async ({ page, browser }) => {
   expect(cancelled.status()).toBe(201);
   expect((await page.request.delete(`${sourcePath}/uploads/${(await cancelled.json()).upload_id}`)).status()).toBe(204);
 
-  expect((await page.request.post(`${sourcePath}/directories`, { data: { path: folderName } })).status()).toBe(202);
+  // mkdir runs as a job: the folder exists only once the job completes.
+  const mkdir = await page.request.post(`${sourcePath}/directories`, { data: { path: folderName } });
+  expect(mkdir.status()).toBe(202);
+  await waitJob(page, nodeA, (await mkdir.json()).job_id);
   expect((await page.request.put(`${sourcePath}/content?path=${encodeURIComponent(`${folderName}/nested.txt`)}`, {
     data: `nested-${suffix}`, headers: { "Content-Type": "application/octet-stream" },
   })).status()).toBe(201);
