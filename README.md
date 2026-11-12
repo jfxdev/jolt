@@ -68,6 +68,55 @@ Two products, one boundary:
   `/metrics` endpoint behind its own token.
 - **Recovery** — offline consistent snapshots with integrity checks and SHA-256
   manifests, restore diagnostics, and emergency credential/admin recovery.
+- **MCP for AI agents** — `jolt-mcp` over STDIO or HTTP, where each agent uses
+  its own token and goes through the same policies, approvals and audit; see
+  [`docs/MCP.md`](docs/MCP.md).
+
+### How Jolt compares
+
+Jolt is not a replacement for a network share or a sync client. It fits when
+files live on several servers and people, automations or agents need scoped,
+audited access and large transfers that survive failures.
+
+| | **Jolt** | **SSH** (scp/sftp/rsync) | **Samba/SMB** | **Sync tools** (Syncthing, rclone, Nextcloud/Seafile) |
+|---|---|---|---|---|
+| Model | Central Control Tower + nodes with an API | Shell or file access to one host | Mounted network share | Continuous mirror or scheduled copy |
+| Host-to-host transfer | Direct node to node over mTLS, never through the Control Tower | Manual, one pair of hosts at a time | Goes through the client | Syncthing peer to peer; rclone through the machine running it |
+| Large transfer resume | Durable jobs, 16 MiB checkpoints, pause/resume/retry | Partial with rsync; none with scp | No | Syncthing by blocks; rclone partly |
+| Access control | Node Path RBAC per capability, groups, deny rules, temporary policies | OS user and permissions; broad host access | Share ACLs and OS permissions | Per folder or device; per user in Nextcloud |
+| Audit | Every decision, with identity and correlation id | sshd logs, no per-file detail | Limited (vfs modules) | Nextcloud yes; little elsewhere |
+| Destructive actions | Plan before recursive folder deletes and folder moves with [signed local jobs](docs/OPERATIONS.md) (`CONTROL_TOWER_SIGNED_LOCAL_JOBS`, off by default), optional human approval, trash with restore on mounts with `trash` enabled | Immediate `rm -rf` | Optional recycle bin | Varies by tool |
+| Automation and agent credentials | Service accounts with their own limited tokens; MCP with a token per agent | SSH keys, usually full access | Username and password | App tokens (Nextcloud) |
+| Public links | Password, expiry, download budget, revocable | No | No | Nextcloud/Seafile |
+| Mount as a drive | **No** | sshfs | **Yes, native** | Through WebDAV or clients |
+| Continuous two-way sync | **No**, transfers run on demand | No (cron + rsync) | No | **Yes** |
+| Maturity | Release candidate, not yet approved for production ([`docs/RELEASE_V1.md`](docs/RELEASE_V1.md)) | Decades | Decades | Mature |
+
+Where Jolt is stronger:
+
+- **A fleet, not a host:** one place for the files of every node, and copies or
+  moves go directly between nodes.
+- **Least privilege:** a Jolt token grants specific paths and capabilities, not
+  a shell, so it is safe to hand to automations, third parties and AI agents.
+- **Transfers that survive failure:** checkpoints, resume, optional SHA-256,
+  bandwidth limits per job and node, and explicit conflict policies.
+- **A trail and guard rails:** per-identity audit, previews of destructive
+  operations, approvals and a per-mount trash bin, built in rather than
+  assembled.
+- **Optional managed PKI:** with `tls_mode: managed`, nodes enroll with
+  one-time tokens and get certificates that the Control Tower issues and
+  rotates; no `authorized_keys` to manage. The default `manual` mode uses
+  certificates the operator supplies ([`docs/NODE_YAML.md`](docs/NODE_YAML.md)).
+
+Where it is weaker: it does not mount as a drive, so apps that need a local
+path still need SMB, NFS or sshfs; it does not keep folders mirrored the way
+Syncthing does; it offers no collaboration suite like Nextcloud or Seafile; it
+does not talk to cloud storage like rclone; it runs a node per host plus the
+Control Tower, where SSH is already installed; and it is younger than all of
+them.
+
+They combine well: Samba for everyday desktop access, Jolt to move data between
+servers and to give automations and agents controlled access.
 
 ### Tech stack
 

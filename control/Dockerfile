@@ -6,7 +6,7 @@ RUN npm ci
 COPY frontend ./
 RUN npm run build
 
-FROM golang:1.26.10-alpine AS backend
+FROM golang:1.26.11-alpine AS backend
 RUN apk add --no-cache build-base
 WORKDIR /src
 COPY go.mod go.sum* ./
@@ -37,7 +37,7 @@ COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
 ENV CONTROL_TOWER_DATA_DIR=/var/lib/jolt-control
 ENV CONTROL_TOWER_STATIC_DIR=/opt/jolt-control/frontend
-EXPOSE 8090 8091
+EXPOSE 8090 8091 8092
 VOLUME ["/var/lib/jolt-control"]
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["/usr/local/bin/jolt-control"]

@@ -98,6 +98,59 @@ services:
       retries: 3
       start_period: 15s
 
+  # MCP over HTTP, from the Control Tower image. It holds no credential: each
+  # agent sends its own token, which the Control Tower checks on every call.
+  # Bearer tokens cross this port in plain text unless TLS is set: widen
+  # MCP_HTTP_BIND only behind a TLS proxy, or with JOLT_MCP_TLS_CERT_FILE and
+  # JOLT_MCP_TLS_KEY_FILE mounted by a compose override (docs/MCP.md).
+  jolt-mcp:
+    image: ${JOLT_CONTROL_IMAGE:?Set JOLT_CONTROL_IMAGE to a release tag or digest}
+    restart: unless-stopped
+    init: true
+    depends_on:
+      jolt-control:
+        condition: service_healthy
+    entrypoint: ["/usr/local/bin/jolt-mcp"]
+    command: ["serve"]
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      JOLT_MCP_HTTP_ADDRESS: :8092
+      # Plain HTTP stays on the compose network. With
+      # CONTROL_TOWER_TLS_MODE=managed, use https://jolt-control:8090, set
+      # JOLT_MCP_INSECURE_CONTROL_URL=false and mount the root read-only as
+      # JOLT_MCP_CA_FILE through a compose override (docs/MCP.md).
+      JOLT_MCP_CONTROL_URL: ${JOLT_MCP_CONTROL_URL:-http://jolt-control:8090}
+      JOLT_MCP_INSECURE_CONTROL_URL: ${JOLT_MCP_INSECURE_CONTROL_URL:-true}
+      JOLT_MCP_TOOLSETS: ${JOLT_MCP_TOOLSETS:-files,inspect,files_write,jobs}
+      JOLT_MCP_READ_ONLY: ${JOLT_MCP_READ_ONLY:-false}
+      JOLT_MCP_ALLOWED_ORIGINS: ${JOLT_MCP_ALLOWED_ORIGINS:-}
+      # Container paths. Mount the files read-only, readable by PUID, through a
+      # compose override (docs/MCP.md, "Compose com TLS e CA"). With TLS, set
+      # MCP_HEALTHCHECK_URL=https://127.0.0.1:8092/health.
+      JOLT_MCP_TLS_CERT_FILE: ${JOLT_MCP_TLS_CERT_FILE:-}
+      JOLT_MCP_TLS_KEY_FILE: ${JOLT_MCP_TLS_KEY_FILE:-}
+      JOLT_MCP_CA_FILE: ${JOLT_MCP_CA_FILE:-}
+      MCP_HEALTHCHECK_URL: ${MCP_HEALTHCHECK_URL:-http://127.0.0.1:8092/health}
+    ports:
+      - "${MCP_HTTP_BIND:-127.0.0.1}:${MCP_HTTP_PORT:-8092}:8092"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    deploy:
+      resources:
+        limits:
+          pids: 128
+          cpus: "${MCP_CPU_LIMIT:-1}"
+          memory: ${MCP_MEMORY_LIMIT:-256m}
+    healthcheck:
+      # --no-check-certificate allows a private CA for this loopback liveness probe.
+      test: ["CMD-SHELL", "wget --no-check-certificate -qO- \"$${MCP_HEALTHCHECK_URL:-http://127.0.0.1:8092/health}\" >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
 volumes:
   node-data:
   node-keys:
