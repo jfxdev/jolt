@@ -39,28 +39,71 @@ O binário já está na imagem do Control Tower. Os arquivos `docker-compose.yml
 | `JOLT_MCP_TOOLSETS` | `files,inspect,files_write,jobs` | Toolsets oferecidos, separados por vírgula. Nomes desconhecidos impedem a inicialização. |
 | `JOLT_MCP_READ_ONLY` | `false` | Remove toda ferramenta que altera estado, em qualquer toolset. |
 | `JOLT_MCP_INSECURE_CONTROL_URL` | `false` | Aceita `http://` fora do loopback para o Control Tower. Só para a rede privada do compose. |
-| `JOLT_MCP_ALLOWED_ORIGINS` | vazio | Origens de navegador permitidas (`https://app.example.com`, separadas por vírgula). Requisições com outro `Origin` recebem `403`; clientes sem `Origin` não são afetados. |
+| `JOLT_MCP_ALLOWED_ORIGINS` | vazio | Origens de navegador permitidas (`https://app.example.com`, separadas por vírgula). Elas recebem resposta ao preflight CORS (`OPTIONS`, sem token) e `Access-Control-Allow-Origin` nas respostas. Requisições com outro `Origin` recebem `403`; clientes sem `Origin` não são afetados. |
 | `JOLT_MCP_TLS_CERT_FILE`, `JOLT_MCP_TLS_KEY_FILE` | vazio | Servem HTTPS diretamente. Sem eles o serviço avisa no início que os tokens trafegam em texto claro. |
 | `JOLT_MCP_CA_FILE` | — | Raízes confiadas para o Control Tower (ver abaixo). |
+| `MCP_HEALTHCHECK_URL` | `http://127.0.0.1:8092/health` | Só no compose: URL da sonda de saúde. Com TLS direto, use `https://127.0.0.1:8092/health`. |
 
-Por padrão o Control Tower do compose escuta HTTP simples na rede interna, por isso o serviço vem com `JOLT_MCP_INSECURE_CONTROL_URL=true`. Com `CONTROL_TOWER_TLS_MODE=managed`, use `https://jolt-control:8090`, remova essa variável e monte a raiz em `JOLT_MCP_CA_FILE`. Fora do loopback, publique a porta 8092 apenas atrás de um proxy TLS ou com os arquivos de TLS configurados.
+Por padrão o Control Tower do compose escuta HTTP simples na rede interna, por isso o serviço vem com `JOLT_MCP_INSECURE_CONTROL_URL=true`. Com `CONTROL_TOWER_TLS_MODE=managed`, use `https://jolt-control:8090`, defina `JOLT_MCP_INSECURE_CONTROL_URL=false` e monte a raiz em `JOLT_MCP_CA_FILE` (ver abaixo). **Fora do loopback, publique a porta 8092 apenas atrás de um proxy TLS ou com TLS direto**: sem isso os tokens bearer trafegam em texto claro.
 
 Cada chamada de ferramenta gera uma linha JSON em stderr com o nome da ferramenta, o resultado, a duração e o `subject` (um hash do token, nunca o token).
 
-Para registrar no Claude Code:
+### Compose com TLS e CA
+
+Os compose repassam `JOLT_MCP_TLS_CERT_FILE`, `JOLT_MCP_TLS_KEY_FILE`, `JOLT_MCP_CA_FILE` e `MCP_HEALTHCHECK_URL` ao container, mas os valores são caminhos **dentro** do container: os arquivos precisam ser montados por um override. Monte-os somente leitura, legíveis por `PUID` e não graváveis por outros usuários (o `jolt-mcp` recusa um arquivo de CA que outros possam alterar). Por exemplo, em `docker-compose.override.yml` ao lado do compose:
+
+```yaml
+services:
+  jolt-mcp:
+    environment:
+      # TLS direto na porta 8092.
+      JOLT_MCP_TLS_CERT_FILE: /run/secrets/mcp_tls_cert
+      JOLT_MCP_TLS_KEY_FILE: /run/secrets/mcp_tls_key
+      MCP_HEALTHCHECK_URL: https://127.0.0.1:8092/health
+      # Control Tower com CONTROL_TOWER_TLS_MODE=managed.
+      JOLT_MCP_CONTROL_URL: https://jolt-control:8090
+      JOLT_MCP_INSECURE_CONTROL_URL: "false"
+      JOLT_MCP_CA_FILE: /run/secrets/jolt_ca.pem
+    volumes:
+      - ./secrets/mcp_tls_cert.pem:/run/secrets/mcp_tls_cert:ro
+      - ./secrets/mcp_tls_key.pem:/run/secrets/mcp_tls_key:ro
+      - ./secrets/jolt_ca.pem:/run/secrets/jolt_ca.pem:ro
+```
+
+Use só a parte de que precisa: TLS direto e CA do Control Tower são independentes. O `jolt_ca.pem` pode ser o arquivo gravado por `jolt-mcp trust` (ver abaixo). Com TLS direto, `MCP_HTTP_BIND` pode sair do loopback; sem ele, coloque um proxy TLS na frente.
+
+### Registrar no Claude Code
+
+Não passe o token na linha de comando (`--header "Authorization: Bearer $(cat ...)"`): ele fica visível nos argumentos do processo e gravado fixo na configuração do cliente, e a rotação do arquivo não o atualiza. Use um `headersHelper`, que o Claude Code executa a cada conexão e que lê o arquivo protegido do token:
 
 ```sh
-claude mcp add --transport http jolt http://127.0.0.1:8092/mcp \
-  --header "Authorization: Bearer $(cat /run/secrets/jolt-agent-token)"
+#!/bin/sh
+# /usr/local/bin/jolt-mcp-headers: imprime o cabeçalho com o token atual.
+IFS= read -r token < /run/secrets/jolt-agent-token
+printf '{"Authorization":"Bearer %s"}\n' "$token"
 ```
+
+```json
+{
+  "mcpServers": {
+    "jolt": {
+      "type": "http",
+      "url": "http://127.0.0.1:8092/mcp",
+      "headersHelper": "/usr/local/bin/jolt-mcp-headers"
+    }
+  }
+}
+```
+
+`read` e `printf` são embutidos do shell, então o token não aparece em argumentos de processo. O helper roda de novo a cada conexão e após um `401`/`403`, então substituir o arquivo do token basta para rotacioná-lo.
 
 ## Ferramentas
 
 Ferramentas com IDs (`node_id`, `mount_id`, `job_id`...) recusam `/`, `\`, `?`, `#`, `%` e espaços; `path` é sempre relativo ao mount e recusa `..`. Os paths canônicos retornados pelo servidor devem ser usados em chamadas seguintes. Argumentos desconhecidos são recusados antes de chegar ao Control Tower.
 
-Respostas JSON têm limite de 2 MiB e texto de 1 MiB. Respostas que contenham a credencial em uso são recusadas. Quando o Control Tower recusa uma chamada, o erro traz o status HTTP, o `code`, a mensagem e o `correlation_id`; use este último em `search_audit`. Uma operação que espera aprovação retorna `pending_operation_id`, que se acompanha com `get_pending_operation`. Toda chamada que altera estado envia um `Idempotency-Key` gerado; passe `idempotency_key` (o mesmo valor ao repetir a chamada) para que ela seja aplicada uma vez só.
+Respostas JSON têm limite de 2 MiB e texto de 1 MiB. Respostas que contenham a credencial em uso são recusadas. Quando o Control Tower recusa uma chamada, o erro traz o status HTTP, o `code`, a mensagem e o `correlation_id`; use este último em `search_audit`. Uma operação que espera aprovação retorna `pending_operation_id`, que se acompanha com `get_pending_operation`. Toda chamada que altera estado (inclusive `write_text`) envia um `Idempotency-Key` gerado; passe `idempotency_key` (o mesmo valor ao repetir a chamada) para que ela seja aplicada uma vez só.
 
-As anotações MCP indicam ao cliente quais ferramentas pedem confirmação: leitura tem `readOnlyHint`, escrita reversível tem `destructiveHint: false`, e as destrutivas vão sem anotação, que pela especificação já significa destrutiva.
+As anotações MCP indicam ao cliente quais ferramentas pedem confirmação: leitura tem `readOnlyHint`, escrita só aditiva (`mkdir`, `restore_trash`, `pause`...) tem `destructiveHint: false`, e as destrutivas vão sem anotação, que pela especificação já significa destrutiva. Toda ferramenta que pode substituir dados existentes é destrutiva, como `write_text` (com `overwrite`) e `copy` (com `overwrite`, `checksum` ou `ask`).
 
 ### Custo em tokens
 
@@ -90,13 +133,13 @@ Todo agente paga pela lista de ferramentas em cada conversa, então ela é enxut
 
 ### `files_write` — alterar arquivos
 
-`mkdir`, `write_text` (UTF-8 até 1 MiB; recusa sobrescrever sem `overwrite`), `plan_copy` (prévia, não altera nada), `copy`, `move`, `delete` (`recursive` para pastas não vazias; vai para a lixeira quando ela está ativa), `restore_trash` e `purge_trash` (definitivo).
+`mkdir`, `write_text` (UTF-8 até 1 MiB; recusa sobrescrever sem `overwrite`), `plan_copy` (prévia, não altera nada), `copy` (`conflict_policy`: `skip`, `overwrite`, `rename`, `fail`, `checksum` ou `ask`; `ask` deixa cada conflito esperando `override_job_item` e é recusado com jobs assinados), `move`, `delete` (`recursive` para pastas não vazias; vai para a lixeira quando ela está ativa), `restore_trash` e `purge_trash` (definitivo).
 
 Para apagar ou mover uma árvore, quando o Control Tower exige (`plan_required`), use `plan_destructive`: ele devolve `plan_id`, `token` e quantos arquivos e bytes serão afetados. Mostre isso ao usuário e só então chame `confirm_destructive`; se a árvore mudar no meio, nada é alterado.
 
 ### `jobs` — jobs, transferências e aprovações
 
-`control_job` (`action`: `pause`, `resume`, `cancel`, `retry`), `override_job_item` (decide um conflito: `skip`, `overwrite`, `rename`, `fail`), `transfer_targets`, `plan_transfer` e `create_transfer` (cópia ou movimentação entre nodes; um move precisa do `move_plan` devolvido pelo plano) e `decide_pending_operation` (`action`: `approve`, `reject`).
+`control_job` (`action`: `pause`, `resume`, `cancel`, `retry`), `override_job_item` (decide um conflito: `skip`, `overwrite`, `rename`, `fail`), `transfer_targets`, `plan_transfer` e `create_transfer` (cópia ou movimentação entre nodes, com as mesmas `conflict_policy` de `copy`; um move precisa do `move_plan` devolvido pelo plano) e `decide_pending_operation` (`action`: `approve`, `reject`).
 
 ### `admin` — identidades, policies e frota (opt-in)
 
@@ -124,4 +167,4 @@ jolt-mcp trust http://HOST:8091 --fingerprint AB:CD:EF:...
 
 Numa troca de raiz do Control Tower, `jolt-mcp trust http://HOST:8091 --fingerprint <da raiz nova> --next` guarda a raiz nova (`/ca/next.pem`, que só existe durante a troca) ao lado da atual, antes da promoção. A raiz antiga só sai do arquivo quando expira; depois da aposentadoria dela, rode `trust --replace` com a raiz nova para limpá-lo.
 
-Em container, monte o arquivo da raiz somente para leitura e aponte `JOLT_MCP_CA_FILE` para ele. Isso vale para os dois transportes.
+Em container, monte o arquivo da raiz somente para leitura e aponte `JOLT_MCP_CA_FILE` para ele (no compose, com o override de [Compose com TLS e CA](#compose-com-tls-e-ca)). Isso vale para os dois transportes.

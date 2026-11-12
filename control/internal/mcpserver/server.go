@@ -179,6 +179,8 @@ func (s *Server) MCP() *mcp.Server {
 }
 
 // toolKind sets a tool's annotations and whether a read-only server offers it.
+// kindWrite is for additive changes only: a tool that can replace or remove
+// existing data is kindDestructive, so clients warn before calling it.
 type toolKind int
 
 const (

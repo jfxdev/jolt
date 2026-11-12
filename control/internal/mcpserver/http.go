@@ -23,8 +23,9 @@ const credentialKey = "jolt_credential"
 // HTTPOptions configures the HTTP transport.
 type HTTPOptions struct {
 	// AllowedOrigins are browser origins allowed to call the server, such as
-	// https://agents.example.com. Requests from other origins are refused;
-	// requests without an Origin header (non-browser clients) are accepted.
+	// https://agents.example.com. They get CORS preflight answers and headers;
+	// requests from other origins are refused; requests without an Origin
+	// header (non-browser clients) are accepted.
 	AllowedOrigins []string
 }
 
@@ -49,7 +50,7 @@ func (s *Server) Handler(options HTTPOptions) (http.Handler, error) {
 	})
 	bearer := auth.RequireBearerToken(verifyBearer, &auth.RequireBearerTokenOptions{AllowMissingExpiration: true})
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", rejectForeignOrigins(options.AllowedOrigins, protection.Handler(bearer(streamable))))
+	mux.Handle("/mcp", rejectForeignOrigins(options.AllowedOrigins, allowCORS(protection.Handler(bearer(streamable)))))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
@@ -67,6 +68,34 @@ func rejectForeignOrigins(allowed []string, next http.Handler) http.Handler {
 			http.Error(w, "origin not allowed", http.StatusForbidden)
 			return
 		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// allowCORS lets an allowed browser origin use the server: it answers the
+// preflight itself, since the browser sends it without the Authorization
+// header the bearer check needs, and marks the responses readable by that
+// origin. It runs after rejectForeignOrigins, so any Origin here is allowed.
+func allowCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		header := w.Header()
+		header.Add("Vary", "Origin")
+		header.Set("Access-Control-Allow-Origin", origin)
+		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+			header.Add("Vary", "Access-Control-Request-Method")
+			header.Add("Vary", "Access-Control-Request-Headers")
+			header.Set("Access-Control-Allow-Methods", "GET, POST, DELETE")
+			header.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Mcp-Protocol-Version, Mcp-Session-Id, Last-Event-ID")
+			header.Set("Access-Control-Max-Age", "600")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		header.Set("Access-Control-Expose-Headers", "WWW-Authenticate, Mcp-Session-Id")
 		next.ServeHTTP(w, r)
 	})
 }

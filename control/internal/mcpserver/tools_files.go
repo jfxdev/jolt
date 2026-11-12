@@ -46,8 +46,9 @@ type searchArgs struct {
 
 type writeTextArgs struct {
 	fileArgs
-	Content   string `json:"content"`
-	Overwrite bool   `json:"overwrite,omitempty"`
+	Content        string `json:"content"`
+	Overwrite      bool   `json:"overwrite,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 func (s *Server) fileTools() []catalogEntry {
@@ -67,8 +68,9 @@ func (s *Server) fileTools() []catalogEntry {
 		{ToolsetFiles, kindRead, func(server *mcp.Server) {
 			mcp.AddTool(server, tool("read_text", "Read a UTF-8 text file, up to 1 MiB.", kindRead), s.readText)
 		}},
-		{ToolsetFilesWrite, kindWrite, func(server *mcp.Server) {
-			mcp.AddTool(server, tool("write_text", "Write a UTF-8 text file, up to 1 MiB; an existing file needs overwrite.", kindWrite), s.writeText)
+		// Destructive: with overwrite it replaces an existing file.
+		{ToolsetFilesWrite, kindDestructive, func(server *mcp.Server) {
+			mcp.AddTool(server, tool("write_text", "Write a UTF-8 text file, up to 1 MiB; an existing file needs overwrite.", kindDestructive), s.writeText)
 		}},
 	}
 }
@@ -109,10 +111,13 @@ func (s *Server) writeText(ctx context.Context, req *mcp.CallToolRequest, args w
 	if !identifier(args.NodeID) || !identifier(args.MountID) || !relativePath(args.Path) {
 		return nil, nil, errors.New("invalid node, mount or path")
 	}
+	if args.IdempotencyKey != "" && !identifier(args.IdempotencyKey) {
+		return nil, nil, errors.New("invalid idempotency_key")
+	}
 	query := url.Values{"path": {args.Path}, "overwrite": {strconv.FormatBool(args.Overwrite)}}
 	return s.run(ctx, req, request{
 		method: http.MethodPut, path: mountFiles(args.NodeID, args.MountID) + "/content", query: query,
-		raw: []byte(args.Content), contentType: "application/octet-stream",
+		raw: []byte(args.Content), contentType: "application/octet-stream", idempotencyKey: args.IdempotencyKey,
 	})
 }
 

@@ -119,6 +119,41 @@ func TestHTTPPassesEachCallersTokenToTheControlTower(t *testing.T) {
 		t.Fatalf("oversize body: HTTP %d", status)
 	}
 
+	preflight := func(origin string) *http.Response {
+		request, _ := http.NewRequest(http.MethodOptions, front.URL+"/mcp", nil)
+		request.Header.Set("Origin", origin)
+		request.Header.Set("Access-Control-Request-Method", "POST")
+		request.Header.Set("Access-Control-Request-Headers", "authorization, content-type, mcp-protocol-version")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		return response
+	}
+	allowed := preflight("https://agents.example.com")
+	if allowed.StatusCode != http.StatusNoContent || allowed.Header.Get("Access-Control-Allow-Origin") != "https://agents.example.com" ||
+		!strings.Contains(allowed.Header.Get("Access-Control-Allow-Headers"), "Authorization") ||
+		!strings.Contains(allowed.Header.Get("Access-Control-Allow-Methods"), "POST") {
+		t.Fatalf("allowed preflight: HTTP %d %v", allowed.StatusCode, allowed.Header)
+	}
+	if foreign := preflight("https://evil.example.com"); foreign.StatusCode != http.StatusForbidden || foreign.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("foreign preflight: HTTP %d %v", foreign.StatusCode, foreign.Header)
+	}
+	request, _ := http.NewRequest(http.MethodPost, front.URL+"/mcp", strings.NewReader(initialize))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	request.Header.Set("Origin", "https://agents.example.com")
+	unauthorized, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthorized.Body.Close()
+	if unauthorized.StatusCode != http.StatusUnauthorized || unauthorized.Header.Get("Access-Control-Allow-Origin") != "https://agents.example.com" ||
+		!strings.Contains(unauthorized.Header.Get("Access-Control-Expose-Headers"), "WWW-Authenticate") {
+		t.Fatalf("allowed origin without token: HTTP %d %v", unauthorized.StatusCode, unauthorized.Header)
+	}
+
 	response, err := http.Get(front.URL + "/health")
 	if err != nil || response.StatusCode != http.StatusOK {
 		t.Fatalf("health: %v %v", response, err)

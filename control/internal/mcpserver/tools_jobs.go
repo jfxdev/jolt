@@ -2,7 +2,9 @@ package mcpserver
 
 import "net/http"
 
-var conflictPolicies = []string{"skip", "overwrite", "rename", "fail", "checksum"}
+// conflictPolicies for new copies and transfers. ask leaves each conflict
+// waiting for override_job_item; signed jobs refuse it.
+var conflictPolicies = []string{"skip", "overwrite", "rename", "fail", "ask", "checksum"}
 
 func fileWriteRoutes() []routeTool {
 	route := func(name, description string, kind toolKind, method, path string, params ...param) routeTool {
@@ -20,7 +22,8 @@ func fileWriteRoutes() []routeTool {
 			param{name: "path", typ: typePath, in: inBody, required: true}),
 		route("plan_copy", "Preview a copy within a mount; changes nothing.", kindRead, http.MethodPost, files+"/copy/plan",
 			nodeParam, mountParam, source, destination, conflict, checksum),
-		route("copy", "Copy within a mount.", kindWrite, http.MethodPost, files+"/copy", nodeParam, mountParam, source, destination, conflict, checksum),
+		// Destructive: overwrite, checksum and ask can replace files.
+		route("copy", "Copy within a mount.", kindDestructive, http.MethodPost, files+"/copy", nodeParam, mountParam, source, destination, conflict, checksum),
 		route("move", "Move or rename within a mount.", kindDestructive, http.MethodPost, files+"/move", nodeParam, mountParam, source, destination, overwrite),
 		route("delete", "Delete; goes to trash when enabled. recursive for non-empty directories.", kindDestructive, http.MethodDelete, files, nodeParam, mountParam,
 			param{name: "path", typ: typePath, in: inQuery, required: true},

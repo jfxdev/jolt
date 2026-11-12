@@ -85,7 +85,7 @@ audited access and large transfers that survive failures.
 | Large transfer resume | Durable jobs, 16 MiB checkpoints, pause/resume/retry | Partial with rsync; none with scp | No | Syncthing by blocks; rclone partly |
 | Access control | Node Path RBAC per capability, groups, deny rules, temporary policies | OS user and permissions; broad host access | Share ACLs and OS permissions | Per folder or device; per user in Nextcloud |
 | Audit | Every decision, with identity and correlation id | sshd logs, no per-file detail | Limited (vfs modules) | Nextcloud yes; little elsewhere |
-| Destructive actions | Plan before deleting or moving trees, optional human approval, trash with restore | Immediate `rm -rf` | Optional recycle bin | Varies by tool |
+| Destructive actions | Plan before recursive folder deletes and folder moves with [signed local jobs](docs/OPERATIONS.md) (`CONTROL_TOWER_SIGNED_LOCAL_JOBS`, off by default), optional human approval, trash with restore on mounts with `trash` enabled | Immediate `rm -rf` | Optional recycle bin | Varies by tool |
 | Automation and agent credentials | Service accounts with their own limited tokens; MCP with a token per agent | SSH keys, usually full access | Username and password | App tokens (Nextcloud) |
 | Public links | Password, expiry, download budget, revocable | No | No | Nextcloud/Seafile |
 | Mount as a drive | **No** | sshfs | **Yes, native** | Through WebDAV or clients |
@@ -101,9 +101,12 @@ Where Jolt is stronger:
 - **Transfers that survive failure:** checkpoints, resume, optional SHA-256,
   bandwidth limits per job and node, and explicit conflict policies.
 - **A trail and guard rails:** per-identity audit, previews of destructive
-  operations, approvals and a trash bin, built in rather than assembled.
-- **Its own PKI:** nodes enroll with one-time tokens and get certificates that
-  the Control Tower issues and rotates; no `authorized_keys` to manage.
+  operations, approvals and a per-mount trash bin, built in rather than
+  assembled.
+- **Optional managed PKI:** with `tls_mode: managed`, nodes enroll with
+  one-time tokens and get certificates that the Control Tower issues and
+  rotates; no `authorized_keys` to manage. The default `manual` mode uses
+  certificates the operator supplies ([`docs/NODE_YAML.md`](docs/NODE_YAML.md)).
 
 Where it is weaker: it does not mount as a drive, so apps that need a local
 path still need SMB, NFS or sshfs; it does not keep folders mirrored the way

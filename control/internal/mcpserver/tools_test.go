@@ -120,7 +120,7 @@ func TestToolsetsReadOnlyAndAnnotations(t *testing.T) {
 	if len(tools) != registered {
 		t.Fatalf("tool names are not unique: %d registered, %d listed", registered, len(tools))
 	}
-	for name, want := range map[string]string{"whoami": "read", "diagnose_node": "read", "mkdir": "write", "delete": "destructive", "purge_trash": "destructive", "control_job": "destructive", "manage_users": "destructive", "manage_policies": "destructive"} {
+	for name, want := range map[string]string{"whoami": "read", "diagnose_node": "read", "mkdir": "write", "write_text": "destructive", "copy": "destructive", "delete": "destructive", "purge_trash": "destructive", "control_job": "destructive", "manage_users": "destructive", "manage_policies": "destructive"} {
 		tool, ok := tools[name]
 		if !ok {
 			t.Fatalf("missing %s", name)
@@ -189,6 +189,8 @@ func TestRouteToolsShapeRequests(t *testing.T) {
 			captured{Method: "POST", Path: "/api/v1/nodes/n1/mounts/m1/files/directories", Body: `{"path":"new"}`, ContentType: "application/json"}},
 		{"delete", map[string]any{"node_id": "n1", "mount_id": "m1", "path": "old", "recursive": true, "idempotency_key": "retry-1"},
 			captured{Method: "DELETE", Path: "/api/v1/nodes/n1/mounts/m1/files", Query: "path=old&recursive=true", Idempotency: "retry-1"}},
+		{"copy", map[string]any{"node_id": "n1", "mount_id": "m1", "source_path": "a", "destination_path": "b", "conflict_policy": "ask"},
+			captured{Method: "POST", Path: "/api/v1/nodes/n1/mounts/m1/files/copy", Body: `{"conflict_policy":"ask","destination_path":"b","source_path":"a"}`, ContentType: "application/json"}},
 		{"confirm_destructive", map[string]any{"node_id": "n1", "mount_id": "m1", "plan_id": "p1", "token": "t"},
 			captured{Method: "POST", Path: "/api/v1/nodes/n1/mounts/m1/files/destructive-plans/p1/confirm", Body: `{"token":"t"}`, ContentType: "application/json"}},
 		{"control_job", map[string]any{"action": "pause", "node_id": "n1", "job_id": "j1"},
@@ -275,6 +277,24 @@ func TestWriteTextSendsRawContent(t *testing.T) {
 	}})
 	if err == nil && !result.IsError {
 		t.Fatal("oversize content accepted")
+	}
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{Name: "write_text", Arguments: map[string]any{
+		"node_id": "n1", "mount_id": "m1", "path": "a.txt", "content": "x", "idempotency_key": "retry-1",
+	}})
+	if err != nil || result.IsError {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if got := fake.take()[0]; got.Idempotency != "retry-1" {
+		t.Fatalf("Idempotency-Key %q, want the caller's", got.Idempotency)
+	}
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{Name: "write_text", Arguments: map[string]any{
+		"node_id": "n1", "mount_id": "m1", "path": "a.txt", "content": "x", "idempotency_key": "bad key",
+	}})
+	if err == nil && !result.IsError {
+		t.Fatal("invalid idempotency_key accepted")
+	}
+	if requests := fake.take(); len(requests) != 0 {
+		t.Fatalf("invalid arguments reached the Control Tower: %+v", requests)
 	}
 }
 
