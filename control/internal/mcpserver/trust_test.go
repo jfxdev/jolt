@@ -621,6 +621,17 @@ func writeInPlace(t *testing.T, filename string, data []byte, modified time.Time
 	}
 }
 
+// padTo prefixes data with a text line, which PEM skips, so it has size bytes.
+// The line must end in a newline: PEM finds -----BEGIN only at the start of
+// the data or of a line.
+func padTo(data []byte, size int) []byte {
+	n := size - len(data)
+	if n <= 0 {
+		return data
+	}
+	return append([]byte(strings.Repeat("#", n-1)+"\n"), data...)
+}
+
 func TestServerNoticesAnInPlaceRewriteByTimeOrBySize(t *testing.T) {
 	a, b := validRoot(t, "Jolt A"), validRoot(t, "Jolt B")
 	server := secureServer(t, b, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, `{}`) }))
@@ -631,24 +642,30 @@ func TestServerNoticesAnInPlaceRewriteByTimeOrBySize(t *testing.T) {
 		return err
 	}
 	stamp := time.Now().Add(-time.Hour).Truncate(time.Second)
-	// Different time, same size: pad the shorter store with leading text, which PEM skips.
+	// Different time, same size: pad both stores to one size with a leading
+	// text line, which PEM skips. Both are always padded, so the padding is
+	// exercised on every run, not only when the two encodings differ in length.
 	t.Run("time", func(t *testing.T) {
 		pemA, pemB := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: a.cert.Raw}), b.pem
-		for len(pemA) < len(pemB) {
-			pemA = append([]byte("#"), pemA...)
-		}
-		for len(pemB) < len(pemA) {
-			pemB = append([]byte("#"), pemB...)
-		}
+		size := max(len(pemA), len(pemB)) + 2
+		pemA, pemB = padTo(pemA, size), padTo(pemB, size)
 		store := caPath(t)
 		_ = os.MkdirAll(filepath.Dir(store), 0o700)
 		_ = os.WriteFile(store, pemA, 0o600)
 		_ = os.Chtimes(store, stamp, stamp)
+		// A refusal below must come from root A not vouching for B, not from
+		// a store that cannot be read.
+		if _, err := LoadRoots(store); err != nil {
+			t.Fatalf("padded store A does not load: %v", err)
+		}
 		mcpServer, _ := New(server.URL, credential, WithCAFile(store))
 		if call(mcpServer) == nil {
 			t.Fatal("root A vouched for a certificate from root B")
 		}
 		writeInPlace(t, store, pemB, stamp.Add(time.Minute))
+		if _, err := LoadRoots(store); err != nil {
+			t.Fatalf("padded store B does not load: %v", err)
+		}
 		if err := call(mcpServer); err != nil {
 			t.Fatalf("the rewrite was not noticed: %v", err)
 		}
