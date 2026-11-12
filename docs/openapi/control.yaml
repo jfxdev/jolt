@@ -741,6 +741,12 @@ paths:
         '409': {$ref: '#/components/responses/Error'}
   /api/v1/control-tower/policies/{policyID}:
     parameters: [{$ref: '#/components/parameters/PolicyID'}]
+    get:
+      tags: [Administration]
+      summary: Read an RBAC policy
+      responses:
+        '200': {$ref: '#/components/responses/JSONObject'}
+        '404': {$ref: '#/components/responses/Error'}
     patch:
       tags: [Administration]
       summary: Update an RBAC policy
