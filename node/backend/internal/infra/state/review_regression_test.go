@@ -370,7 +370,7 @@ func TestCompactionReusesImmutableHistoryAndRetainsAudit(t *testing.T) {
 }
 
 func TestEffectiveGrantReasonsAfterReleasingStoreLock(t *testing.T) {
-	for _, reason := range []string{"", "disabled", "revoked", "peer_untrusted", "mount_unavailable", "mount_read_only", "peer_role_incompatible", "path_unavailable"} {
+	for _, reason := range []string{"", "disabled", "revoked", "peer_untrusted", "mount_unavailable", "mount_read_only", "mount_locked", "peer_role_incompatible", "path_unavailable"} {
 		t.Run(reason, func(t *testing.T) {
 			s, _ := openTest(t)
 			ctx := context.Background()
@@ -392,6 +392,8 @@ func TestEffectiveGrantReasonsAfterReleasingStoreLock(t *testing.T) {
 				mount.Mode = "read_only"
 				grant.Direction = "receive"
 				grant.Permissions.Write = true
+			case "mount_locked":
+				mount.Locked = true
 			case "peer_role_incompatible":
 				peer.TransferMode = "one_sided"
 				peer.LocalRole = "receiver"

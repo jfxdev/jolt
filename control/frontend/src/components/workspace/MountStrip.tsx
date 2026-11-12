@@ -55,8 +55,8 @@ export function MountStrip() {
                 </div>
                 <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
                   <span className="flex items-center gap-1">
-                    {mount.mode === "read_write" ? <PencilLine className="h-3.5 w-3.5" /> : <LockKeyhole className="h-3.5 w-3.5" />}
-                    {mount.mode === "read_write" ? "Leitura e escrita" : "Somente leitura"}
+                    {mount.locked ? <LockKeyhole className="h-3.5 w-3.5" /> : mount.mode === "read_write" ? <PencilLine className="h-3.5 w-3.5" /> : <LockKeyhole className="h-3.5 w-3.5" />}
+                    {mount.locked ? "Somente metadados" : mount.mode === "read_write" ? "Leitura e escrita" : "Somente leitura"}
                   </span>
                   <span className="flex items-center gap-1 font-medium text-foreground">
                     Abrir <FolderOpen className="h-3.5 w-3.5" />

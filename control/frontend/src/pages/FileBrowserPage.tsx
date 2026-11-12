@@ -259,6 +259,10 @@ export default function FileBrowserPage() {
     if (entry.type === "directory") {
       await loadDirectory(entry.path);
     } else {
+      if (mount?.locked) {
+        toast.error("Este mount está bloqueado: apenas os metadados estão disponíveis.");
+        return;
+      }
       if (!hasPermission(filePolicyPath, "read")) {
         toast.error("A policy atual não permite baixar arquivos desta pasta.");
         return;
@@ -478,9 +482,12 @@ export default function FileBrowserPage() {
     return <p className="text-sm text-muted-foreground">Carregando mount…</p>;
   }
 
-  const writable = mount.mode === "read_write";
+  // A locked mount only shows metadata: it offers no download, preview, editor,
+  // zip, upload, copy, move, delete or public link, whatever the role allows.
+  const locked = mount.locked === true;
+  const writable = !locked && mount.mode === "read_write";
   const canCreate = writable && hasPermission(filePolicyPath, "create");
-  const canRead = hasPermission(filePolicyPath, "read");
+  const canRead = !locked && hasPermission(filePolicyPath, "read");
   const canTransferCopy = canRead;
   const canTransferMove =
     writable && canTransferCopy && hasPermission(filePolicyPath, "delete");
@@ -628,6 +635,7 @@ export default function FileBrowserPage() {
           emptyMessage={diskUsageMode ? (diskUsage ? (usageFilter ? "Nenhum resultado." : undefined) : loading ? "Analisando uso de disco…" : "Não foi possível analisar o uso de disco desta pasta.") : undefined}
           loading={loading}
           writable={writable}
+          locked={locked}
           filePolicyPath={filePolicyPath}
           onDownload={downloadEntry}
           onPreview={previewEntry}

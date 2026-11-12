@@ -59,6 +59,35 @@ still use disk until purged, and a
 hard-linked file frees no space until then. The trash is not a backup: host-side access
 is unaffected, and an entry purged or past its retention is gone.
 
+Optional `locked: true` turns a mount into a metadata-only index. The node still
+lists it and reports names, types, sizes and modification times, answers
+`metadata`, name searches and disk usage, and publishes the mount itself. It
+refuses everything else with `403 mount_locked`, for every caller: downloads,
+previews, archives (and their plans), checksums, uploads, copy, move, rename,
+delete, new folders and resumable uploads, jobs of any type, trash restores, and
+transfers to or from peers. Jobs are refused when they are created, not after they
+fail. Administrators, signed leases and public links get no exception, because the
+node itself refuses; the Control Tower and its interface only mirror that. `locked`
+wins over `mode`, so a locked `read_write` mount is still metadata-only, and it
+cannot enable `trash`. Transfer grants that point at a locked mount stay in the
+file but are reported inactive with `inactive_reason: mount_locked`; remove the
+lock for them to take effect. Omitted means false, and an unlocked node keeps the
+same configuration revision. The node advertises the `locked_mounts_v1`
+capability, and an older node refuses to start with the field because it rejects
+unknown keys. Like `hidden_patterns`, this guards access through Jolt only:
+anyone with host access to `local_path` still reads the files.
+
+```yaml
+mounts:
+  - id: archive
+    name: Archive index
+    local_path: /mnt/archive
+    mode: read_only
+    published: true
+    enabled: true
+    locked: true
+```
+
 Use explicit `enabled: true` and `published: true` when desired. Grants require
 `id`, `peer_node_id`, `mount_id`, a mount-relative `path`, `direction` and compatible
 `permissions`. Omitted `enabled`/`published`/permission booleans are false.

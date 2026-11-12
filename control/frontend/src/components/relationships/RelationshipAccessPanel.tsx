@@ -65,7 +65,7 @@ export function RelationshipAccessPanel({ node, otherName, peer, canListGrants, 
     setEditing(grant || null);
     setForm(grant ? grantValue(grant) : transferGrantAuthorization(
       peer.node_id,
-      selection?.mount.mount_id || mounts.find((mount) => mount.enabled !== false && (defaultDirection === "send" || mount.mode === "read_write"))?.mount_id || "",
+      selection?.mount.mount_id || mounts.find((mount) => mount.enabled !== false && !mount.locked && (defaultDirection === "send" || mount.mode === "read_write"))?.mount_id || "",
       selection ? transferSourceFolder(selection.paths) : "",
       defaultDirection,
       selection?.operation || "copy",
@@ -112,7 +112,7 @@ export function RelationshipAccessPanel({ node, otherName, peer, canListGrants, 
   const sourceAccess = selection && canListGrants && peer
     ? transferSourceAccess(grants, peer.node_id, selection.mount.mount_id, selection.paths, selection.operation)
     : undefined;
-  const eligibleMounts = mounts.filter((mount) => mount.enabled !== false && (form?.direction === "send" || mount.mode === "read_write"));
+  const eligibleMounts = mounts.filter((mount) => mount.enabled !== false && !mount.locked && (form?.direction === "send" || mount.mode === "read_write"));
   const duplicate = form && !editing && peer ? matchingTransferGrant(grants, peer.node_id, form.mount_id, form.path, form.direction) : undefined;
 
   return <section className="grid min-w-0 content-start gap-3">

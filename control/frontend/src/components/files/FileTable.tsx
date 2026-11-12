@@ -39,6 +39,7 @@ import {
 } from "@/components/ui/table";
 
 const BLOCKED_MESSAGE = "Bloqueado pela política de acesso: o arquivo aparece, mas não pode ser aberto, baixado nem alterado.";
+const LOCKED_MESSAGE = "Mount bloqueado: apenas os metadados estão disponíveis.";
 
 interface Props {
   files: FileEntry[];
@@ -48,6 +49,9 @@ interface Props {
   emptyMessage?: string;
   loading: boolean;
   writable: boolean;
+  /** The mount is locked: names, sizes and dates show, but nothing reads content
+   * or moves files. Folders still open, since browsing only reads metadata. */
+  locked?: boolean;
   filePolicyPath: string;
   onDownload: (entry: FileEntry) => void;
   onPreview: (entry: FileEntry) => void;
@@ -76,6 +80,7 @@ export function FileTable({
   emptyMessage = "Esta pasta está vazia.",
   loading,
   writable,
+  locked = false,
   filePolicyPath,
   onDownload,
   onPreview,
@@ -94,12 +99,14 @@ export function FileTable({
   const usageMode = diskUsageTotal !== undefined;
   const columns = usageMode ? 5 : 4;
 
-  const canRemove = writable && hasPermission(filePolicyPath, "delete");
-  const canRead = hasPermission(filePolicyPath, "read");
+  const canRemove = !locked && writable && hasPermission(filePolicyPath, "delete");
+  const canRead = !locked && hasPermission(filePolicyPath, "read");
+  // A locked mount lets only folders be opened.
+  const openable = (entry: FileEntry) => !entry.blocked && (!locked || entry.type === "directory");
   const canTransferCopy = canRead;
   const canTransferMove = canRead && canRemove;
   const selected = new Set(selectedPaths);
-  const selectable = files.filter((entry) => entry.type !== "symlink" && !entry.blocked);
+  const selectable = locked ? [] : files.filter((entry) => entry.type !== "symlink" && !entry.blocked);
   const allSelected = selectable.length > 0 && selectable.every((entry) => selected.has(entry.path));
 
   function setSelected(entry: FileEntry, checked: boolean) {
@@ -140,6 +147,7 @@ export function FileTable({
                 aria-label="Selecionar todos os itens desta pasta"
                 checked={allSelected}
                 disabled={!selectable.length}
+                title={locked ? LOCKED_MESSAGE : undefined}
                 onCheckedChange={(checked) => selectAll(checked === true)}
               />
             </TableHead>
@@ -161,7 +169,7 @@ export function FileTable({
                     title={entry.blocked ? BLOCKED_MESSAGE : undefined}
                     data-blocked={entry.blocked ? "true" : undefined}
                     onDoubleClick={() => {
-                      if (!entry.blocked) onDownload(entry);
+                      if (openable(entry)) onDownload(entry);
                     }}
                   />
                 }
@@ -170,9 +178,11 @@ export function FileTable({
                   <Checkbox
                     aria-label={`Selecionar ${fileEntryDisplayName(entry)}`}
                     checked={selected.has(entry.path)}
-                    disabled={entry.type === "symlink" || entry.blocked}
+                    disabled={locked || entry.type === "symlink" || entry.blocked}
                     title={
-                      entry.blocked
+                      locked
+                        ? LOCKED_MESSAGE
+                        : entry.blocked
                         ? BLOCKED_MESSAGE
                         : entry.type === "symlink"
                           ? "Links simbólicos não podem ser transferidos"
@@ -184,7 +194,8 @@ export function FileTable({
                 <TableCell>
                   <button
                     className="flex items-center gap-2 text-left hover:underline disabled:no-underline"
-                    disabled={entry.blocked}
+                    disabled={!openable(entry)}
+                    title={locked && entry.type !== "directory" ? LOCKED_MESSAGE : undefined}
                     onClick={() => onDownload(entry)}
                   >
                     <FileEntryIcon entry={entry} />
@@ -221,6 +232,18 @@ export function FileTable({
                     <Lock />
                     Bloqueado pela política de acesso
                   </ContextMenuItem>
+                ) : locked ? (
+                  entry.type === "directory" ? (
+                    <ContextMenuItem onClick={() => onDownload(entry)}>
+                      <FolderOpen />
+                      Abrir
+                    </ContextMenuItem>
+                  ) : (
+                    <ContextMenuItem disabled>
+                      <Lock />
+                      {LOCKED_MESSAGE}
+                    </ContextMenuItem>
+                  )
                 ) : (
                   <>
                 <ContextMenuItem onClick={() => onDownload(entry)}>

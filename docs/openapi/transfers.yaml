@@ -163,7 +163,9 @@ components:
                 items: {type: string}
               can_browse: {type: boolean}
               available: {type: boolean}
-              state: {type: string}
+              state:
+                type: string
+                description: Mount state; "locked" for a mount that exposes metadata only and cannot receive files.
     TransferPlan:
       type: object
       properties:
@@ -190,7 +192,7 @@ components:
           properties:
             code:
               type: string
-              enum: [selection_limit_exceeded, permission_denied, no_compatible_grant, path_outside_grant, node_unavailable, mount_unavailable, invalid_selection, conflict, idempotency_conflict]
+              enum: [selection_limit_exceeded, permission_denied, no_compatible_grant, path_outside_grant, node_unavailable, mount_unavailable, mount_locked, invalid_selection, conflict, idempotency_conflict]
             message: {type: string}
             correlation_id: {type: string}
   responses:

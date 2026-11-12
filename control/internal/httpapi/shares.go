@@ -56,6 +56,11 @@ func (s *Server) createShare(w http.ResponseWriter, r *http.Request) {
 			"node_id e mount_id são obrigatórios.")
 		return
 	}
+	// A link would hand out content, which a locked mount never serves.
+	if s.mountLockedByID(r.Context(), nodeID, mountID) {
+		writeError(w, r, http.StatusForbidden, "mount_locked", lockedMountMessage)
+		return
+	}
 	kind := strings.ToLower(strings.TrimSpace(request.Kind))
 	if kind == "" {
 		kind = "file"

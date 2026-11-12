@@ -37,6 +37,9 @@ type MountConfig struct {
 	Mode           string                `yaml:"mode"`
 	Published      bool                  `yaml:"published"`
 	Enabled        bool                  `yaml:"enabled"`
+	// Locked limits a mount to metadata: nobody can read file content or move
+	// files in or out. omitempty keeps the config revision of existing nodes.
+	Locked bool `yaml:"locked,omitempty"`
 }
 type GrantConfig struct {
 	ID               string                    `yaml:"id"`
@@ -417,6 +420,9 @@ func Read(file string) (Config, error) {
 		if err := filepolicy.ValidatePatterns(m.HiddenPatterns); err != nil {
 			return c, fail(fmt.Sprintf("mounts[%d].hidden_patterns", i), err.Error())
 		}
+		if m.Locked && m.Trash != nil && m.Trash.Enabled {
+			return c, fail(fmt.Sprintf("mounts[%d].locked", i), "a locked mount cannot enable trash")
+		}
 		if m.Trash != nil {
 			if m.Trash.Enabled && m.Mode != "read_write" {
 				return c, fail(fmt.Sprintf("mounts[%d].trash", i), "requires a read_write mount")
@@ -557,7 +563,7 @@ func (c Config) Resources() ([]entities.Mount, []entities.TransferPathGrant) {
 	mounts := make([]entities.Mount, 0, len(c.Mounts))
 	grants := make([]entities.TransferPathGrant, 0, len(c.TransferGrants))
 	for _, m := range c.Mounts {
-		mounts = append(mounts, entities.Mount{ID: m.ID, Name: m.Name, LocalPath: m.LocalPath, TargetType: "directory", Mode: m.Mode, Published: m.Published, Enabled: m.Enabled, HiddenPatterns: append([]string(nil), m.HiddenPatterns...), CanaryPaths: append([]string(nil), m.CanaryPaths...), Trash: copyTrash(m.Trash)})
+		mounts = append(mounts, entities.Mount{ID: m.ID, Name: m.Name, LocalPath: m.LocalPath, TargetType: "directory", Mode: m.Mode, Published: m.Published, Enabled: m.Enabled, Locked: m.Locked, HiddenPatterns: append([]string(nil), m.HiddenPatterns...), CanaryPaths: append([]string(nil), m.CanaryPaths...), Trash: copyTrash(m.Trash)})
 	}
 	for _, g := range c.TransferGrants {
 		grants = append(grants, entities.TransferPathGrant{ID: g.ID, PeerNodeID: g.PeerNodeID, MountID: g.MountID, Path: g.Path, Direction: g.Direction, Permissions: g.Permissions, ConflictPolicies: g.ConflictPolicies, Exclude: g.Exclude, VisibleToPeer: g.VisibleToPeer, Enabled: g.Enabled})

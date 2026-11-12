@@ -3695,6 +3695,7 @@ type nodeMount struct {
 	State    string `json:"state"`
 	Readable bool   `json:"readable"`
 	Writable bool   `json:"writable"`
+	Locked   bool   `json:"locked"`
 }
 
 type resolvedLogicalTransfer struct {
@@ -3835,7 +3836,7 @@ func (s *Server) transferTargets(w http.ResponseWriter, r *http.Request) {
 			target.Mounts = append(target.Mounts, transferTargetMount{
 				MountID: destinationGrant.MountID, Name: mount.Name, RootPath: rootPath,
 				ConflictPolicies: append([]string(nil), destinationGrant.ConflictPolicies...), CanBrowse: canBrowse,
-				Available: mount.Enabled && mount.State == "available" && mount.Writable, State: mount.State,
+				Available: mount.Enabled && mount.State == "available" && mount.Writable && !mount.Locked, State: transferTargetMountState(mount),
 			})
 		}
 		if len(target.Mounts) > 0 {
@@ -4978,4 +4979,13 @@ func (s *Server) temporaryAccessDeadline(r *http.Request, tracker *decisionTrack
 		}
 	}
 	return earliest, bounded
+}
+
+// transferTargetMountState reports a locked mount as such: it is not offline or
+// unavailable, it just cannot receive files.
+func transferTargetMountState(mount nodeMount) string {
+	if mount.Locked {
+		return "locked"
+	}
+	return mount.State
 }

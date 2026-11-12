@@ -161,6 +161,10 @@ func (s *Server) writeTrashError(w http.ResponseWriter, r *http.Request, err err
 			writeError(w, r, http.StatusConflict, "conflict", "Já existe algo com o nome original. Renomeie ou remova antes de restaurar.")
 			return
 		case http.StatusForbidden:
+			if apiErr.Code == "mount_locked" {
+				writeError(w, r, http.StatusForbidden, "mount_locked", lockedMountMessage)
+				return
+			}
 			writeError(w, r, http.StatusForbidden, "mount_read_only", "O mount não permite alterações.")
 			return
 		case http.StatusUnprocessableEntity:

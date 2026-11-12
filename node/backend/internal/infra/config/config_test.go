@@ -416,3 +416,46 @@ func TestManagedOnlyIsManagedPlusCertificateOnlyAndKeepsEveryManagedRule(t *test
 		t.Fatal("manual reported as managed")
 	}
 }
+
+func TestLockedConfiguration(t *testing.T) {
+	root := t.TempDir()
+	mount := func(extra string) string {
+		return "version: 1\nmounts:\n  - id: files\n    name: Files\n    local_path: " + root + "\n    mode: read_write\n    enabled: true\n" + extra
+	}
+	cfg, err := Read(writeConfig(t, mount("    locked: true\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mounts, _ := cfg.Resources(); !mounts[0].Locked {
+		t.Fatalf("locked was not carried into the mount: %+v", mounts[0])
+	}
+	plain, err := Read(writeConfig(t, mount("")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mounts, _ := plain.Resources(); mounts[0].Locked {
+		t.Fatalf("mount locked without being asked: %+v", mounts[0])
+	}
+	// omitempty: a mount that is not locked must not change the config revision.
+	explicit, err := Read(writeConfig(t, mount("    locked: false\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Revision != plain.Revision {
+		t.Fatalf("locked: false changed the revision: %s != %s", explicit.Revision, plain.Revision)
+	}
+	if cfg.Revision == plain.Revision {
+		t.Fatal("locking a mount must change the revision")
+	}
+	for name, text := range map[string]string{
+		"not a boolean":    mount("    locked: \"yes\"\n"),
+		"locked and trash": mount("    locked: true\n    trash: {enabled: true}\n"),
+	} {
+		if _, err := Read(writeConfig(t, text)); err == nil {
+			t.Fatalf("%s accepted", name)
+		}
+	}
+	if _, err := Read(writeConfig(t, mount("    locked: true\n    trash: {enabled: false}\n"))); err != nil {
+		t.Fatalf("a disabled trash block is harmless on a locked mount: %v", err)
+	}
+}

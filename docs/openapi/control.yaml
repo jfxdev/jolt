@@ -11,6 +11,11 @@ info:
     access group and effective RBAC grants. Errors use code, message and an
     optional correlation_id. Send X-Correlation-ID to correlate audit records.
     Unless explicitly public, every operation requires authentication.
+    A mount configured with locked: true exposes metadata only: listing,
+    metadata, name search and disk usage work, and every operation that reads
+    or writes file content (downloads, previews, archives, uploads, copy, move,
+    mkdir, delete, trash, public links and transfers) answers 403 mount_locked.
+    Administrators are not exempt.
   contact:
     url: https://github.com/jfxdev/jolt
 servers:
@@ -1388,6 +1393,7 @@ paths:
     get:
       tags: [Node proxy]
       summary: Read file content
+      description: Answers 403 mount_locked when the mount is locked, whatever the caller's role.
       responses:
         '200': {$ref: '#/components/responses/Binary'}
         '206': {$ref: '#/components/responses/Binary'}

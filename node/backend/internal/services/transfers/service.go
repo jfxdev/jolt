@@ -1508,7 +1508,23 @@ func (s *Service) sendGrant(ctx context.Context, peerNodeID, grantID string) (en
 	if filepolicy.ValidatePatterns(grant.Exclude) != nil {
 		return grant, ErrForbidden
 	}
+	if err := s.refuseLockedMount(ctx, grant); err != nil {
+		return grant, err
+	}
 	return grant, nil
+}
+
+// refuseLockedMount keeps a locked mount out of every transfer, even when a
+// grant for it still exists. Grants on a locked mount are also reported inactive.
+func (s *Service) refuseLockedMount(ctx context.Context, grant entities.TransferPathGrant) error {
+	locked, err := s.files.IsLocked(ctx, grant.MountID)
+	if err != nil {
+		return err
+	}
+	if locked {
+		return fmt.Errorf("%w: the mount is locked", ErrForbidden)
+	}
+	return nil
 }
 
 func (s *Service) receiveGrant(ctx context.Context, peerNodeID, grantID, policy string) (entities.TransferPathGrant, error) {
@@ -1528,6 +1544,9 @@ func (s *Service) receiveGrant(ctx context.Context, peerNodeID, grantID, policy 
 	}
 	if policy = normalizePolicy(policy); !contains(grant.ConflictPolicies, policy) {
 		return grant, fmt.Errorf("%w: conflict policy is not allowed by the destination grant", ErrForbidden)
+	}
+	if err := s.refuseLockedMount(ctx, grant); err != nil {
+		return grant, err
 	}
 	return grant, nil
 }

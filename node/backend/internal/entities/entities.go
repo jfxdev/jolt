@@ -13,12 +13,14 @@ type Mount struct {
 	Mode           string       `json:"mode" yaml:"mode"`
 	Published      bool         `json:"published" yaml:"published"`
 	Enabled        bool         `json:"enabled" yaml:"enabled"`
-	State          string       `json:"state" yaml:"state"`
-	Readable       bool         `json:"readable" yaml:"readable"`
-	Writable       bool         `json:"writable" yaml:"writable"`
-	ModeBits       string       `json:"mode_bits,omitempty" yaml:"mode_bits"`
-	CreatedAt      time.Time    `json:"created_at" yaml:"created_at"`
-	UpdatedAt      time.Time    `json:"updated_at" yaml:"updated_at"`
+	// Locked: only metadata is available; content and file movement are refused.
+	Locked    bool      `json:"locked,omitempty" yaml:"locked,omitempty"`
+	State     string    `json:"state" yaml:"state"`
+	Readable  bool      `json:"readable" yaml:"readable"`
+	Writable  bool      `json:"writable" yaml:"writable"`
+	ModeBits  string    `json:"mode_bits,omitempty" yaml:"mode_bits"`
+	CreatedAt time.Time `json:"created_at" yaml:"created_at"`
+	UpdatedAt time.Time `json:"updated_at" yaml:"updated_at"`
 }
 
 // TrashConfig turns deletes on a writable mount into moves to a hidden folder

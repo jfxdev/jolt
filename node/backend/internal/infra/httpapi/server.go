@@ -413,7 +413,7 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) node(w http.ResponseWriter, r *http.Request) {
-	capabilities := []string{"api_filesystem", "streaming_upload", "range_download", "durable_local_jobs", "job_controls", "job_events_sse", "job_eta", "bandwidth_limits", "waiting_mount", "waiting_validation", "directory_manifests", "directory_resume", "resumable_chunks", "conflict_policies", "manual_item_overrides", "checksum_verification", "source_change_policies", "transfer_path_grants", "cluster_grouping", "mtls_peer_listener", "mtls_certificate_rotation", "mtls_certificate_rollout_diagnostics", "mtls_certificate_revocation", "identity_handover", "mtls_peer_heartbeat", "direct_file_pull", "operational_token_rotation", "idempotency", "hidden_patterns_v1", "protected_move_v1", "canary_paths_v1", "agent_search_limits_v1", "agent_secret_scan_v1", "grant_exclude_send_v1", "grant_exclude_receive_v1", "upload_inspection_v1", "trash_v1"}
+	capabilities := []string{"api_filesystem", "streaming_upload", "range_download", "durable_local_jobs", "job_controls", "job_events_sse", "job_eta", "bandwidth_limits", "waiting_mount", "waiting_validation", "directory_manifests", "directory_resume", "resumable_chunks", "conflict_policies", "manual_item_overrides", "checksum_verification", "source_change_policies", "transfer_path_grants", "cluster_grouping", "mtls_peer_listener", "mtls_certificate_rotation", "mtls_certificate_rollout_diagnostics", "mtls_certificate_revocation", "identity_handover", "mtls_peer_heartbeat", "direct_file_pull", "operational_token_rotation", "idempotency", "hidden_patterns_v1", "protected_move_v1", "canary_paths_v1", "agent_search_limits_v1", "agent_secret_scan_v1", "grant_exclude_send_v1", "grant_exclude_receive_v1", "upload_inspection_v1", "trash_v1", "locked_mounts_v1"}
 	if s.trust != nil && s.trust.Managed() {
 		capabilities = append(capabilities, "managed_tls_v1")
 	}
@@ -1796,6 +1796,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, code = http.StatusUnprocessableEntity, "hidden_name"
 	case errors.Is(err, filesystem.ErrProtectedTree):
 		status, code = http.StatusConflict, "protected_tree"
+	case errors.Is(err, filesystem.ErrLocked):
+		status, code = http.StatusForbidden, "mount_locked"
 	case errors.Is(err, filesystem.ErrReadOnly):
 		status, code = http.StatusForbidden, "mount_read_only"
 	case errors.Is(err, filesystem.ErrTraversal):
@@ -1941,6 +1943,10 @@ info:
     Mount hidden_patterns are enforced for all callers. Direct reads of hidden
     paths return 404, attempts to create a hidden name return 422 hidden_name,
     and destructive jobs involving protected trees fail with protected_tree.
+    A mount with locked: true exposes metadata only (list, metadata, search,
+    disk usage). Every operation that reads or writes file content, including
+    uploads, copy, move, rename, delete, mkdir and archives, fails with 403
+    mount_locked, and transfer grants on the mount become inactive.
 servers:
   - url: /
 components:
@@ -1985,7 +1991,7 @@ components:
         configured_enabled: {type: boolean, description: Operator value in node.yaml}
         inactive_reason:
           type: string
-          enum: [disabled, revoked, peer_untrusted, mount_unavailable, mount_read_only, peer_role_incompatible, path_unavailable]
+          enum: [disabled, revoked, peer_untrusted, mount_unavailable, mount_read_only, mount_locked, peer_role_incompatible, path_unavailable]
     GrantPermissions:
       type: object
       required: [read, write, delete, rename]

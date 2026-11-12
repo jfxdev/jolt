@@ -32,6 +32,10 @@ func TestSignedShareRechecksCreatorAndRequiresNodeConfirmation(t *testing.T) {
 			}
 			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"node_id":"nod_a","capabilities":` + caps + `}`))}, nil
 		}
+		if r.URL.Path == "/api/v1/mounts" {
+			// Creating a link asks the node whether the mount is locked.
+			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"items":[]}`))}, nil
+		}
 		calls++
 		if calls == 1 && r.Header.Get("Range") != "bytes=0-3" {
 			t.Errorf("range not forwarded: %q", r.Header.Get("Range"))

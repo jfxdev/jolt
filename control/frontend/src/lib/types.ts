@@ -267,6 +267,8 @@ export interface Mount {
   published?: boolean;
   enabled?: boolean;
   state?: "available" | "unavailable" | "degraded";
+  // The mount exposes metadata only: no one can read content or move files.
+  locked?: boolean;
   // Present when deleting here moves the entry to a trash kept for retention_days.
   trash?: { enabled: boolean; retention_days: number };
 }

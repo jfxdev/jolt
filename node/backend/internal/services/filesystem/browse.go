@@ -259,7 +259,7 @@ type archiveRoot struct {
 // through the mount's containment checks. Each selected name is resolved on its
 // own so a crafted name cannot reach outside the mount.
 func (s *Service) archiveRoots(ctx context.Context, mountID, relative string, names []string) ([]archiveRoot, error) {
-	mount, base, err := s.resolve(ctx, mountID, relative, false)
+	mount, base, err := s.resolveContent(ctx, mountID, relative, false)
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +287,7 @@ func (s *Service) archiveRoots(ctx context.Context, mountID, relative string, na
 			return nil, fmt.Errorf("%w: duplicate selection %q", ErrInvalid, name)
 		}
 		seen[name] = struct{}{}
-		_, resolved, err := s.resolve(ctx, mountID, path.Join(cleanRelativeSlash(relative), name), false)
+		_, resolved, err := s.resolveContent(ctx, mountID, path.Join(cleanRelativeSlash(relative), name), false)
 		if err != nil {
 			return nil, err
 		}

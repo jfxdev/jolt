@@ -581,3 +581,63 @@ func TestDiskUsageEndpointReturnsAllocatedUsageInDescendingOrder(t *testing.T) {
 		t.Fatalf("invalid allocated usage: %+v", result)
 	}
 }
+
+func TestLockedMountServesMetadataOnly(t *testing.T) {
+	ctx := context.Background()
+	storage, err := db.Open(filepath.Join(t.TempDir(), "state"), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	files := filesystem.New(storage)
+	mount, err := files.SaveMount(ctx, entities.Mount{Name: "files", LocalPath: root, Mode: "read_write", Enabled: true, Published: true, Locked: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := continuityHandler(storage)
+	base := "/api/v1/mounts/" + mount.ID + "/files"
+
+	for _, path := range []string{base, base + "/metadata?path=a.txt", base + "/search?query=a", base + "/disk-usage"} {
+		if response := uploadCall(h, "GET", path, ""); response.Code != 200 {
+			t.Fatalf("GET %s: %d %s", path, response.Code, response.Body)
+		}
+	}
+	if response := uploadCall(h, "GET", "/api/v1/mounts/"+mount.ID, ""); response.Code != 200 || !strings.Contains(response.Body.String(), `"locked":true`) {
+		t.Fatalf("the mount must report locked: %d %s", response.Code, response.Body)
+	}
+	for _, tc := range []struct{ method, path, body string }{
+		{"GET", base + "/content?path=a.txt", ""},
+		{"GET", base + "/archive?path=", ""},
+		{"GET", base + "/archive/plan?path=", ""},
+		{"PUT", base + "/content?path=new.txt", "abc"},
+		{"POST", base + "/uploads", `{"path":"new.txt","size":3}`},
+		{"POST", base + "/directories", `{"path":"dir"}`},
+		{"POST", base + "/move", `{"source_path":"a.txt","destination_path":"b.txt"}`},
+		{"POST", base + "/copy", `{"source_path":"a.txt","destination_path":"b.txt"}`},
+		{"DELETE", base + "?path=a.txt", ""},
+	} {
+		response := uploadCall(h, tc.method, tc.path, tc.body)
+		if response.Code != 403 || !strings.Contains(response.Body.String(), "mount_locked") {
+			t.Fatalf("%s %s: %d %s", tc.method, tc.path, response.Code, response.Body)
+		}
+	}
+	jobs, err := storage.ListJobs(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("locked requests created jobs: %+v", jobs)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "a.txt")); err != nil || string(data) != "secret" {
+		t.Fatalf("file changed: %q, %v", data, err)
+	}
+	for _, name := range []string{"new.txt", "dir", "b.txt"} {
+		if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s was created on a locked mount: %v", name, err)
+		}
+	}
+}

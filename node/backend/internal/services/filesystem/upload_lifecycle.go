@@ -52,7 +52,7 @@ func LockUploadSession(ctx context.Context, id string) (func(), error) {
 }
 
 func (s *Service) PrepareUpload(ctx context.Context, v entities.UploadSession) (string, error) {
-	_, dst, err := s.resolve(ctx, v.MountID, v.Destination, true)
+	_, dst, err := s.resolveContent(ctx, v.MountID, v.Destination, true)
 	if err != nil {
 		return "", err
 	}
@@ -97,7 +97,7 @@ func uploadDigest(ctx context.Context, path string, size int64) (string, error) 
 // A missing partial can be recognized as a publication only after a durable
 // intent with a verified full checksum exists. Size alone is never sufficient.
 func (s *Service) PublishedUpload(ctx context.Context, v entities.UploadSession) (bool, error) {
-	_, dst, err := s.resolve(ctx, v.MountID, v.Destination, true)
+	_, dst, err := s.resolveContent(ctx, v.MountID, v.Destination, true)
 	if err != nil {
 		return false, err
 	}
@@ -130,7 +130,7 @@ func syncUploadDirectory(dst string) error {
 
 func (s *Service) UploadBlocks(ctx context.Context, v entities.UploadSession, after int64, limit int) (entities.UploadVerification, error) {
 	result := entities.UploadVerification{Blocks: []entities.UploadBlock{}}
-	_, dst, err := s.resolve(ctx, v.MountID, v.Destination, true)
+	_, dst, err := s.resolveContent(ctx, v.MountID, v.Destination, true)
 	if err != nil {
 		return result, err
 	}

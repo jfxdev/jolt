@@ -346,6 +346,29 @@ varredura a cada dez minutos).
 - Métricas por mount e dois alertas de referência (perto do teto e item além da retenção) estão na
   seção de métricas e na de alertas. Sem teto, a lixeira só é limitada pelo disco.
 
+## Mount bloqueado (`locked`)
+
+Com `locked: true` em um mount do `node.yaml` (ver [`NODE_YAML.md`](NODE_YAML.md)), o mount vira um
+**índice somente de metadados**: nomes, tipos, tamanhos e datas continuam aparecendo, e ninguém lê o
+conteúdo nem move arquivos dele.
+
+- **Continua funcionando:** listar, `metadata`, busca por nome, uso de disco e a descrição do mount.
+- **Recusado com `403 mount_locked`:** download, visualização, edição, ZIP (e o plano do ZIP), checksum,
+  upload (simples e retomável), copiar, mover, renomear, apagar, criar pasta, restaurar da lixeira, links
+  públicos e transferências entre nodes. Jobs são recusados **na criação**, sem criar um job que falharia.
+- **Sem exceção por papel:** quem recusa é o node, então administradores, contas de serviço, MCP, jobs
+  assinados e peers por mTLS recebem a mesma resposta. O Control Tower só repassa o erro e se recusa a criar
+  link público para o mount. A interface mostra o selo **Somente metadados**, deixa as pastas navegáveis e
+  esconde baixar, visualizar, editar, ZIP, enviar, criar pasta, copiar, mover, remover e compartilhar.
+- **Grants:** concessões de transferência para um mount bloqueado ficam inativas
+  (`inactive_reason: mount_locked`) e voltam a valer quando o bloqueio sai. O mount não serve de destino
+  de transferência.
+- **Ativar e desativar:** edite o `node.yaml` e reinicie o node. O mount não pode habilitar `trash`, e
+  `locked` vence `mode`. Um job que já estava enfileirado para o mount não consegue mais ler nem gravar
+  nele.
+- **Limite:** como `hidden_patterns`, isso protege o acesso **pelo Jolt**. Quem acessa o host em
+  `local_path` lê os arquivos normalmente.
+
 ## Aprovação humana
 
 Uma regra de policy pode conceder `delete` ou `update` **somente com a aprovação de uma pessoa**

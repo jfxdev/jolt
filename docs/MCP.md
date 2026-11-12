@@ -113,6 +113,8 @@ Todo agente paga pela lista de ferramentas em cada conversa, então ela é enxut
 
 `list` (com `after`, o cursor da página anterior, até 200 itens), `search` (`query`), `disk_usage` e `read_text` (UTF-8 sem controles binários, até 1 MiB).
 
+Em um mount com `locked: true` só os metadados respondem: `list`, `search`, `disk_usage`, `stat` e `get_mount`. `read_text`, `archive_plan`, copiar, mover, apagar e as transferências recebem `403 mount_locked`.
+
 ### `inspect` — diagnóstico (somente leitura)
 
 | Ferramenta | Para quê |

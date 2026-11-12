@@ -28,6 +28,11 @@ processo que já possa escrever arbitrariamente nos mounts fora da API.
 | `/livez`, `/readyz`, `/health` | sem dados de arquivos; readiness local | rede de infraestrutura |
 | Login e shares públicos | lockout persistido; shares somente leitura | somente através do Control Tower HTTPS |
 
+Um mount com `locked: true` expõe só metadados: o node recusa leitura de
+conteúdo e movimento de arquivos (`403 mount_locked`) a qualquer chamador, inclusive
+administrador, job assinado, link público e peer mTLS. O limite é o mesmo de
+`hidden_patterns`: quem acessa o host continua lendo os arquivos.
+
 `/openapi.yaml` e `/docs` do node permanecem autenticados. O Control Tower injeta
 o token do node apenas no proxy server-side; navegador e service account não o
 recebem. Transferências entre nodes são pull no destino e os bytes não passam

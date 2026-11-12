@@ -101,7 +101,7 @@ func (s *Service) UploadOffset(ctx context.Context, mountID, destination, upload
 	if cleanRelative(destination) == "." {
 		return 0, ErrInvalid
 	}
-	_, dst, err := s.resolve(ctx, mountID, destination, true)
+	_, dst, err := s.resolveContent(ctx, mountID, destination, true)
 	if err != nil {
 		return 0, err
 	}

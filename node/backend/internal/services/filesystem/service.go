@@ -24,6 +24,7 @@ import (
 var (
 	ErrNotFound      = errors.New("resource not found")
 	ErrReadOnly      = errors.New("mount is read-only")
+	ErrLocked        = errors.New("mount is locked")
 	ErrTraversal     = errors.New("path escapes mount")
 	ErrConflict      = errors.New("destination already exists")
 	ErrDisabled      = errors.New("mount is disabled")
@@ -443,7 +444,7 @@ func (s *Service) Open(ctx context.Context, mountID, relative string) (*os.File,
 
 // OpenFiltered applies the supplied access filter before and after opening.
 func (s *Service) OpenFiltered(ctx context.Context, mountID, relative string, filter *AccessFilter) (*os.File, os.FileInfo, error) {
-	_, resolved, err := s.resolve(ctx, mountID, relative, false)
+	_, resolved, err := s.resolveContent(ctx, mountID, relative, false)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -580,6 +581,9 @@ func (s *Service) ValidateMoveSourceWithExclusions(ctx context.Context, mountID,
 	mount, resolved, err := s.resolvePath(ctx, mountID, relative, false, true)
 	if err != nil {
 		return err
+	}
+	if mount.Locked {
+		return ErrLocked
 	}
 	mount.HiddenPatterns = append(append([]string(nil), mount.HiddenPatterns...), exclude...)
 	return rejectProtectedTree(ctx, mount, resolved)
@@ -1895,6 +1899,19 @@ func (s *Service) IsHiddenPath(ctx context.Context, mountID, relative string) (b
 	return false, nil
 }
 
+// IsLocked reports whether the mount only exposes metadata. A missing mount is
+// not locked: the operation fails later with its own not-found error.
+func (s *Service) IsLocked(ctx context.Context, mountID string) (bool, error) {
+	mount, err := s.store.GetMount(ctx, mountID)
+	if errors.Is(err, contracts.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return mount.Locked, nil
+}
+
 // IsCanary performs a name-only check; it never grants access to that path.
 func (s *Service) IsCanary(ctx context.Context, mountID, relative string) bool {
 	mount, err := s.store.GetMount(ctx, mountID)
@@ -1966,7 +1983,25 @@ func cleanRelative(path string) string {
 	return filepath.Clean(path)
 }
 
+// resolveContent is resolve for operations that read file bytes. A locked mount
+// only exposes metadata, so these are refused before anything is opened.
+func (s *Service) resolveContent(ctx context.Context, mountID, relative string, allowMissing bool) (entities.Mount, string, error) {
+	mount, resolved, err := s.resolve(ctx, mountID, relative, allowMissing)
+	if err != nil {
+		return mount, resolved, err
+	}
+	if mount.Locked {
+		return mount, "", ErrLocked
+	}
+	return mount, resolved, nil
+}
+
+// writable also covers every write on a locked mount: a locked mount accepts no
+// upload, copy, move, rename, delete or restore, whatever its mode says.
 func writable(m entities.Mount) error {
+	if m.Locked {
+		return ErrLocked
+	}
 	if m.Mode != "read_write" {
 		return ErrReadOnly
 	}

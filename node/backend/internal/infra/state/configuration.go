@@ -240,6 +240,11 @@ func (s *Store) prepareGrant(g entities.TransferPathGrant) (grantCheck, error) {
 		g.InactiveReason = "mount_unavailable"
 		return grantCheck{grant: g}, nil
 	}
+	if m.Locked {
+		g.Enabled = false
+		g.InactiveReason = "mount_locked"
+		return grantCheck{grant: g}, nil
+	}
 	if (g.Permissions.Write || g.Permissions.Delete || g.Permissions.Rename || g.Direction != "send") && m.Mode != "read_write" {
 		g.Enabled = false
 		g.InactiveReason = "mount_read_only"

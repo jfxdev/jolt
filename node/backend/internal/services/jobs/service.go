@@ -359,6 +359,13 @@ func (s *Service) validateHiddenPaths(ctx context.Context, request CreateRequest
 	if request.MountID == "" {
 		return nil
 	}
+	// A locked mount exposes metadata only, so no job may read or write it. Failing
+	// here returns 403 at request time instead of creating a job that cannot run.
+	if locked, err := s.files.IsLocked(ctx, request.MountID); err != nil {
+		return err
+	} else if locked {
+		return filesystem.ErrLocked
+	}
 	switch request.Type {
 	case "copy_local", "move_local", "delete":
 		hidden, err := s.files.IsHiddenPath(ctx, request.MountID, request.SourcePath)
